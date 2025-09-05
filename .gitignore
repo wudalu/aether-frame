@@ -208,3 +208,5 @@ grafana/
 
 # Claude Code configuration - do not commit
 CLAUDE.md
+chat.md
+personal/

@@ -2,9 +2,9 @@
 
 ## System Overview
 
-Multi-Framework Agent System for User Story Generation - Backend Architecture Design with Framework Abstraction Layer
+Multi-Framework Agent System with Flexible Execution Engine - Backend Architecture Design with Framework Abstraction Layer
 
-This architecture supports multiple agent frameworks (ADK, AutoGen, LangGraph) through a unified abstraction layer, enabling framework switching without application logic changes.
+This architecture supports multiple agent frameworks (ADK, AutoGen, LangGraph) through a unified abstraction layer, enabling framework switching without application logic changes. The system features a flexible execution engine that supports multiple execution patterns (workflow, reactive, planning) through a strategy-based approach, allowing for both deterministic and adaptive task processing.
 
 ## Core Architecture
 
@@ -12,10 +12,21 @@ This architecture supports multiple agent frameworks (ADK, AutoGen, LangGraph) t
 
 ```mermaid
 graph TB
-    subgraph "Application Orchestration Layer"
+    subgraph "Application Execution Layer"
         ENTRY[AI Assistant]:::selfBuilt
-        WF[Workflow Engine]:::selfBuilt
-        COORD[Coordinator Agent]:::selfBuilt
+        
+        subgraph "Execution Engine"
+            ROUTER[Task Router]:::selfBuilt
+            REGISTRY[Strategy Registry]:::selfBuilt
+            
+            subgraph "Execution Strategies"
+                WORKFLOW_EXEC[Workflow Executor]:::selfBuilt
+                REACTIVE_EXEC[Reactive Executor]:::selfBuilt
+                PLANNING_EXEC[Planning Executor]:::selfBuilt
+                CUSTOM_EXEC[Custom Executors...]:::selfBuilt
+            end
+        end
+        
         SM[Session Manager]:::selfBuilt
     end
     
@@ -73,13 +84,19 @@ graph TB
     classDef selfBuilt fill:#e1f5fe,stroke:#01579b,stroke-width:2
     
     %% Dependencies
-    ENTRY --> WF
-    ENTRY --> COORD
+    ENTRY --> ROUTER
+    ROUTER --> REGISTRY
+    ROUTER --> WORKFLOW_EXEC
+    ROUTER --> REACTIVE_EXEC
+    ROUTER --> PLANNING_EXEC
+    ROUTER --> CUSTOM_EXEC
     ENTRY --> SM
     
     %% Framework Abstraction Layer connections
-    WF --> FAL
-    COORD --> FAL
+    WORKFLOW_EXEC --> FAL
+    REACTIVE_EXEC --> FAL
+    PLANNING_EXEC --> FAL
+    CUSTOM_EXEC --> FAL
     FAL --> API
     API --> CONFIG
     
@@ -127,7 +144,7 @@ graph TB
     classDef entryPoint fill:#ffebee
     
     class ENTRY entryPoint
-    class WF,COORD,SM orchestrationLayer
+    class ROUTER,REGISTRY,WORKFLOW_EXEC,REACTIVE_EXEC,PLANNING_EXEC,CUSTOM_EXEC,SM executionLayer
     class DA1,DA2,DA3,DA4 agentLayer
     class T1,T2,T3,T4 toolLayer
     class RT,SS,LG,MON infraLayer
@@ -139,77 +156,70 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant ENTRY as AI Assistant
-    participant WF as Workflow Engine
-    participant COORD as Coordinator Agent
+    participant ROUTER as Task Router
+    participant REGISTRY as Strategy Registry
+    participant EXEC as Selected Executor
     participant FAL as Framework Adapter
     participant API as Unified Agent API
     participant FW as Selected Framework<br/>(ADK/AutoGen/LangGraph)
-    participant DA1 as Domain Agent 1
-    participant DA2 as Domain Agent 2
+    participant DA as Domain Agents
     participant Tools as Tools Layer
     participant LLM as LLM Models
 
     ENTRY->>ENTRY: Analyze task complexity
+    ENTRY->>ROUTER: Route execution request
+    ROUTER->>REGISTRY: Query available strategies
+    REGISTRY-->>ROUTER: Return matching strategies
+    ROUTER->>EXEC: Select and delegate to executor
     ENTRY->>FAL: Initialize framework
     FAL->>API: Setup unified interface
     API->>FW: Configure selected framework
     
-    alt Fixed Process (Predictable)
-        ENTRY->>WF: Route to Workflow Engine
-        WF->>FAL: Request agent execution
+    alt Workflow Execution (Deterministic Process)
+        EXEC->>FAL: Request workflow execution
         FAL->>API: Translate workflow request
-        API->>FW: Execute via framework
-        FW->>DA1: Instantiate & execute step 1
-        DA1->>Tools: Call Tool 1
-        Tools-->>DA1: Return results
-        DA1-->>FW: Step 1 complete
-        FW-->>API: Framework response
-        API-->>FAL: Unified response
-        FAL-->>WF: Workflow step complete
-        
-        WF->>FAL: Next step request
-        FAL->>API: Translate request
-        API->>FW: Execute via framework
-        FW->>DA2: Execute step 2
-        DA2->>Tools: Call Tool 2
+        API->>FW: Execute workflow pattern
+        FW->>DA: Sequential/Parallel agent execution
+        DA->>Tools: Call Tool
         Tools->>LLM: Process request
         LLM-->>Tools: Return results
-        Tools-->>DA2: Processed data
-        DA2-->>FW: Step 2 complete
+        Tools-->>DA: Tool results
+        DA-->>FW: Step complete
         FW-->>API: Framework response
         API-->>FAL: Unified response
-        FAL-->>WF: Step complete
-        WF-->>ENTRY: Return workflow results
+        FAL-->>EXEC: Execution results
     
-    else Dynamic Process (Complex)
-        ENTRY->>COORD: Route to Coordinator Agent
-        COORD->>COORD: Plan task decomposition
-        COORD->>FAL: Request dynamic execution
-        FAL->>API: Translate coordination request
-        API->>FW: Setup dynamic workflow
-        
-        FW->>DA1: Execute domain task 1
-        DA1->>Tools: Call Tool 1
+    else Reactive Execution (Iterative Process)
+        EXEC->>FAL: Request reactive execution
+        FAL->>API: Setup reactive pattern
+        API->>FW: Initialize ReAct pattern
+        FW->>DA: Dynamic agent coordination
+        DA->>Tools: Iterative tool calls
         Tools->>LLM: Generate content
         LLM-->>Tools: Generated content
-        Tools-->>DA1: Tool results
-        DA1-->>FW: Task results
+        Tools-->>DA: Tool results
+        DA-->>FW: Task results
         FW-->>API: Framework response
         API-->>FAL: Unified response
-        FAL-->>COORD: Task complete
+        FAL-->>EXEC: Execution results
         
-        COORD->>FAL: Request next task
-        FAL->>API: Translate request
-        API->>FW: Execute via framework
-        FW->>DA2: Execute domain task 2
-        DA2->>Tools: Call Tool 2
-        Tools-->>DA2: Tool results
-        DA2-->>FW: Task complete
+    else Planning Execution (Complex Process)
+        EXEC->>FAL: Request planning execution
+        FAL->>API: Setup planning pattern
+        API->>FW: Initialize planning workflow
+        FW->>DA: Plan-Execute cycle
+        DA->>Tools: Planned actions
+        Tools->>LLM: Execute planned steps
+        LLM-->>Tools: Step results
+        Tools-->>DA: Action results
+        DA-->>FW: Planning cycle complete
         FW-->>API: Framework response
         API-->>FAL: Unified response
-        FAL-->>COORD: All tasks complete
-        COORD-->>ENTRY: Return coordinated results
+        FAL-->>EXEC: Execution results
     end
+    
+    EXEC-->>ROUTER: Strategy execution complete
+    ROUTER-->>ENTRY: Return final results
     
     Note over FAL,FW: Framework Abstraction Layer<br/>enables switching between<br/>ADK, AutoGen, LangGraph
 ```
@@ -239,33 +249,44 @@ sequenceDiagram
 - **Selection Criteria**: Task complexity, performance requirements, compliance needs
 - **Runtime Switching**: Support for different frameworks within the same application instance
 
-### Application Orchestration Layer
+### Application Execution Layer
 
 #### AI Assistant
-- **Role**: Analyze incoming tasks and route to appropriate orchestration pattern
-- **Decision Logic**: Evaluate task complexity and predictability to choose execution mode
-- **Routing**: Direct tasks to either Workflow Engine or Coordinator Agent
+- **Role**: Analyze incoming tasks and route to execution engine
+- **Decision Logic**: Evaluate task characteristics to determine routing needs
+- **Routing**: Direct tasks to Task Router for strategy selection
 - **Dependencies**: Session Manager for context management
 
-**Two Orchestration Patterns in ADK**:
+#### Execution Engine
 
-#### Workflow Engine (Fixed Orchestration)
-- **Role**: Pre-defined workflow execution with fixed steps and sequences
-- **Pattern**: Sequential → Parallel → Conditional workflows
-- **Use Case**: Well-defined processes with predictable execution paths
-- **Dependencies**: ADK Runtime, Domain Agents
-- **Advantages**: Fast execution, predictable resource usage, easy debugging
+The Execution Engine replaces the previous binary Workflow Engine + Coordinator Agent design with a flexible, strategy-based approach.
 
-#### Coordinator Agent (Dynamic Planning)
-- **Role**: Dynamic task decomposition and adaptive agent coordination
-- **Pattern**: Intelligent planning based on context and requirements
-- **Use Case**: Complex scenarios requiring adaptive decision-making
-- **Dependencies**: ADK Runtime, Domain Agents
-- **Model**: TBD - Determined during implementation
-- **Communication**: context.state sharing
-- **Advantages**: Flexible handling, adaptive to changing requirements
+**Task Router**:
+- **Role**: Analyze task characteristics and select appropriate execution strategy
+- **Function**: Routes tasks to registered execution strategies based on task requirements
+- **Extensibility**: Supports rule-based routing with future LLM-based enhancement capability
+- **Integration**: Handles both internal strategy execution and external workflow engine delegation
 
-*Note: AI Assistant determines routing strategy - choose workflow for predictable processes, coordinator for complex adaptive tasks*
+**Strategy Registry**:
+- **Role**: Manage available execution strategies and their capabilities
+- **Function**: Dynamic strategy registration, capability matching, and priority management
+- **Features**: 
+  - Runtime strategy registration without system restart
+  - Strategy capability querying and discovery
+  - Priority-based strategy selection for overlapping capabilities
+- **Extensibility**: Plugin architecture for adding new execution patterns
+
+**Execution Strategies**:
+- **Workflow Executor**: Handles deterministic, sequential/parallel processes using ADK's workflow agents
+- **Reactive Executor**: Manages iterative, exploratory tasks using ReAct patterns
+- **Planning Executor**: Processes complex multi-step tasks requiring upfront planning
+- **Custom Executors**: Extensible framework for domain-specific execution patterns
+
+**Key Design Principles**:
+1. **Strategy Flexibility**: New execution patterns can be added without modifying core engine
+2. **Framework Agnostic**: Works consistently across ADK, AutoGen, and LangGraph
+3. **External Integration**: Supports integration with external workflow engines
+4. **Backward Compatibility**: Existing workflow logic can migrate smoothly to new architecture
 
 ### Core Agent Layer
 
@@ -285,10 +306,11 @@ sequenceDiagram
 
 ### Infrastructure Layer
 
-#### ADK Runtime
+#### Framework Runtime (ADK Primary)
 - **Role**: Agent lifecycle management, model invocation, error handling
-- **Configuration**: Google Cloud project, Vertex AI integration
+- **Configuration**: Google Cloud project, Vertex AI integration for ADK; extensible for other frameworks
 - **Features**: Session management, state synchronization, performance monitoring
+- **Framework Support**: ADK as primary runtime, with abstraction layer for AutoGen/LangGraph integration
 
 #### State Store
 - **Role**: State persistence, data consistency guarantee
@@ -301,11 +323,19 @@ sequenceDiagram
 ### 1. Communication Pattern
 - **State Sharing**: Use ADK context.state for inter-agent data transfer
 - **Async Execution**: Support parallel agent execution for performance
+- **Strategy Registry**: Dynamic strategy registration and capability-based routing
 
 ### 2. Scaling Strategy
 - **Horizontal Scaling**: Support multi-pod deployment with load balancing
 - **Vertical Scaling**: Dynamic agent resource adjustment based on load
 - **Modular Design**: Loose coupling design for independent component scaling
+- **Strategy Isolation**: Each execution strategy can scale independently
+
+### 3. Execution Strategy Design
+- **Plugin Architecture**: New execution patterns can be added without core system changes
+- **Priority-based Selection**: Multiple strategies can handle the same task type with defined priorities
+- **External Integration**: Support for both internal execution and external workflow engine delegation
+- **Framework Agnostic**: Consistent behavior across ADK, AutoGen, and LangGraph frameworks
 
 ## Security and Compliance
 
