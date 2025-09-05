@@ -205,3 +205,6 @@ models/
 # Monitoring and observability
 prometheus/
 grafana/
+
+# Claude Code configuration - do not commit
+CLAUDE.md

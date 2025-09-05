@@ -34,6 +34,9 @@ class DevTools:
     def help(self):
         """Show available commands."""
         print("Available commands:")
+        print("  venv-init       Create and show activation for virtual environment")
+        print("  venv-setup      Set up virtual environment")
+        print("  venv-activate   Show activation command")
         print("  install         Install production dependencies")
         print("  dev-install     Install development dependencies") 
         print("  compile-deps    Compile requirements files")
@@ -49,6 +52,53 @@ class DevTools:
         print("  type-check      Run type checking")
         print("  setup-dev       Set up development environment")
         print("  version         Show current version")
+        
+    def venv_init(self):
+        """Create virtual environment and show activation command."""
+        exit_code = self.venv_setup()
+        if exit_code == 0:
+            print("\n" + "="*50)
+            self.venv_activate()
+        return exit_code
+        
+    def venv_setup(self):
+        """Set up virtual environment."""
+        venv_path = self.project_root / ".venv"
+        
+        if venv_path.exists():
+            print(f"Virtual environment already exists at {venv_path}")
+            return 0
+            
+        print("Creating virtual environment...")
+        exit_code = self.run_command([
+            sys.executable, "-m", "venv", str(venv_path)
+        ])
+        
+        if exit_code == 0:
+            print(f"Virtual environment created at {venv_path}")
+            print("To activate:")
+            if os.name == 'nt':  # Windows
+                print(f"  {venv_path}\\Scripts\\activate.bat")
+            else:  # Unix/Linux/macOS
+                print(f"  source {venv_path}/bin/activate")
+        
+        return exit_code
+        
+    def venv_activate(self):
+        """Show activation command for virtual environment."""
+        venv_path = self.project_root / ".venv"
+        
+        if not venv_path.exists():
+            print("Virtual environment not found. Run 'python dev.py venv-setup' first.")
+            return 1
+            
+        print("To activate virtual environment:")
+        if os.name == 'nt':  # Windows
+            print(f"  {venv_path}\\Scripts\\activate.bat")
+        else:  # Unix/Linux/macOS  
+            print(f"  source {venv_path}/bin/activate")
+        
+        return 0
         
     def compile_deps(self):
         """Compile requirements files."""
