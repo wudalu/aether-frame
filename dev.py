@@ -37,6 +37,8 @@ class DevTools:
         print("  venv-init       Create and show activation for virtual environment")
         print("  venv-setup      Set up virtual environment")
         print("  venv-activate   Show activation command")
+        print("  venv-auto-activate Auto-activate virtual environment (Windows)")
+        print("  venv-status     Check virtual environment status")
         print("  install         Install production dependencies")
         print("  dev-install     Install development dependencies") 
         print("  compile-deps    Compile requirements files")
@@ -78,7 +80,7 @@ class DevTools:
             print(f"Virtual environment created at {venv_path}")
             print("To activate:")
             if os.name == 'nt':  # Windows
-                print(f"  {venv_path}\\Scripts\\activate.bat")
+                print(f"  {venv_path}\\Scripts\\Activate.ps1")
             else:  # Unix/Linux/macOS
                 print(f"  source {venv_path}/bin/activate")
         
@@ -94,11 +96,123 @@ class DevTools:
             
         print("To activate virtual environment:")
         if os.name == 'nt':  # Windows
-            print(f"  {venv_path}\\Scripts\\activate.bat")
+            print(f"  {venv_path}\\Scripts\\Activate.ps1")
         else:  # Unix/Linux/macOS  
             print(f"  source {venv_path}/bin/activate")
         
         return 0
+    
+    def venv_auto_activate(self):
+        """Automatically activate virtual environment (Windows PowerShell only)."""
+        if os.name != 'nt':
+            print("Auto-activation only supported on Windows PowerShell")
+            return 1
+            
+        venv_path = self.project_root / ".venv"
+        
+        if not venv_path.exists():
+            print("Virtual environment not found. Creating it first...")
+            exit_code = self.venv_setup()
+            if exit_code != 0:
+                return exit_code
+        
+        activate_script = venv_path / "Scripts" / "Activate.ps1"
+        
+        if not activate_script.exists():
+            print(f"Activation script not found at {activate_script}")
+            return 1
+        
+        print("Activating virtual environment...")
+        
+        # Try to execute the PowerShell activation script
+        try:
+            exit_code = self.run_command([
+                "powershell", "-ExecutionPolicy", "Bypass", 
+                "-File", str(activate_script)
+            ])
+            
+            if exit_code == 0:
+                print("✓ Virtual environment activated successfully!")
+                print("Note: The activation is only effective in the current PowerShell session.")
+            else:
+                print("✗ Failed to activate virtual environment")
+                print("Try manually running:")
+                print(f"  {activate_script}")
+                
+            return exit_code
+            
+        except Exception as e:
+            print(f"Error activating virtual environment: {e}")
+            print("Try manually running:")
+            print(f"  {activate_script}")
+            return 1
+        
+    def venv_status(self):
+        """Check virtual environment status."""
+        venv_path = self.project_root / ".venv"
+        
+        print("=== Virtual Environment Status ===")
+        
+        # Check if .venv directory exists
+        if venv_path.exists():
+            print(f"✓ Virtual environment exists at: {venv_path}")
+        else:
+            print(f"✗ Virtual environment not found at: {venv_path}")
+            print("Run 'python dev.py venv-init' to create it.")
+            return 1
+        
+        # Check current Python interpreter
+        current_python = sys.executable
+        expected_python = venv_path / ("Scripts/python.exe" if os.name == 'nt' else "bin/python")
+        
+        print(f"\nCurrent Python interpreter: {current_python}")
+        print(f"Expected venv Python: {expected_python}")
+        
+        # Check if we're using the correct Python
+        if str(expected_python) in current_python or current_python == str(expected_python):
+            print("✓ Using project virtual environment")
+            is_correct_venv = True
+        else:
+            print("✗ NOT using project virtual environment")
+            is_correct_venv = False
+        
+        # Check VIRTUAL_ENV environment variable
+        virtual_env = os.environ.get('VIRTUAL_ENV')
+        if virtual_env:
+            print(f"\nVIRTUAL_ENV: {virtual_env}")
+            if str(venv_path) in virtual_env:
+                print("✓ VIRTUAL_ENV points to project venv")
+            else:
+                print("✗ VIRTUAL_ENV points to different location")
+                is_correct_venv = False
+        else:
+            print("\nVIRTUAL_ENV: Not set")
+            print("✗ Virtual environment may not be activated")
+            is_correct_venv = False
+        
+        # Show activation command if not in correct venv
+        if not is_correct_venv:
+            print(f"\nTo activate the correct virtual environment:")
+            if os.name == 'nt':  # Windows
+                print(f"  {venv_path}\\Scripts\\Activate.ps1")
+            else:  # Unix/Linux/macOS
+                print(f"  source {venv_path}/bin/activate")
+        
+        print(f"\nPython version: {sys.version}")
+        
+        # Check if project packages are installed
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("aether_frame")
+            if spec:
+                print("✓ Project package (aether_frame) is available")
+            else:
+                print("✗ Project package (aether_frame) not found")
+                print("Run 'python dev.py dev-install' to install in development mode")
+        except Exception:
+            print("? Could not check project package installation")
+        
+        return 0 if is_correct_venv else 1
         
     def compile_deps(self):
         """Compile requirements files."""

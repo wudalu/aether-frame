@@ -42,8 +42,20 @@ git clone <repository-url>
 cd aether-frame
 ```
 
-2. Install dependencies:
+2. Set up virtual environment and install dependencies:
 ```bash
+# Create virtual environment and get activation command
+python dev.py venv-init
+
+# Activate virtual environment (Windows PowerShell)
+.\.venv\Scripts\Activate.ps1
+# Or on Unix/Linux/macOS
+source .venv/bin/activate
+
+# Auto-activate on Windows (alternative)
+python dev.py venv-auto-activate
+
+# Install development dependencies
 python dev.py dev-install
 ```
 
@@ -79,17 +91,28 @@ See [docs/layout.md](docs/layout.md) for detailed project structure documentatio
 ### Development Commands
 
 ```bash
-# Compile dependencies
-python dev.py compile-deps
+# Virtual environment management
+python dev.py venv-init          # Create venv and show activation
+python dev.py venv-status        # Check venv status
+python dev.py venv-auto-activate # Auto-activate (Windows)
 
-# Install development dependencies
-python dev.py dev-install
+# Dependency management
+python dev.py compile-deps       # Compile requirements
+python dev.py dev-install        # Install dev dependencies
 
-# Run tests
-python dev.py test
+# Code quality
+python dev.py lint              # Run linting checks
+python dev.py format            # Format code
+python dev.py type-check        # Type checking
 
-# Clean cache
-python dev.py clean
+# Testing
+python dev.py test              # Run all tests
+python dev.py test-unit         # Unit tests only
+python dev.py test-coverage     # Tests with coverage
+
+# Utilities
+python dev.py clean             # Clean cache files
+python dev.py version           # Show version
 ```
 
 ### Adding Framework Support
