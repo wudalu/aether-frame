@@ -16,7 +16,7 @@ aether-frame/
 ├── CHANGELOG.md
 ├── .gitignore
 ├── .env.example                    # Environment variable template
-├── Makefile                        # Unified development command management
+├── dev.py                          # Python-based development command management
 ├── docs/                          # Documentation directory
 │   └── architecture.md            # Architecture design document
 ├── scripts/                       # Scripts directory
@@ -204,36 +204,35 @@ infrastructure/
 
 2. **Compile Locked Versions** (`requirements/*.txt`)
    ```bash
-   pip-compile requirements/base.in
-   pip-compile requirements/dev.in
+   python dev.py compile-deps
    ```
 
 3. **Install Dependencies**
    ```bash
    # Production environment
-   pip install -r requirements/base.txt
+   python dev.py install
    
    # Development environment
-   pip install -r requirements/base.txt -r requirements/dev.txt
+   python dev.py dev-install
    ```
 
-### Makefile Commands
+### Development Commands
 
-```makefile
+```bash
 # Compile dependencies
-make compile-deps
+python dev.py compile-deps
 
 # Install production dependencies
-make install
+python dev.py install
 
 # Install development dependencies
-make dev-install
+python dev.py dev-install
 
 # Run tests
-make test
+python dev.py test
 
 # Clean cache
-make clean
+python dev.py clean
 ```
 
 ## Architecture Layer Mapping

@@ -44,7 +44,7 @@ cd aether-frame
 
 2. Install dependencies:
 ```bash
-make dev-install
+python dev.py dev-install
 ```
 
 3. Set up environment variables:
@@ -80,16 +80,16 @@ See [docs/layout.md](docs/layout.md) for detailed project structure documentatio
 
 ```bash
 # Compile dependencies
-make compile-deps
+python dev.py compile-deps
 
 # Install development dependencies
-make dev-install
+python dev.py dev-install
 
 # Run tests
-make test
+python dev.py test
 
 # Clean cache
-make clean
+python dev.py clean
 ```
 
 ### Adding Framework Support
@@ -112,12 +112,12 @@ Aether Frame uses environment variables and configuration files:
 
 ```bash
 # Run all tests
-make test
+python dev.py test
 
 # Run specific test categories
-python -m pytest tests/unit/
-python -m pytest tests/integration/
-python -m pytest tests/e2e/
+python dev.py test-unit
+python dev.py test-integration
+python dev.py test-e2e
 ```
 
 ## Contributing
