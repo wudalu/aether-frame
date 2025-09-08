@@ -16,24 +16,14 @@ graph TB
         ENTRY[AI Assistant]:::selfBuilt
         
         subgraph "Execution Engine"
+            ENGINE[Execution Engine]:::selfBuilt
             ROUTER[Task Router]:::selfBuilt
-            REGISTRY[Strategy Registry]:::selfBuilt
-            
-            subgraph "Execution Strategies"
-                WORKFLOW_EXEC[Workflow Executor]:::selfBuilt
-                REACTIVE_EXEC[Reactive Executor]:::selfBuilt
-                PLANNING_EXEC[Planning Executor]:::selfBuilt
-                CUSTOM_EXEC[Custom Executors...]:::selfBuilt
-            end
         end
-        
-        SM[Session Manager]:::selfBuilt
     end
     
     subgraph "Framework Abstraction Layer"
         FAL[Framework Adapter]:::selfBuilt
-        API[Unified Agent API]:::selfBuilt
-        CONFIG[Framework Config]:::selfBuilt
+        REGISTRY[Framework Registry]:::selfBuilt
     end
     
     subgraph "Multi-Framework Support"
@@ -66,6 +56,7 @@ graph TB
     end
     
     subgraph "Infrastructure Layer"
+        SM[Session Manager]:::selfBuilt
         SS[State Store]:::selfBuilt
         AR[Agent Registry]:::selfBuilt
         TR[Tool Registry]:::selfBuilt
@@ -83,22 +74,15 @@ graph TB
     classDef thirdParty fill:#f9f9f9,stroke:#999,stroke-width:2,stroke-dasharray: 5 5
     classDef selfBuilt fill:#e1f5fe,stroke:#01579b,stroke-width:2
     
-    %% Dependencies
-    ENTRY --> ROUTER
-    ROUTER --> REGISTRY
-    ROUTER --> WORKFLOW_EXEC
-    ROUTER --> REACTIVE_EXEC
-    ROUTER --> PLANNING_EXEC
-    ROUTER --> CUSTOM_EXEC
-    ENTRY --> SM
+    %% Simplified Dependencies
+    ENTRY --> ENGINE
+    ENGINE --> ROUTER
+    ENGINE --> REGISTRY
+    ROUTER --> ENGINE
     
     %% Framework Abstraction Layer connections
-    WORKFLOW_EXEC --> FAL
-    REACTIVE_EXEC --> FAL
-    PLANNING_EXEC --> FAL
-    CUSTOM_EXEC --> FAL
-    FAL --> API
-    API --> CONFIG
+    ENGINE --> REGISTRY
+    REGISTRY --> FAL
     
     %% Framework Selection (configurable)
     FAL -.-> ADK_RT
@@ -110,10 +94,10 @@ graph TB
     LG_RT --> LG_FLOW
     
     %% Agent connections through abstraction
-    API --> DA1
-    API --> DA2
-    API --> DA3
-    API --> DA4
+    FAL --> DA1
+    FAL --> DA2
+    FAL --> DA3
+    FAL --> DA4
     
     DA1 --> T1
     DA2 --> T2
@@ -126,11 +110,12 @@ graph TB
     T4 --> LLM
     
     %% Infrastructure connections
-    FAL --> SS
-    API --> AR
+    ENGINE --> SM
+    ENGINE --> SS
+    FAL --> AR
     SM --> SS
-    FAL --> LG
-    FAL --> MON
+    ENGINE --> LG
+    ENGINE --> MON
     
     SS --> STORAGE
     LG --> DB
@@ -144,10 +129,10 @@ graph TB
     classDef entryPoint fill:#ffebee
     
     class ENTRY entryPoint
-    class ROUTER,REGISTRY,WORKFLOW_EXEC,REACTIVE_EXEC,PLANNING_EXEC,CUSTOM_EXEC,SM executionLayer
+    class ENGINE,ROUTER executionLayer
     class DA1,DA2,DA3,DA4 agentLayer
     class T1,T2,T3,T4 toolLayer
-    class RT,SS,LG,MON infraLayer
+    class SM,SS,LG,MON infraLayer
     class LLM,SE,DB,STORAGE externalLayer
 ```
 
@@ -156,72 +141,69 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant ENTRY as AI Assistant
+    participant ENGINE as Execution Engine
     participant ROUTER as Task Router
-    participant REGISTRY as Strategy Registry
-    participant EXEC as Selected Executor
+    participant REGISTRY as Framework Registry
     participant FAL as Framework Adapter
-    participant API as Unified Agent API
     participant FW as Selected Framework<br/>(ADK/AutoGen/LangGraph)
     participant DA as Domain Agents
     participant Tools as Tools Layer
     participant LLM as LLM Models
 
-    ENTRY->>ENTRY: Analyze task complexity
-    ENTRY->>ROUTER: Route execution request
-    ROUTER->>REGISTRY: Query available strategies
-    REGISTRY-->>ROUTER: Return matching strategies
-    ROUTER->>EXEC: Select and delegate to executor
-    ENTRY->>FAL: Initialize framework
-    FAL->>API: Setup unified interface
-    API->>FW: Configure selected framework
+    ENTRY->>ENTRY: Create ExecutionContext
+    ENTRY->>ENGINE: execute_task(TaskRequest, context)
+    ENGINE->>ROUTER: select_strategy(task, context)
+    ROUTER->>ROUTER: Analyze task complexity
+    ROUTER->>ROUTER: Match against available strategies
+    ROUTER-->>ENGINE: Return StrategyConfig (with target_framework)
+    ENGINE->>REGISTRY: get_adapter(target_framework)
+    REGISTRY-->>ENGINE: Return FrameworkAdapter
+    ENGINE->>FAL: execute_task(task, context)
     
-    alt Workflow Execution (Deterministic Process)
-        EXEC->>FAL: Request workflow execution
-        FAL->>API: Translate workflow request
-        API->>FW: Execute workflow pattern
-        FW->>DA: Sequential/Parallel agent execution
-        DA->>Tools: Call Tool
-        Tools->>LLM: Process request
+    alt ADK Framework Execution
+        FAL->>FAL: Convert TaskRequest to ADK format
+        FAL->>FW: Execute using ADK runtime
+        FW->>DA: Route to domain agents
+        DA->>Tools: Execute tools as needed
+        Tools->>LLM: Process requests
         LLM-->>Tools: Return results
         Tools-->>DA: Tool results
-        DA-->>FW: Step complete
-        FW-->>API: Framework response
-        API-->>FAL: Unified response
-        FAL-->>EXEC: Execution results
+        DA-->>FW: Agent results
+        FW-->>FAL: ADK response
+        FAL->>FAL: Convert to TaskResult
+        FAL-->>ENGINE: Return TaskResult
     
-    else Reactive Execution (Iterative Process)
-        EXEC->>FAL: Request reactive execution
-        FAL->>API: Setup reactive pattern
-        API->>FW: Initialize ReAct pattern
-        FW->>DA: Dynamic agent coordination
-        DA->>Tools: Iterative tool calls
+    else AutoGen Framework Execution
+        FAL->>FAL: Convert TaskRequest to AutoGen format
+        FAL->>FW: Execute using AutoGen runtime
+        FW->>DA: Multi-agent conversation
+        DA->>Tools: Collaborative tool usage
         Tools->>LLM: Generate content
         LLM-->>Tools: Generated content
         Tools-->>DA: Tool results
-        DA-->>FW: Task results
-        FW-->>API: Framework response
-        API-->>FAL: Unified response
-        FAL-->>EXEC: Execution results
+        DA-->>FW: Conversation results
+        FW-->>FAL: AutoGen response
+        FAL->>FAL: Convert to TaskResult
+        FAL-->>ENGINE: Return TaskResult
         
-    else Planning Execution (Complex Process)
-        EXEC->>FAL: Request planning execution
-        FAL->>API: Setup planning pattern
-        API->>FW: Initialize planning workflow
-        FW->>DA: Plan-Execute cycle
-        DA->>Tools: Planned actions
-        Tools->>LLM: Execute planned steps
+    else LangGraph Framework Execution
+        FAL->>FAL: Convert TaskRequest to LangGraph format
+        FAL->>FW: Execute using LangGraph workflow
+        FW->>DA: Graph-based execution
+        DA->>Tools: Workflow tool calls
+        Tools->>LLM: Execute workflow steps
         LLM-->>Tools: Step results
-        Tools-->>DA: Action results
-        DA-->>FW: Planning cycle complete
-        FW-->>API: Framework response
-        API-->>FAL: Unified response
-        FAL-->>EXEC: Execution results
+        Tools-->>DA: Tool results
+        DA-->>FW: Workflow results
+        FW-->>FAL: LangGraph response
+        FAL->>FAL: Convert to TaskResult
+        FAL-->>ENGINE: Return TaskResult
     end
     
-    EXEC-->>ROUTER: Strategy execution complete
-    ROUTER-->>ENTRY: Return final results
+    ENGINE-->>ENTRY: Return TaskResult
     
-    Note over FAL,FW: Framework Abstraction Layer<br/>enables switching between<br/>ADK, AutoGen, LangGraph
+    Note over ENGINE,REGISTRY: Simplified flow:<br/>Strategy → Framework → Execution
+    Note over FAL,FW: Framework Abstraction Layer<br/>handles all framework-specific<br/>conversions and execution
 ```
 
 ## Core Components
@@ -234,59 +216,41 @@ sequenceDiagram
 - **Configuration**: Runtime framework selection based on task requirements or configuration
 - **Benefits**: Framework-agnostic development, easy migration between frameworks
 
-#### Unified Agent API
-- **Role**: Standardized agent interface across all supported frameworks
-- **Function**: Provides consistent agent lifecycle management, state handling, and communication patterns
-- **Abstraction**: Hides framework-specific implementation details from application layer
-- **Extensibility**: Plugin architecture for adding new framework support
-
-#### Framework Configuration
-- **Role**: Dynamic framework selection and configuration management
-- **Supported Frameworks**:
-  - **ADK**: Enterprise-grade, Vertex AI integration, built-in monitoring
-  - **AutoGen**: Multi-agent conversations, research scenarios
-  - **LangGraph**: Graph-based workflows, maximum flexibility
-- **Selection Criteria**: Task complexity, performance requirements, compliance needs
-- **Runtime Switching**: Support for different frameworks within the same application instance
+#### Framework Registry
+- **Role**: Central registry for framework adapter management
+- **Function**: Manages framework adapter instances, provides factory methods, handles lifecycle
+- **Configuration**: Dynamic framework registration and adapter creation
+- **Benefits**: Centralized framework management, easy framework discovery and switching
 
 ### Application Execution Layer
 
 #### AI Assistant
 - **Role**: Analyze incoming tasks and route to execution engine
-- **Decision Logic**: Evaluate task characteristics to determine routing needs
-- **Routing**: Direct tasks to Task Router for strategy selection
-- **Dependencies**: Session Manager for context management
+- **Decision Logic**: Evaluate task characteristics to determine routing needs  
+- **Routing**: Direct tasks to Execution Engine for processing
+- **Dependencies**: Access to Infrastructure Layer services for context management
 
 #### Execution Engine
 
-The Execution Engine replaces the previous binary Workflow Engine + Coordinator Agent design with a flexible, strategy-based approach.
+The Execution Engine provides a simplified, direct approach to framework-based task execution.
+
+**Core Responsibilities**:
+- **Strategy Selection**: Uses TaskRouter to analyze and select appropriate execution strategy
+- **Framework Routing**: Directly maps strategy to framework adapter via FrameworkRegistry
+- **Task Execution**: Delegates execution to selected framework adapter
+- **Result Management**: Returns unified TaskResult regardless of underlying framework
 
 **Task Router**:
 - **Role**: Analyze task characteristics and select appropriate execution strategy
-- **Function**: Routes tasks to registered execution strategies based on task requirements
-- **Extensibility**: Supports rule-based routing with future LLM-based enhancement capability
-- **Integration**: Handles both internal strategy execution and external workflow engine delegation
-
-**Strategy Registry**:
-- **Role**: Manage available execution strategies and their capabilities
-- **Function**: Dynamic strategy registration, capability matching, and priority management
-- **Features**: 
-  - Runtime strategy registration without system restart
-  - Strategy capability querying and discovery
-  - Priority-based strategy selection for overlapping capabilities
-- **Extensibility**: Plugin architecture for adding new execution patterns
-
-**Execution Strategies**:
-- **Workflow Executor**: Handles deterministic, sequential/parallel processes using ADK's workflow agents
-- **Reactive Executor**: Manages iterative, exploratory tasks using ReAct patterns
-- **Planning Executor**: Processes complex multi-step tasks requiring upfront planning
-- **Custom Executors**: Extensible framework for domain-specific execution patterns
+- **Function**: Routes tasks based on task requirements and complexity analysis
+- **Strategy Management**: Maintains and matches against available strategy configurations
+- **Decision Logic**: Rule-based strategy selection with priority-based conflict resolution
 
 **Key Design Principles**:
-1. **Strategy Flexibility**: New execution patterns can be added without modifying core engine
-2. **Framework Agnostic**: Works consistently across ADK, AutoGen, and LangGraph
-3. **External Integration**: Supports integration with external workflow engines
-4. **Backward Compatibility**: Existing workflow logic can migrate smoothly to new architecture
+1. **Direct Framework Mapping**: Strategy configurations directly specify target frameworks
+2. **Simplified Flow**: Eliminates intermediate execution layers for better performance
+3. **Framework Agnostic**: Consistent behavior regardless of underlying framework
+4. **Configuration Driven**: Strategy-framework mapping managed through configuration
 
 ### Core Agent Layer
 
@@ -306,10 +270,16 @@ The Execution Engine replaces the previous binary Workflow Engine + Coordinator 
 
 ### Infrastructure Layer
 
+#### Session Manager
+- **Role**: Session lifecycle management and state persistence
+- **Function**: Manages SessionContext across user interactions and framework boundaries
+- **Features**: Session creation, state synchronization, TTL management, cleanup
+- **Integration**: Used by Framework Abstraction Layer for consistent session handling
+
 #### Framework Runtime (ADK Primary)
 - **Role**: Agent lifecycle management, model invocation, error handling
-- **Configuration**: Google Cloud project, Vertex AI integration for ADK; extensible for other frameworks
-- **Features**: Session management, state synchronization, performance monitoring
+- **Configuration**: Google Cloud project, Vertex AI integration for ADK; extensible for other frameworks  
+- **Features**: Performance monitoring, framework-specific optimizations
 - **Framework Support**: ADK as primary runtime, with abstraction layer for AutoGen/LangGraph integration
 
 #### State Store
@@ -323,18 +293,18 @@ The Execution Engine replaces the previous binary Workflow Engine + Coordinator 
 ### 1. Communication Pattern
 - **State Sharing**: Use ADK context.state for inter-agent data transfer
 - **Async Execution**: Support parallel agent execution for performance
-- **Strategy Registry**: Dynamic strategy registration and capability-based routing
+- **Framework Registry**: Centralized framework adapter management and discovery
 
 ### 2. Scaling Strategy
 - **Horizontal Scaling**: Support multi-pod deployment with load balancing
 - **Vertical Scaling**: Dynamic agent resource adjustment based on load
 - **Modular Design**: Loose coupling design for independent component scaling
-- **Strategy Isolation**: Each execution strategy can scale independently
+- **Framework Isolation**: Each framework adapter can scale independently
 
 ### 3. Execution Strategy Design
-- **Plugin Architecture**: New execution patterns can be added without core system changes
-- **Priority-based Selection**: Multiple strategies can handle the same task type with defined priorities
-- **External Integration**: Support for both internal execution and external workflow engine delegation
+- **Configuration Driven**: Strategy-framework mapping through configuration files
+- **Direct Framework Routing**: Strategies directly specify target frameworks
+- **Simplified Architecture**: Eliminates unnecessary intermediate layers
 - **Framework Agnostic**: Consistent behavior across ADK, AutoGen, and LangGraph frameworks
 
 ## Security and Compliance
