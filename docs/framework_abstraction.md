@@ -14,7 +14,7 @@ The design follows a **layered contract approach**, starting with ADK-compatible
 - **Layered Architecture**: Clear separation following the established system architecture layers
 - **Contract-Driven Design**: Well-defined data contracts between architectural layers
 
-## Architecture Layers and Design Strategy
+## Architecture Overview
 
 ### Layer-by-Layer Design Approach
 
@@ -29,9 +29,7 @@ Following the established architecture in `docs/architecture.md`, we design inte
 - **ADK-Compatible Foundation**: Start with ADK-native data structures, progressively abstract
 - **Top-Down Design**: Begin with execution layer requirements, derive lower layer contracts
 
-## Layer Data Contracts
-
-### Type System Overview and Dependencies
+### Type System Overview
 
 The framework abstraction uses a hierarchical type system with clear dependency relationships:
 
@@ -77,31 +75,11 @@ Multi-modal Content:
 ContentPart → FileReference, ImageReference, ToolCall
 ```
 
-#### Key Dependency Patterns
+## Data Contracts
 
-1. **Inheritance Pattern**: Lower layer contracts inherit and extend upper layer data
-   - `AgentRequest` includes `KnowledgeSource` and `UniversalTool` from `TaskRequest`
-   - `ToolRequest` includes `UserContext` and `SessionContext` for permission propagation
+### Core Request/Response Contracts
 
-2. **Composition Pattern**: Complex types compose simpler types
-   - `TaskRequest` composes `UserContext`, `SessionContext`, `ExecutionConfig`
-   - `UniversalMessage` composes `ContentPart` for multi-modal support
-
-3. **Status Flow**: Status types flow upward through the execution stack
-   - `ToolStatus` → `AgentResponse` → `TaskResult`
-   - Error information bubbles up through `ToolError` → `AgentResponse` → `TaskResult`
-
-4. **Framework Adaptation**: Framework-specific types adapt universal types
-   - `AdkAgentConfig` extends `AgentConfig` for ADK-specific settings
-   - `FrameworkAdapter` manages framework-specific `AgentHandle` instances
-
-5. **Context Propagation**: Context flows down through execution layers
-   - `ExecutionContext` → `TaskRequest` → `AgentRequest` → `ToolRequest`
-   - User permissions and session state maintained throughout execution chain
-
-### 1. Execution Layer ↔ Framework Abstraction Layer Contract
-
-#### TaskRequest (Downward Contract)
+#### TaskRequest (Execution Layer Input)
 ```python
 @dataclass
 class TaskRequest:
@@ -109,495 +87,546 @@ class TaskRequest:
     task_id: str  # Unique identifier for task tracking and monitoring
     task_type: str  # Task category for strategy routing (e.g., "chat", "analysis", "search")
     
-    # Flexible user identification (framework adaptable)
+    # User and session management
     user_context: UserContext  # User identification and permissions
-    
-    # Unified session management
     session_context: SessionContext  # Session tracking across frameworks
     
-    # Universal message format (extensible to other frameworks)
+    # Execution content
     messages: List[UniversalMessage]  # Conversation messages in universal format
-    
-    # Available resources
     available_tools: List[UniversalTool]  # Tools accessible during execution
-    available_knowledge: List[KnowledgeSource]  # Knowledge sources (databases, files, APIs, embeddings)
-    
-    # Execution configuration (unified)
+    available_knowledge: List[KnowledgeSource]  # Knowledge sources
     execution_config: ExecutionConfig  # Runtime settings and framework selection
+```
 
+#### TaskResult (Execution Layer Output)
+```python
+@dataclass
+class TaskResult:
+    task_id: str  # Matching task identifier from request
+    status: TaskStatus  # Execution status: success, error, partial, timeout
+    response: UniversalResponse  # Standardized response content
+    execution_metadata: ExecutionMetadata  # Performance and timing data
+    tool_usage: List[ToolUsage]  # Tools used during execution
+    context_updates: Optional[ContextUpdate] = None  # Context changes from execution
+```
+
+#### AgentRequest (Agent Layer Input)
+```python
+@dataclass
+class AgentRequest:
+    agent_id: str  # Unique agent identifier for tracking
+    agent_type: str  # Agent type mapping to framework classes
+    messages: List[UniversalMessage]  # Conversation messages for agent processing
+    tools: List[UniversalTool]  # Available tools for agent use
+    knowledge_bases: List[KnowledgeSource]  # Available knowledge sources
+    agent_config: AgentConfig  # Agent-specific configuration
+    runtime_config: RuntimeConfig  # Agent runtime parameters
+```
+
+#### AgentResponse (Agent Layer Output)
+```python
+@dataclass
+class AgentResponse:
+    agent_id: str  # Matching agent identifier from request
+    content: UniversalMessage  # Agent's response message
+    tool_usage: List[ToolUsage]  # Tools invoked during processing
+    reasoning_trace: Optional[List[ReasoningStep]] = None  # Agent's reasoning steps
+    agent_state: Optional[AgentState] = None  # Updated agent internal state
+    framework_response: Optional[Dict[str, Any]] = None  # Raw framework response data
+```
+
+#### ToolRequest (Tool Layer Input)
+```python
+@dataclass
+class ToolRequest:
+    tool_name: str  # Tool identifier for invocation
+    parameters: Dict[str, Any]  # Tool input parameters
+    user_context: UserContext  # User identification and permissions
+    session_context: SessionContext  # Session state for context
+    tool_config: ToolConfig  # Tool execution settings
+```
+
+#### ToolResult (Tool Layer Output)
+```python
+@dataclass
+class ToolResult:
+    tool_name: str  # Matching tool identifier from request
+    status: ToolStatus  # Execution status: success, error, timeout, unauthorized
+    result: Union[str, Dict[str, Any], bytes]  # Tool output in appropriate format
+    execution_time: float  # Tool execution duration in seconds
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional tool-specific data
+    error: Optional[ToolError] = None  # Error details when status indicates failure
+```
+
+### Supporting Data Structures
+
+#### User and Session Management
+```python
 @dataclass
 class UserContext:
     """Flexible user identification supporting different frameworks"""
-    # Optional user_id (required by ADK, optional for others)
     user_id: Optional[str] = None  # Explicit user identifier (ADK required)
-    
-    # Alternative identification methods
     user_name: Optional[str] = None  # Human-readable username
     session_token: Optional[str] = None  # Session-based identification
-    
-    # User-specific settings
     permissions: Optional[UserPermissions] = None  # User access permissions
     preferences: Optional[UserPreferences] = None  # User preference settings
     
     def get_adk_user_id(self) -> str:
         """Get or generate user_id for ADK compatibility"""
-        if self.user_id:
-            return self.user_id
-        # Generate from user_name or session_token
-        return self._generate_user_id()
-    
-    def _generate_user_id(self) -> str:
-        """Generate ADK-compatible user_id when not provided"""
-        if self.user_name:
-            return f"user_{hash(self.user_name) % 100000}"
-        if self.session_token:
-            return f"session_{hash(self.session_token) % 100000}"
-        return f"anonymous_{uuid.uuid4().hex[:8]}"
+        pass
 
 @dataclass
 class SessionContext:
     """Unified session management across frameworks"""
-    # Session identification
     session_id: Optional[str] = None  # ADK-compatible session identifier
     conversation_id: Optional[str] = None  # Alternative session tracking ID
-    
-    # Session state
-    conversation_history: List[UniversalMessage] = field(default_factory=list)  # Message history for context
-    session_state: Dict[str, Any] = field(default_factory=dict)  # Framework-specific session data
-    
-    # Session metadata
-    created_at: Optional[datetime] = None  # Session creation timestamp
-    last_activity: Optional[datetime] = None  # Last interaction timestamp
+    conversation_history: List[UniversalMessage] = field(default_factory=list)
+    session_state: Dict[str, Any] = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    last_activity: Optional[datetime] = None
     
     def get_adk_session_id(self) -> Optional[str]:
         """Get ADK-compatible session_id"""
-        return self.session_id or self.conversation_id
-    
-    def ensure_session_id(self) -> str:
-        """Ensure session_id exists for ADK"""
-        if not self.session_id and not self.conversation_id:
-            self.session_id = f"session_{uuid.uuid4().hex[:12]}"
-        return self.get_adk_session_id()
+        pass
+```
 
+#### Message and Content
+```python
 @dataclass
 class UniversalMessage:
     """Framework-agnostic message format with ADK compatibility"""
     role: str  # Message role: "user", "assistant", "system", "tool"
     content: Union[str, List[ContentPart]]  # Message content (text or multi-modal)
-    
-    # Optional framework-specific fields
     author: Optional[str] = None  # ADK uses 'author' instead of 'role'
     name: Optional[str] = None    # AutoGen agent name identifier
     tool_calls: Optional[List[ToolCall]] = None  # Tool invocation requests
     
     def to_adk_format(self) -> Dict[str, Any]:
         """Convert to ADK native format"""
-        return {
-            'author': self.author or self.role,
-            'content': {'parts': self._to_content_parts()}
-        }
-    
-    def to_autogen_format(self) -> Dict[str, Any]:
-        """Convert to AutoGen format (future extension)"""
-        return {
-            'role': self.role,
-            'content': str(self.content),
-            'name': self.name
-        }
+        pass
 
 @dataclass
 class ContentPart:
     """Multi-modal content part compatible with ADK parts structure"""
-    text: Optional[str] = None  # Plain text content
-    function_call: Optional[ToolCall] = None  # Tool/function call request
-    file_reference: Optional[FileReference] = None  # File attachment reference
-    image_reference: Optional[ImageReference] = None  # Image content reference
+    text: Optional[str] = None
+    function_call: Optional[ToolCall] = None
+    file_reference: Optional[FileReference] = None
+    image_reference: Optional[ImageReference] = None
+```
 
+#### Configuration and Metadata
+```python
 @dataclass
 class ExecutionConfig:
     """Unified execution configuration combining runtime and framework settings"""
-    # Runtime execution settings
-    timeout: Optional[int] = None  # Maximum execution time in seconds
-    max_retries: int = 3  # Retry attempts on failure
-    streaming: bool = False  # Enable streaming response
-    parallel_execution: bool = False  # Allow parallel agent execution
-    
-    # Framework selection and configuration
-    preferred_framework: Optional[FrameworkType] = None  # Override strategy-based selection
-    framework_settings: Dict[str, Any] = field(default_factory=dict)  # Framework-specific parameters
-    
-    # Performance and monitoring
-    enable_tracing: bool = True  # Enable execution tracing
-    enable_metrics: bool = True  # Enable performance metrics collection
-    log_level: str = "INFO"  # Logging verbosity level
-```
-
-#### TaskResult (Upward Contract)
-```python
-@dataclass
-class TaskResult:
-    task_id: str  # Matching task identifier from request
-    status: TaskStatus  # Execution status: success, error, partial, timeout
-    
-    # Universal response format
-    response: UniversalResponse  # Standardized response content
-    
-    # Execution metadata
-    execution_metadata: ExecutionMetadata  # Performance and timing data
-    tool_usage: List[ToolUsage]  # Tools used during execution
-    
-    # Updated context
-    context_updates: Optional[ContextUpdate] = None  # Context changes from execution
-
-@dataclass
-class UniversalResponse:
-    """Framework-agnostic response with ADK compatibility"""
-    content: UniversalMessage  # Main response content
-    
-    # ADK-specific fields (optional for other frameworks)
-    actions: Optional[AdkActions] = None  # ADK artifact_delta, state_delta
-    
-    # Extensible for other frameworks
-    framework_specific: Dict[str, Any] = field(default_factory=dict)  # Framework-native response data
-
-@dataclass
-class AdkActions:
-    """ADK-specific action structure"""
-    artifact_delta: Dict[str, Any] = field(default_factory=dict)  # Changes to artifacts
-    requested_auth_configs: Dict[str, Any] = field(default_factory=dict)  # Auth requests
-    state_delta: Dict[str, Any] = field(default_factory=dict)  # State changes
-```
-
-### 2. Framework Abstraction Layer ↔ Agent Layer Contract
-
-#### AgentRequest (Downward Contract)
-```python
-@dataclass
-class AgentRequest:
-    agent_id: str  # Unique agent identifier for tracking
-    agent_type: str  # Agent type mapping to framework classes (e.g., "llm", "workflow", "reactive")
-    
-    # Standardized message sequence
-    messages: List[UniversalMessage]  # Conversation messages for agent processing
-    
-    # Agent resources
-    tools: List[UniversalTool]  # Available tools for agent use
-    knowledge_bases: List[KnowledgeSource]  # Available knowledge sources
-    
-    # Agent configuration (framework-adaptable)
-    agent_config: AgentConfig  # Agent-specific configuration
-    runtime_config: RuntimeConfig  # Agent runtime parameters
-
-@dataclass
-class RuntimeConfig:
-    """Agent runtime execution parameters"""
-    timeout: Optional[int] = None  # Agent execution timeout in seconds
-    max_iterations: Optional[int] = None  # Maximum reasoning iterations
-    enable_streaming: bool = False  # Enable streaming agent responses
-    memory_limit: Optional[int] = None  # Memory usage limit in MB
+    timeout: Optional[int] = None
+    max_retries: int = 3
+    streaming: bool = False
+    parallel_execution: bool = False
+    preferred_framework: Optional[FrameworkType] = None
+    framework_settings: Dict[str, Any] = field(default_factory=dict)
+    enable_tracing: bool = True
+    enable_metrics: bool = True
+    log_level: str = "INFO"
 
 @dataclass
 class AgentConfig:
     """Framework-adaptable agent configuration"""
-    # Universal fields
-    name: str  # Agent display name
-    model: str  # LLM model identifier (e.g., "gemini-pro", "gpt-4")
-    temperature: Optional[float] = None  # Response randomness (0.0-1.0)
-    max_tokens: Optional[int] = None  # Maximum response length
-    
-    # ADK-specific fields
-    adk_config: Optional[AdkAgentConfig] = None  # ADK framework configuration
-    
-    # Future framework configs
-    autogen_config: Optional[Dict[str, Any]] = None  # AutoGen-specific settings
-    langgraph_config: Optional[Dict[str, Any]] = None  # LangGraph-specific settings
+    agent_id: str
+    agent_type: str
+    framework_type: FrameworkType
+    name: str
+    model: str
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    tools: List[UniversalTool] = field(default_factory=list)
+    system_instruction: Optional[str] = None
+    adk_config: Optional[AdkAgentConfig] = None
 
 @dataclass
-class AdkAgentConfig:
-    """ADK-specific agent configuration"""
-    agent_class: str  # ADK agent class: "Agent", "SequentialAgent", "ParallelAgent"
-    generate_content_config: Optional[Dict[str, Any]] = None  # ADK generation parameters
-    enable_tracing: bool = True  # Enable ADK execution tracing
-
-@dataclass
-class KnowledgeSource:
-    """Various types of knowledge sources available to agents"""
-    source_id: str  # Unique identifier for the knowledge source
-    source_type: str  # Type: "vector_db", "sql_db", "file_system", "api", "graph_db", "memory"
-    connection_info: Dict[str, Any]  # Connection parameters specific to source type
-    
-    # Access configuration
-    permissions: Optional[List[str]] = None  # Required permissions to access
-    cache_ttl: Optional[int] = None  # Cache time-to-live in seconds
-    
-    # Metadata
-    description: Optional[str] = None  # Human-readable description
-    schema_info: Optional[Dict[str, Any]] = None  # Structure/schema information
+class StrategyConfig:
+    """Strategy configuration for framework selection"""
+    strategy_name: str
+    applicable_task_types: List[str]
+    complexity_levels: List[TaskComplexity]
+    execution_modes: List[ExecutionMode]
+    target_framework: FrameworkType
+    priority: int
+    description: Optional[str] = None
 ```
 
-#### AgentResponse (Upward Contract)
+#### Tool Definitions
 ```python
 @dataclass
-class AgentResponse:
-    agent_id: str  # Matching agent identifier from request
-    
-    # Response content
-    content: UniversalMessage  # Agent's response message
-    
-    # Agent execution info
-    tool_usage: List[ToolUsage]  # Tools invoked during processing
-    reasoning_trace: Optional[List[ReasoningStep]] = None  # Agent's reasoning steps
-    agent_state: Optional[AgentState] = None  # Updated agent internal state
-    
-    # Framework-specific responses
-    framework_response: Optional[Dict[str, Any]] = None  # Raw framework response data
+class ToolDefinition:
+    """Tool definition with schema and metadata"""
+    name: str  # Tool identifier (may include namespace prefix)
+    description: str  # Tool functionality description
+    parameters_schema: Dict[str, Any]  # JSON Schema for tool parameters
+    supports_streaming: bool = False  # Whether tool supports streaming execution
+    required_permissions: Optional[List[str]] = None  # Required user permissions
+
+@dataclass
+class ToolStreamChunk:
+    """Streaming tool execution chunk"""
+    tool_name: str  # Tool identifier
+    chunk_type: str  # Chunk type: "data", "progress", "error", "complete"
+    content: Union[str, Dict[str, Any]]  # Chunk content
+    is_final: bool = False  # Whether this is the final chunk
+
+@dataclass
+class MCPServerConfig:
+    """MCP server connection configuration"""
+    name: str  # Server identifier (used for namespacing)
+    endpoint: str  # Server endpoint URL
+    transport_type: str = "http"  # Transport: "http", "websocket", "stdio"
+    connection_timeout: int = 30  # Connection timeout in seconds
 ```
 
-### 3. Agent Layer ↔ Tool Layer Contract
-
-#### ToolRequest (Downward Contract)
+#### Enumerations
 ```python
 @dataclass
-class ToolRequest:
-    tool_name: str  # Tool identifier for invocation
-    parameters: Dict[str, Any]  # Tool input parameters
-    
-    # Execution context
-    user_context: UserContext  # User identification and permissions
-    session_context: SessionContext  # Session state for context
-    
-    # Tool-specific configuration
-    tool_config: ToolConfig  # Tool execution settings
+class TaskStatus(Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+    PARTIAL = "partial"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
 
 @dataclass
-class ToolConfig:
-    timeout: Optional[int] = None  # Maximum execution time in seconds
-    retry_count: int = 3  # Number of retry attempts on failure
-    user_permissions: Optional[UserPermissions] = None  # User access level for tool
-```
+class ToolStatus(Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+    UNAUTHORIZED = "unauthorized"
+    NOT_FOUND = "not_found"
 
-#### ToolResult (Upward Contract)
-```python
 @dataclass
-class ToolResult:
-    tool_name: str  # Matching tool identifier from request
-    status: ToolStatus  # Execution status: success, error, timeout, unauthorized
-    
-    # Result content (multi-format support)
-    result: Union[str, Dict[str, Any], bytes]  # Tool output in appropriate format
-    
-    # Execution metadata
-    execution_time: float  # Tool execution duration in seconds
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional tool-specific data
-    
-    # Error information (if applicable)
-    error: Optional[ToolError] = None  # Error details when status indicates failure
+class FrameworkType(Enum):
+    ADK = "adk"
+    AUTOGEN = "autogen"
+    LANGGRAPH = "langgraph"
+
+@dataclass
+class TaskComplexity(Enum):
+    SIMPLE = "simple"
+    MODERATE = "moderate"
+    COMPLEX = "complex"
+    ADVANCED = "advanced"
+
+@dataclass
+class ExecutionMode(Enum):
+    SYNC = "sync"
+    ASYNC = "async"
+    STREAMING = "streaming"
+    BATCH = "batch"
+
+@dataclass
+class AgentStatus(Enum):
+    INITIALIZING = "initializing"
+    READY = "ready"
+    PROCESSING = "processing"
+    IDLE = "idle"
+    ERROR = "error"
+    CLEANUP = "cleanup"
+    TERMINATED = "terminated"
 ```
 
-## Layer Interface Design (Following Architecture Layers)
+## Layer Interface Design
 
-### 1. Application Execution Layer Interfaces
+### Layer Dependencies Overview
 
-Based on the architecture design, the Execution Layer contains AI Assistant and Execution Engine components with their sub-components.
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          Application Execution Layer                             │
+│  AIAssistant ──→ ExecutionEngine ──→ TaskRouter ──→ FrameworkRegistry           │
+│       │               │                    │              │                     │
+│       │               └────────────────────┴──────────────┴─→ FrameworkAdapter │
+└───────┼─────────────────────────────────────────────────────────────────────────┘
+        │
+┌───────▼─────────────────────────────────────────────────────────────────────────┐
+│                        Framework Abstraction Layer                             │
+│                    FrameworkAdapter ──→ AgentManager                           │
+└─────────────────────────────────────────────┼───────────────────────────────────┘
+                                              │
+┌─────────────────────────────────────────────▼───────────────────────────────────┐
+│                           Core Agent Layer                                     │
+│      AgentManager ──→ DomainAgent ──→ AgentHooks                               │
+│           │               │              │                                     │
+│           └───────────────┴──────────────┴──→ Tool Service Layer               │
+└─────────────────────────────────────────────┼───────────────────────────────────┘
+                                              │
+┌─────────────────────────────────────────────▼───────────────────────────────────┐
+│                         Tool Service Layer                                     │
+│  ToolService ──→ Tool ──→ MCPClientManager ──→ MCPClient                       │
+│       │         │                                                             │
+│       │         ├──→ MCPTool                                                  │
+│       │         ├──→ ADKNativeTool                                            │
+│       │         ├──→ ExternalAPITool                                          │
+│       │         └──→ BuiltinTool                                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Inter-Layer Dependencies
+
+#### 1. Application Execution Layer → Framework Abstraction Layer
+- **AIAssistant** creates **ExecutionContext** and delegates to **ExecutionEngine**
+- **ExecutionEngine** uses **TaskRouter** for strategy selection
+- **ExecutionEngine** retrieves **FrameworkAdapter** from **FrameworkRegistry**
+- **ExecutionEngine** delegates task execution to selected **FrameworkAdapter**
+
+#### 2. Framework Abstraction Layer → Core Agent Layer  
+- **FrameworkAdapter** obtains **AgentManager** for agent lifecycle operations
+- **FrameworkAdapter** coordinates with **AgentManager** for agent creation and execution
+- **FrameworkAdapter** converts TaskRequest/TaskResult to/from framework-specific formats
+
+#### 3. Core Agent Layer → Tool Service Layer
+- **AgentManager** provides **DomainAgent** instances with access to **ToolService**
+- **DomainAgent** makes tool execution requests through **ToolService**
+- **AgentHooks** may integrate with **ToolService** for framework-specific tool handling
+
+#### 4. Tool Service Layer Internal Dependencies
+- **ToolService** manages multiple **Tool** implementations
+- **ToolService** uses **MCPClientManager** for MCP tool discovery and execution
+- **MCPClientManager** maintains connections to multiple **MCPClient** instances
+- Each **Tool** subclass implements specific execution patterns
+
+### Intra-Layer Dependencies
+
+#### Application Execution Layer Internal Flow
+```
+AIAssistant → ExecutionEngine → TaskRouter → StrategyConfig
+     ↓              ↓               ↓            ↓
+ExecutionContext ←─ FrameworkRegistry ←─ Framework Selection
+     ↓              ↓
+TaskResult ←─ FrameworkAdapter (selected based on strategy)
+```
+
+#### Framework Abstraction Layer Internal Flow  
+```
+FrameworkAdapter → AgentManager → DomainAgent Factory
+     ↓                 ↓              ↓
+Task Validation → Agent Creation → Framework-Specific Agent
+     ↓                 ↓              ↓  
+Framework Format ← Agent Execution ← Agent Configuration
+```
+
+#### Core Agent Layer Internal Flow
+```
+AgentManager → Agent Factory → DomainAgent → AgentHooks
+     ↓             ↓             ↓            ↓
+Agent Cache → Agent Instance → Processing Flow → Framework Extensions
+     ↓             ↓             ↓            ↓
+Lifecycle Mgmt ← Agent Response ← Hook Points ← Custom Behaviors
+```
+
+#### Tool Service Layer Internal Flow
+```
+ToolService → Tool Discovery → Tool Registry → Tool Execution
+     ↓            ↓               ↓             ↓
+Permission Check → MCPClientManager → Tool Instance → Result Processing
+     ↓            ↓               ↓             ↓
+Access Control ← Namespace Routing ← Tool Types ← Response Format
+                 ↓
+                 MCPClient → MCP Server
+```
+
+### Dependency Injection Pattern
+
+#### Constructor Dependencies (Required)
+- **AIAssistant(ExecutionEngine)**: Requires execution engine for task delegation
+- **ExecutionEngine(TaskRouter, FrameworkRegistry)**: Requires routing and registry services
+- **TaskRouter(List[StrategyConfig])**: Requires strategy configurations for routing decisions
+- **DomainAgent(agent_id, AgentConfig)**: Requires identity and configuration for initialization
+
+#### Runtime Dependencies (Injected)
+- **DomainAgent.set_hooks(AgentHooks)**: Framework-specific hooks injected at runtime
+- **AgentManager.register_agent_factory()**: Framework factories registered during setup
+- **ToolService.register_tool()**: Tools registered during service initialization
+- **FrameworkRegistry.register_adapter()**: Adapters registered during system startup
+
+### Lifecycle Dependencies
+
+#### Initialization Order
+1. **Tool Service Layer**: Initialize ToolService, discover and register tools
+2. **Core Agent Layer**: Set up AgentManager, register agent factories  
+3. **Framework Abstraction Layer**: Create FrameworkAdapters, register with registry
+4. **Application Execution Layer**: Initialize TaskRouter with strategies, create ExecutionEngine
+
+#### Runtime Execution Flow
+1. **Request Entry**: AIAssistant receives TaskRequest
+2. **Strategy Selection**: TaskRouter analyzes and selects execution strategy
+3. **Framework Routing**: ExecutionEngine routes to appropriate FrameworkAdapter
+4. **Agent Coordination**: FrameworkAdapter uses AgentManager for agent operations
+5. **Tool Integration**: DomainAgent accesses ToolService for tool execution
+6. **Response Assembly**: Results flow back through layers to TaskResult
+
+### 1. Application Execution Layer
 
 #### AIAssistant Interface
 ```python
 class AIAssistant:
-    """Entry point for task analysis and routing"""
+    """
+    System entry point that serves as the primary interface for all task requests.
+    
+    Core Capabilities:
+    - Request validation and preprocessing
+    - ExecutionContext creation and management
+    - High-level task coordination through ExecutionEngine
+    - Response formatting and error handling
+    - System-wide monitoring and logging integration
+    
+    Dependencies:
+    - ExecutionEngine: Delegates all task execution operations
+    
+    Why it exists: Provides a clean, stable API facade that shields clients from
+    internal system complexity while ensuring consistent request/response handling
+    across all supported frameworks and execution modes.
+    """
     
     def __init__(self, execution_engine: 'ExecutionEngine'):
         """Initialize with execution engine dependency"""
-        self.execution_engine = execution_engine
+        pass
     
     async def process_request(self, task: TaskRequest) -> TaskResult:
         """Process incoming task request and coordinate execution"""
-        # Create execution context
-        context = ExecutionContext(
-            request_id=str(uuid.uuid4()),
-            start_time=datetime.now(),
-            environment=self._determine_environment()
-        )
-        
-        # Delegate to execution engine
-        return await self.execution_engine.execute_task(task, context)
-    
-    def _determine_environment(self) -> str:
-        """Determine execution environment based on configuration"""
         pass
-
-@dataclass
-class ExecutionContext:
-    """Runtime context for task execution"""
-    request_id: str  # Unique request identifier for tracing
-    start_time: datetime  # Task execution start timestamp
-    correlation_id: Optional[str] = None  # Cross-service correlation identifier
-    client_info: Optional[Dict[str, Any]] = None  # Client application metadata
-    environment: str = "development"  # Execution environment: development, staging, production
 ```
 
 #### ExecutionEngine Interface
 ```python
 class ExecutionEngine:
-    """Unified execution engine with strategy-based framework selection"""
+    """
+    Central orchestration hub that coordinates strategy selection and framework execution.
+    
+    Core Capabilities:
+    - Strategy-based framework routing via TaskRouter
+    - Framework adapter lifecycle management
+    - Cross-framework execution coordination
+    - Performance monitoring and execution metrics
+    - Error handling and recovery strategies
+    - Execution context management
+    
+    Dependencies:
+    - TaskRouter: Analyzes tasks and selects execution strategies
+    - FrameworkRegistry: Provides access to framework adapters
+    - FrameworkAdapter: Executes tasks using framework-specific logic
+    
+    Why it exists: Serves as the intelligent execution coordinator that abstracts
+    multi-framework complexity while providing unified execution semantics,
+    enabling optimal framework selection and consistent execution behavior.
+    """
     
     def __init__(self, task_router: 'TaskRouter', framework_registry: 'FrameworkRegistry'):
         """Initialize with task router and framework registry dependencies"""
-        self.task_router = task_router
-        self.framework_registry = framework_registry
+        pass
     
     async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        """Execute task using strategy-based framework selection
-        - Select execution strategy based on task characteristics
-        - Get framework adapter from strategy configuration
-        - Execute task using selected framework adapter
-        """
-        # Select strategy based on task
-        strategy_config = await self.task_router.select_strategy(task, context)
-        
-        # Get framework adapter based on strategy's target framework
-        framework_adapter = self.framework_registry.get_adapter(strategy_config.target_framework)
-        
-        # Execute task using framework adapter
-        return await framework_adapter.execute_task(task, context)
+        """Execute task using strategy-based framework selection"""
+        pass
     
     def register_framework_adapter(self, framework_type: FrameworkType, adapter: 'FrameworkAdapter') -> None:
         """Register framework adapter in registry"""
-        self.framework_registry.register_adapter(framework_type, adapter)
-    
-    def get_available_strategies(self) -> List[StrategyConfig]:
-        """Get list of available execution strategies"""
-        return self.task_router.list_available_strategies()
+        pass
 ```
 
 #### TaskRouter Interface
 ```python
 class TaskRouter:
-    """Task analysis and strategy selection"""
+    """
+    Intelligent decision engine that analyzes tasks and selects optimal execution strategies.
+    
+    Core Capabilities:
+    - Task complexity analysis and classification
+    - Strategy matching based on task characteristics and requirements
+    - Dynamic strategy registration and priority management
+    - Performance-based strategy optimization over time
+    - Multi-criteria decision making with conflict resolution
+    
+    Dependencies:
+    - StrategyConfig: Configuration objects defining execution strategies
+    - TaskRequest: Input for strategy analysis
+    - ExecutionContext: Additional context for strategy decisions
+    
+    Why it exists: Eliminates manual framework selection by providing intelligent,
+    automated routing that considers task complexity, resource requirements, and
+    framework capabilities to optimize execution performance and resource utilization.
+    """
     
     def __init__(self, available_strategies: List[StrategyConfig]):
         """Initialize with available strategy configurations"""
-        self.available_strategies = available_strategies
+        pass
     
     async def select_strategy(self, task: TaskRequest, context: ExecutionContext) -> StrategyConfig:
-        """Analyze task and select appropriate execution strategy
-        - Analyze task complexity and characteristics
-        - Match against available strategies
-        - Return best matching strategy configuration (includes target_framework)
-        """
-        # Analyze task complexity
-        complexity = self._analyze_task_complexity(task)
-        
-        # Find matching strategies
-        matching_strategies = self._find_matching_strategies(
-            task_type=task.task_type,
-            complexity=complexity
-        )
-        
-        # Select best strategy based on priority
-        return self._select_best_strategy(matching_strategies, task, context)
+        """Analyze task and select appropriate execution strategy"""
+        pass
     
     def register_strategy(self, strategy_config: StrategyConfig) -> None:
         """Register new strategy configuration"""
-        self.available_strategies.append(strategy_config)
-    
-    def list_available_strategies(self) -> List[StrategyConfig]:
-        """List all available strategies"""
-        return self.available_strategies.copy()
-    
-    def _analyze_task_complexity(self, task: TaskRequest) -> TaskComplexity:
-        """Analyze task to determine complexity level"""
-        pass
-    
-    def _find_matching_strategies(self, task_type: str, complexity: TaskComplexity) -> List[StrategyConfig]:
-        """Find strategies that can handle the given task type and complexity"""
-        pass
-    
-    def _select_best_strategy(self, strategies: List[StrategyConfig], task: TaskRequest, context: ExecutionContext) -> StrategyConfig:
-        """Select best strategy from matching candidates based on priority and context"""
         pass
 ```
 
-## 数据契约调整
+### 2. Framework Abstraction Layer
 
-基于简化的执行流程，我们需要确保StrategyConfig包含足够的信息用于框架选择：
-
-```python
-@dataclass
-class StrategyConfig:
-    """Strategy configuration for framework selection"""
-    strategy_name: str  # Unique strategy identifier
-    applicable_task_types: List[str]  # Task types this strategy can handle
-    complexity_levels: List[TaskComplexity]  # Supported complexity levels  
-    execution_modes: List[ExecutionMode]  # Supported execution patterns
-    target_framework: FrameworkType  # Target framework for execution
-    priority: int  # Selection priority when multiple strategies match
-    
-    # Additional strategy metadata
-    description: Optional[str] = None  # Human-readable description
-    resource_requirements: Optional[Dict[str, Any]] = None  # Resource needs (memory, CPU, etc.)
-    performance_characteristics: Optional[Dict[str, Any]] = None  # Expected performance metrics
-```
-
-### 2. Framework Abstraction Layer Interfaces
-
-Based on the architecture design, the Framework Abstraction Layer provides unified execution interfaces for different frameworks. This layer receives framework selection decisions from the Execution Layer and focuses on framework-specific execution.
-
-#### FrameworkRegistry (Core Component)
+#### FrameworkRegistry Interface
 ```python
 class FrameworkRegistry:
-    """Central registry for framework adapters
-    - Manages framework adapter instances
-    - Provides adapter lifecycle management
-    - Handles framework discovery and capabilities
     """
+    Centralized registry that manages all framework adapter instances and their lifecycle.
     
-    def __init__(self):
-        """Initialize empty registry"""
-        self._adapters: Dict[FrameworkType, FrameworkAdapter] = {}
-        self._adapter_configs: Dict[FrameworkType, Dict[str, Any]] = {}
+    Core Capabilities:
+    - Framework adapter registration and discovery
+    - Adapter instance lifecycle management (creation, health monitoring, cleanup)
+    - Framework capability enumeration and reporting
+    - Dynamic framework registration at runtime
+    - Adapter health monitoring and automatic recovery
+    
+    Dependencies:
+    - FrameworkAdapter: Manages instances of framework-specific adapters
+    - FrameworkType: Uses enum to identify and categorize frameworks
+    
+    Why it exists: Provides centralized framework management that enables dynamic
+    framework registration, health monitoring, and clean abstraction between
+    framework selection logic and adapter implementation details.
+    """
     
     def register_adapter(self, framework_type: FrameworkType, adapter: FrameworkAdapter) -> None:
         """Register framework adapter instance"""
-        self._adapters[framework_type] = adapter
+        pass
     
     def get_adapter(self, framework_type: FrameworkType) -> FrameworkAdapter:
         """Get registered adapter for framework type"""
-        if framework_type not in self._adapters:
-            raise ValueError(f"No adapter registered for framework: {framework_type}")
-        return self._adapters[framework_type]
+        pass
     
     def list_available_frameworks(self) -> List[FrameworkType]:
         """List all registered framework types"""
-        return list(self._adapters.keys())
-    
-    def create_and_register_adapter(self, framework_type: FrameworkType, config: Dict[str, Any]) -> FrameworkAdapter:
-        """Create and register new adapter instance with configuration"""
-        adapter = self._create_adapter(framework_type, config)
-        self.register_adapter(framework_type, adapter)
-        return adapter
-    
-    def get_framework_capabilities(self, framework_type: FrameworkType) -> Dict[str, Any]:
-        """Get capabilities of specific framework"""
-        adapter = self.get_adapter(framework_type)
-        return adapter.get_capabilities()
-    
-    def _create_adapter(self, framework_type: FrameworkType, config: Dict[str, Any]) -> FrameworkAdapter:
-        """Factory method for creating framework adapters"""
-        if framework_type == FrameworkType.ADK:
-            return AdkFrameworkAdapter(AdkConfig(**config))
-        # Add other framework types as needed
-        raise ValueError(f"Unsupported framework type: {framework_type}")
+        pass
 ```
 
 #### FrameworkAdapter Interface
 ```python
-from abc import ABC, abstractmethod
-
 class FrameworkAdapter(ABC):
-    """Abstract base for framework-specific execution implementations
-    - Provides unified interface for TaskRequest/TaskResult execution
-    - Handles framework-specific request/response conversion
-    - Encapsulates framework runtime integration
+    """
+    Abstract bridge that encapsulates framework-specific execution logic and provides
+    unified task execution interface regardless of underlying framework implementation.
+    
+    Core Capabilities:
+    - Framework-native task execution coordination (ADK, AutoGen, LangGraph patterns)
+    - Bidirectional data conversion (universal ↔ framework-specific formats)
+    - Framework-specific error handling, recovery, and timeout management
+    - Agent lifecycle delegation through framework-optimized AgentManager
+    - Framework capability reporting and task compatibility validation
+    - Performance monitoring and framework-specific optimization
+    
+    Dependencies:
+    - AgentManager: Delegates agent lifecycle operations to framework-optimized manager
+    - TaskRequest/TaskResult: Converts between universal and framework-specific formats
+    - ExecutionContext: Uses context for framework-specific execution decisions
+    
+    Why it exists: Enables seamless integration of heterogeneous agent frameworks
+    by abstracting framework-specific implementation details while preserving each
+    framework's unique execution patterns, allowing the system to leverage different
+    frameworks' strengths without tight coupling.
     """
     
     @abstractmethod
@@ -607,11 +636,12 @@ class FrameworkAdapter(ABC):
     
     @abstractmethod
     async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        """Execute TaskRequest using framework-specific implementation
-        - Convert TaskRequest to framework-native format
-        - Execute using framework runtime
-        - Convert framework response to TaskResult
-        """
+        """Execute complete task using framework-specific coordination"""
+        pass
+    
+    @abstractmethod
+    def get_agent_manager(self) -> 'AgentManager':
+        """Get framework-optimized agent manager for agent lifecycle operations"""
         pass
     
     @abstractmethod
@@ -625,374 +655,364 @@ class FrameworkAdapter(ABC):
         pass
 ```
 
-#### AdkFrameworkAdapter (Concrete Implementation)
+### 3. Core Agent Layer
+
+#### AgentManager Interface
 ```python
-class AdkFrameworkAdapter(FrameworkAdapter):
-    """ADK framework adapter implementation"""
+class AgentManager:
+    """
+    Universal agent lifecycle coordinator that manages agent creation, execution,
+    and cleanup across different framework implementations.
     
-    def __init__(self, adk_config: AdkConfig):
-        """Initialize with ADK-specific configuration"""
+    Core Capabilities:
+    - Framework-agnostic agent factory registration and management
+    - Agent instance lifecycle (creation, caching, cleanup) with resource tracking
+    - Agent execution coordination with request/response handling
+    - Cross-framework agent capability discovery and reporting
+    - Agent performance monitoring and health checking
+    
+    Dependencies:
+    - DomainAgent: Creates and manages framework-specific agent instances
+    - AgentConfig: Uses configuration to determine agent creation parameters
+    - AgentRequest/AgentResponse: Handles agent communication protocols
+    - FrameworkType: Routes to appropriate framework-specific agent factories
+    
+    Why it exists: Provides unified agent management that abstracts framework
+    differences while enabling framework-specific optimizations, allowing agents
+    from different frameworks to be managed consistently through a single interface.
+    """
+    
+    def register_agent_factory(self, framework_type: FrameworkType, factory: Callable[[AgentConfig], DomainAgent]):
+        """Register factory function for creating framework-specific agents"""
         pass
     
-    def get_framework_type(self) -> FrameworkType:
-        """Return FrameworkType.ADK"""
+    async def create_agent(self, agent_config: AgentConfig) -> DomainAgent:
+        """Create new domain agent instance using registered factory"""
         pass
     
-    async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        """Execute task using ADK runtime
-        - Convert to ADK format using user_id, session_id from TaskRequest
-        - Execute through ADK Agent Engine
-        - Convert ADK response back to TaskResult
-        """
+    async def get_or_create_agent(self, agent_config: AgentConfig) -> DomainAgent:
+        """Get existing agent or create new one"""
         pass
     
-    async def validate_task(self, task: TaskRequest) -> bool:
-        """Validate task compatibility with ADK requirements"""
+    async def invoke_agent(self, agent: DomainAgent, request: AgentRequest) -> AgentResponse:
+        """Execute agent request using domain agent"""
         pass
     
+    async def cleanup_agent(self, agent_id: str) -> bool:
+        """Clean up agent resources and remove from tracking"""
+        pass
+```
+
+#### DomainAgent Interface
+```python
+class DomainAgent(ABC):
+    """
+    Abstract base for framework-specific agent implementations that provides unified
+    agent behavior while supporting framework-specific extensions through hooks.
+    
+    Core Capabilities:
+    - Framework-specific agent logic implementation (ADK, AutoGen, LangGraph)
+    - Unified request processing flow with framework-agnostic interface
+    - Hook-based extension system for framework-specific behaviors
+    - Agent capability reporting and introspection
+    - Resource management and cleanup with proper lifecycle handling
+    
+    Dependencies:
+    - AgentHooks: Uses framework-specific hooks for pre/post processing
+    - AgentRequest/AgentResponse: Processes standardized agent communication
+    - AgentConfig: Uses configuration for agent initialization and behavior
+    - ToolService: Integrates with tool layer for tool execution
+    
+    Why it exists: Provides a consistent agent interface that allows framework-specific
+    implementations to plug into the unified system while maintaining their unique
+    capabilities and execution patterns through the extensible hook system.
+    """
+    
+    def __init__(self, agent_id: str, agent_config: AgentConfig):
+        """Initialize domain agent with ID and configuration"""
+        pass
+    
+    def set_hooks(self, hooks: 'AgentHooks'):
+        """Inject framework-specific hooks implementation"""
+        pass
+    
+    async def process_request(self, request: AgentRequest) -> AgentResponse:
+        """Unified processing flow with hook points"""
+        pass
+    
+    @abstractmethod
+    async def initialize(self) -> bool:
+        """Initialize agent resources and dependencies"""
+        pass
+    
+    @abstractmethod
+    async def cleanup(self) -> bool:
+        """Clean up agent resources and connections"""
+        pass
+    
+    @abstractmethod
     def get_capabilities(self) -> Dict[str, Any]:
-        """Return ADK-specific capabilities (supported models, features, limits)"""
+        """Return agent capabilities and supported operations"""
         pass
 ```
 
-#### Supporting Configuration Classes
+#### AgentHooks Interface
 ```python
-@dataclass
-class AdkConfig:
-    """ADK framework configuration"""
-    project_id: str  # Google Cloud project ID
-    region: str = "us-central1"  # Google Cloud region
-    model_name: str = "gemini-pro"  # Default LLM model
-    enable_tracing: bool = True  # Enable execution tracing
-    timeout_seconds: int = 300  # Request timeout
-    max_retries: int = 3  # Maximum retry attempts
-
-@dataclass
-class FrameworkCapabilities:
-    """Framework capability description"""
-    supported_task_types: List[str]  # Task types this framework can handle
-    supported_execution_modes: List[ExecutionMode]  # Execution modes supported
-    max_concurrent_tasks: int  # Maximum concurrent task execution
-    supports_streaming: bool  # Whether framework supports streaming responses
-    supports_tool_calling: bool  # Whether framework supports tool execution
-    model_providers: List[str]  # Supported model providers (e.g., "google", "openai")
+class AgentHooks:
+    """
+    Extension point system that enables framework-specific customizations to be
+    injected into the unified agent processing flow.
+    
+    Core Capabilities:
+    - Pre-processing hooks for request transformation and validation
+    - Post-processing hooks for response enhancement and formatting
+    - Error handling hooks for framework-specific error recovery
+    - Framework-specific state management and context handling
+    - Custom logging and monitoring integration points
+    
+    Dependencies:
+    - AgentRequest/AgentResponse: Processes and transforms agent communication
+    - Framework-specific components: Integrates with ADK, AutoGen, LangGraph specifics
+    
+    Why it exists: Enables framework-specific behaviors and optimizations to be
+    cleanly integrated into the unified agent processing flow without compromising
+    the framework-agnostic interface, allowing each framework to leverage its
+    unique capabilities while maintaining system consistency.
+    """
+    
+    async def pre_process(self, request: AgentRequest) -> AgentRequest:
+        """Pre-processing hook - can modify request before core processing"""
+        pass
+    
+    async def post_process(self, response: AgentResponse) -> AgentResponse:
+        """Post-processing hook - can modify response after core processing"""
+        pass
+    
+    async def on_error(self, error: Exception, request: AgentRequest) -> Optional[AgentResponse]:
+        """Error handling hook - can provide fallback response"""
+        pass
 ```
 
-#### Supporting Classes
+### 4. Tool Service Layer
+
+#### ToolService Interface
 ```python
-# No additional supporting classes needed at this layer
-# AgentHandle and other agent management concepts belong to Core Agent Layer
+class ToolService:
+    """
+    Unified tool execution service that manages all tool types and provides both
+    external API for agents and internal management capabilities.
+    
+    Core Capabilities:
+    - Multi-type tool execution (MCP, ADK Native, External API, Builtin)
+    - Permission-based access control with user context validation
+    - Synchronous and streaming tool execution patterns
+    - Auto-discovery and registration of tools from various sources
+    - Tool lifecycle management (registration, discovery, cleanup)
+    - Performance monitoring and execution metrics
+    
+    Dependencies:
+    - Tool: Manages concrete tool implementations (MCPTool, ADKNativeTool, etc.)
+    - MCPClientManager: Handles MCP server connections and tool discovery
+    - ToolRequest/ToolResult: Processes tool communication protocols
+    - ExecutionContext: Uses context for tool availability and permissions
+    
+    Why it exists: Provides a unified interface for all tool interactions while
+    abstracting the complexity of different tool types, enabling agents to use
+    tools consistently regardless of their underlying implementation or protocol.
+    """
+    
+    # External API methods (for agents)
+    async def execute_tool(self, request: ToolRequest) -> ToolResult:
+        """Execute tool and return result with permission validation"""
+        pass
+    
+    async def execute_tool_stream(self, request: ToolRequest) -> AsyncIterator[ToolStreamChunk]:
+        """Execute tool with streaming response"""
+        pass
+    
+    async def list_available_tools(self, context: ExecutionContext) -> List[ToolDefinition]:
+        """List all available tools for the given execution context"""
+        pass
+    
+    # Internal management methods
+    async def register_tool(self, name: str, tool: Tool) -> bool:
+        """Register tool implementation with the service"""
+        pass
+    
+    async def discover_tools(self) -> None:
+        """Auto-discovery of tools from various sources"""
+        pass
+    
+    async def initialize(self) -> None:
+        """Initialize tool service and discover all available tools"""
+        pass
 ```
 
-# Additional Supporting Data Structures
-
-## Detailed Type Definitions
-
-@dataclass
-class UniversalTool:
-    """Universal tool definition across frameworks"""
-    name: str  # Tool identifier
-    description: str  # Tool functionality description
-    parameters_schema: Dict[str, Any]  # JSON Schema for tool parameters
-    framework_specific: Dict[str, Any] = field(default_factory=dict)  # Framework-specific tool data
-    version: str = "1.0"  # Tool version for compatibility
-
-@dataclass
-class TaskStatus(Enum):
-    """Task execution status enumeration"""
-    SUCCESS = "success"  # Task completed successfully
-    ERROR = "error"  # Task failed with error
-    PARTIAL = "partial"  # Task partially completed
-    TIMEOUT = "timeout"  # Task exceeded time limit
-    CANCELLED = "cancelled"  # Task was cancelled by user
-
-@dataclass
-class ToolStatus(Enum):
-    """Tool execution status enumeration"""
-    SUCCESS = "success"  # Tool executed successfully
-    ERROR = "error"  # Tool execution failed
-    TIMEOUT = "timeout"  # Tool execution timed out
-    UNAUTHORIZED = "unauthorized"  # User lacks required permissions
-    NOT_FOUND = "not_found"  # Tool not found
-
-@dataclass
-class FrameworkType(Enum):
-    """Supported framework types"""
-    ADK = "adk"  # Google Agent Development Kit
-    AUTOGEN = "autogen"  # Microsoft AutoGen
-    LANGGRAPH = "langgraph"  # LangGraph from LangChain
-
-@dataclass
-class TaskComplexity(Enum):
-    """Task complexity levels for strategy selection"""
-    SIMPLE = "simple"  # Single-turn, basic operations
-    MODERATE = "moderate"  # Multi-turn, tool usage
-    COMPLEX = "complex"  # Multi-agent, planning required
-    ADVANCED = "advanced"  # Long-running, complex workflows
-
-@dataclass
-class ExecutionMode(Enum):
-    """Execution mode patterns"""
-    SYNC = "sync"  # Synchronous execution
-    ASYNC = "async"  # Asynchronous execution
-    STREAMING = "streaming"  # Real-time streaming
-    BATCH = "batch"  # Batch processing
-
-@dataclass
-class ExecutionMetadata:
-    """Metadata about task execution"""
-    start_time: datetime  # Execution start timestamp
-    end_time: datetime  # Execution completion timestamp
-    duration_seconds: float  # Total execution duration
-    framework_used: FrameworkType  # Framework that handled the task
-    strategy_applied: str  # Strategy name that was selected
-    resource_usage: Dict[str, Any] = field(default_factory=dict)  # Resource consumption metrics
-    error_count: int = 0  # Number of errors encountered
-
-@dataclass
-class ToolUsage:
-    """Information about tool usage during execution"""
-    tool_name: str  # Tool identifier
-    invocation_count: int  # Number of times tool was called
-    total_duration: float  # Total time spent in tool execution
-    success_rate: float  # Percentage of successful invocations
-    parameters_used: List[Dict[str, Any]] = field(default_factory=list)  # Parameters passed to tool
-
-@dataclass
-class ContextUpdate:
-    """Updates to context from task execution"""
-    session_state_changes: Dict[str, Any] = field(default_factory=dict)  # Changes to session state
-    user_preference_updates: Dict[str, Any] = field(default_factory=dict)  # Updates to user preferences
-    conversation_summary: Optional[str] = None  # Summary of conversation for context
-    learned_facts: List[str] = field(default_factory=list)  # New facts learned during execution
-
-@dataclass
-class ToolCall:
-    """Tool invocation request structure"""
-    tool_name: str  # Tool to invoke
-    parameters: Dict[str, Any]  # Tool parameters
-    call_id: Optional[str] = None  # Unique call identifier for tracking
-    expected_format: Optional[str] = None  # Expected response format
-
-@dataclass
-class FileReference:
-    """Reference to file content"""
-    file_id: str  # Unique file identifier
-    file_name: str  # Original file name
-    file_type: str  # File MIME type
-    file_size: int  # File size in bytes
-    storage_location: str  # Storage location reference
-    access_permissions: List[str] = field(default_factory=list)  # Required permissions
-
-@dataclass
-class ImageReference:
-    """Reference to image content"""
-    image_id: str  # Unique image identifier
-    image_url: Optional[str] = None  # Image URL if accessible
-    image_format: str = "png"  # Image format (png, jpg, webp)
-    dimensions: Optional[Tuple[int, int]] = None  # Image width and height
-    description: Optional[str] = None  # Alternative text description
-
-@dataclass
-class UserPermissions:
-    """User access permissions"""
-    roles: List[str] = field(default_factory=list)  # User roles
-    permissions: List[str] = field(default_factory=list)  # Specific permissions
-    restrictions: List[str] = field(default_factory=list)  # Access restrictions
-    expires_at: Optional[datetime] = None  # Permission expiration time
-
-@dataclass
-class UserPreferences:
-    """User preference settings"""
-    language: str = "en"  # Preferred language code
-    timezone: str = "UTC"  # User timezone
-    response_format: str = "text"  # Preferred response format
-    verbosity_level: str = "normal"  # Response verbosity: minimal, normal, detailed
-    custom_settings: Dict[str, Any] = field(default_factory=dict)  # Custom user settings
-
-@dataclass
-class ReasoningStep:
-    """Agent reasoning step information"""
-    step_id: str  # Unique step identifier
-    step_type: str  # Step type: observe, think, act, reflect
-    description: str  # Human-readable step description
-    input_data: Dict[str, Any] = field(default_factory=dict)  # Step input
-    output_data: Dict[str, Any] = field(default_factory=dict)  # Step output
-    confidence: Optional[float] = None  # Confidence level (0.0-1.0)
-    timestamp: datetime = field(default_factory=datetime.now)  # Step execution time
-
-@dataclass
-class AgentState:
-    """Agent internal state information"""
-    state_id: str  # Unique state identifier
-    agent_memory: Dict[str, Any] = field(default_factory=dict)  # Agent working memory
-    conversation_context: List[str] = field(default_factory=list)  # Recent conversation context
-    active_goals: List[str] = field(default_factory=list)  # Current agent objectives
-    learned_patterns: Dict[str, Any] = field(default_factory=dict)  # Patterns learned from interactions
-    last_updated: datetime = field(default_factory=datetime.now)  # State last modified time
-
-@dataclass
-class ToolError:
-    """Tool execution error information"""
-    error_code: str  # Error code identifier
-    error_message: str  # Human-readable error message
-    error_type: str  # Error category: validation, execution, timeout, permission
-    stack_trace: Optional[str] = None  # Detailed error stack trace
-    retry_suggestion: Optional[str] = None  # Suggestion for retry or resolution
-```
-
-## Framework Adaptation Examples
-
-### ADK Framework Adapter
+#### Tool Abstract Interface
 ```python
-class AdkFrameworkAdapter(FrameworkAdapter):
-    async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        # Ensure ADK required fields exist
-        user_id = task.user_context.get_adk_user_id()  # Required by ADK
-        session_id = task.session_context.get_adk_session_id()  # Optional
-        
-        # Convert to ADK format
-        adk_request = {
-            'user_id': user_id,
-            'session_id': session_id,
-            'message': self._extract_main_message(task.messages)
-        }
-        
-        return await self._execute_adk_request(adk_request)
-
-class AutoGenFrameworkAdapter(FrameworkAdapter):
-    async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        # AutoGen doesn't require user_id, focuses on conversation flow
-        return await self._execute_autogen_conversation(task.messages)
-
-class LangGraphFrameworkAdapter(FrameworkAdapter):
-    async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
-        # LangGraph can optionally use session_id for state management
-        state = {
-            'messages': [msg.to_langgraph_format() for msg in task.messages],
-            'session_id': task.session_context.get_adk_session_id()
-        }
-        return await self._execute_langgraph_workflow(state)
+class Tool(ABC):
+    """
+    Abstract base class that defines the contract for all tool implementations,
+    enabling polymorphic tool execution across different tool types.
+    
+    Core Capabilities:
+    - Synchronous tool execution with complete result return
+    - Streaming tool execution for long-running operations
+    - Tool definition and schema introspection
+    - Framework-agnostic execution interface
+    - Error handling and status reporting
+    
+    Dependencies:
+    - ToolRequest/ToolResult: Standard tool communication protocols
+    - ToolStreamChunk: Streaming execution data format
+    - ToolDefinition: Tool metadata and schema information
+    
+    Why it exists: Provides a unified interface that allows different tool types
+    (MCP, ADK Native, External API, Builtin) to be used interchangeably by agents
+    and the tool service, enabling polymorphic tool execution and consistent
+    tool management regardless of underlying implementation.
+    """
+    
+    @abstractmethod
+    async def execute(self, request: ToolRequest) -> ToolResult:
+        """Execute tool synchronously and return complete result"""
+        pass
+    
+    @abstractmethod
+    async def execute_stream(self, request: ToolRequest) -> AsyncIterator[ToolStreamChunk]:
+        """Execute tool with streaming response"""
+        pass
+    
+    @abstractmethod
+    async def get_definition(self) -> ToolDefinition:
+        """Get tool definition including schema and metadata"""
+        pass
 ```
 
-## Usage Examples
-
-### Web Application Scenario
+#### MCPClientManager Interface
 ```python
-# User with explicit ID
-task_request = TaskRequest(
-    task_id="web_task_123",
-    task_type="chat",
-    user_context=UserContext(user_id="web_user_123"),
-    session_context=SessionContext(session_id="web_session_456"),
-    messages=[UniversalMessage(role="user", content="Hello")],
-    available_knowledge=[
-        KnowledgeSource(
-            source_id="user_docs",
-            source_type="vector_db",
-            connection_info={"index": "user_documents", "endpoint": "pinecone://..."}
-        )
-    ],
-    execution_config=ExecutionConfig(
-        streaming=True,
-        enable_tracing=True,
-        preferred_framework=FrameworkType.ADK
-    )
-)
+class MCPClientManager:
+    """
+    Specialized manager for Model Context Protocol (MCP) server connections that
+    handles multiple MCP servers with namespace-aware tool discovery and execution.
+    
+    Core Capabilities:
+    - Multi-server MCP connection management with health monitoring
+    - Namespace-aware tool discovery (server_name:tool_name format)
+    - Connection pooling and automatic reconnection handling
+    - Tool routing based on namespace prefixes
+    - Streaming execution support via application/x-ndjson protocol
+    
+    Dependencies:
+    - MCPClient: Individual client connections to MCP servers
+    - MCPServerConfig: Configuration for MCP server connections
+    - ToolDefinition: MCP tool metadata with namespace information
+    
+    Why it exists: Enables integration with multiple MCP servers simultaneously
+    while providing namespace isolation and unified tool discovery, allowing
+    agents to access MCP tools from different providers without naming conflicts
+    or connection complexity.
+    """
+    
+    async def initialize(self) -> None:
+        """Initialize connections to all configured MCP servers"""
+        pass
+    
+    async def discover_all_tools(self) -> List[ToolDefinition]:
+        """Discover tools from all connected MCP servers with namespace prefixes"""
+        pass
+    
+    def get_client(self, server_name: str) -> MCPClient:
+        """Get MCP client for specific server"""
+        pass
+    
+    async def execute_tool(self, namespaced_tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Execute tool on appropriate MCP server using namespace routing"""
+        pass
 ```
 
-### Anonymous Testing Scenario
+#### Tool Implementation Types
 ```python
-# Anonymous user (auto-generates user_id for ADK)
-task_request = TaskRequest(
-    task_id="test_task_123", 
-    task_type="chat",
-    user_context=UserContext(),  # Will auto-generate user_id
-    session_context=SessionContext(),  # Will auto-generate session_id if needed
-    messages=[UniversalMessage(role="user", content="Test message")],
-    available_knowledge=[
-        KnowledgeSource(
-            source_id="test_memory",
-            source_type="memory",
-            connection_info={"type": "in_memory_cache"}
-        )
-    ],
-    execution_config=ExecutionConfig(timeout=30, log_level="DEBUG")
-)
+class MCPTool(Tool):
+    """
+    Model Context Protocol tool implementation that provides streaming HTTP-based
+    tool execution through MCP server connections.
+    
+    Core Capabilities:
+    - Streamable HTTP execution using application/x-ndjson protocol
+    - Namespace-aware tool routing through MCPClientManager
+    - Real-time streaming response handling
+    - MCP server connection management and error recovery
+    
+    Dependencies:
+    - MCPClientManager: Routes execution to appropriate MCP server
+    - MCPClient: Handles actual MCP protocol communication
+    
+    Why it exists: Enables integration with MCP-based tools that support
+    streaming execution, providing real-time tool interaction capabilities.
+    """
+    pass
+
+class ADKNativeTool(Tool):
+    """
+    ADK framework native tool implementation that directly integrates with
+    ADK's built-in tool system and execution patterns.
+    
+    Core Capabilities:
+    - Direct ADK tool system integration
+    - ADK-native data format handling
+    - Framework-optimized execution paths
+    - ADK-specific error handling and recovery
+    
+    Dependencies:
+    - ADK Runtime: Direct integration with ADK tool execution system
+    - ADK Tool Instance: Wraps existing ADK tool implementations
+    
+    Why it exists: Provides optimal performance integration with ADK framework
+    tools while maintaining compatibility with the unified tool interface.
+    """
+    pass
+
+class ExternalAPITool(Tool):
+    """
+    External API tool implementation that wraps REST/GraphQL APIs as tools
+    with proper authentication and error handling.
+    
+    Core Capabilities:
+    - RESTful and GraphQL API integration
+    - Authentication handling (API keys, OAuth, etc.)
+    - HTTP client management with connection pooling
+    - API response transformation to tool result format
+    
+    Dependencies:
+    - HTTP Client: Manages external API connections
+    - API Configuration: Authentication and endpoint configuration
+    
+    Why it exists: Enables integration with external services and APIs as
+    tools, expanding the tool ecosystem beyond framework-specific capabilities.
+    """
+    pass
+
+class BuiltinTool(Tool):
+    """
+    Built-in tool implementation for system-level functions and utilities
+    that don't require external dependencies or complex setup.
+    
+    Core Capabilities:
+    - System utility functions (file operations, data processing)
+    - Mathematical and text processing operations
+    - Simple integration functions and helpers
+    - Direct Python function wrapping
+    
+    Dependencies:
+    - Python Runtime: Direct function execution
+    - System Resources: File system, environment access
+    
+    Why it exists: Provides essential utility functions and system operations
+    that agents commonly need without requiring external tool providers.
+    """
+    pass
 ```
-
-### Complex Analysis Scenario
-```python
-# Multi-source knowledge with database and API access
-task_request = TaskRequest(
-    task_id="analysis_task_456",
-    task_type="analysis", 
-    user_context=UserContext(user_name="data_analyst"),
-    session_context=SessionContext(conversation_id="analysis_session_789"),
-    messages=[UniversalMessage(role="user", content="Analyze Q3 sales data")],
-    available_knowledge=[
-        KnowledgeSource(
-            source_id="sales_db",
-            source_type="sql_db",
-            connection_info={"host": "postgres://...", "database": "sales"}
-        ),
-        KnowledgeSource(
-            source_id="market_api",
-            source_type="api",
-            connection_info={"base_url": "https://api.market-data.com", "auth_type": "bearer"}
-        )
-    ],
-    execution_config=ExecutionConfig(
-        parallel_execution=True,
-        preferred_framework=FrameworkType.LANGGRAPH,
-        framework_settings={"max_graph_depth": 5}
-    )
-)
-```
-
-## Progressive Framework Support Strategy
-
-### Phase 1: ADK-First Implementation
-- Implement all contracts with native ADK compatibility
-- Universal data structures optimized for ADK runtime
-- Minimal conversion overhead for ADK operations
-
-### Phase 2: AutoGen Extension
-- Extend `UniversalMessage` and `AgentConfig` for AutoGen compatibility
-- Add AutoGen-specific adapter implementation
-- Maintain backward compatibility with ADK implementations
-
-### Phase 3: LangGraph Extension
-- Further extend universal contracts for LangGraph patterns
-- Implement LangGraph adapter with state management support
-- Unified interface supporting all three frameworks
-
-### Phase 4: Framework-Agnostic Evolution
-- Optimize universal contracts based on multi-framework experience
-- Remove framework-specific fields where possible
-- Achieve true framework independence in application layer
-
-## Implementation Benefits
-
-### 1. Immediate ADK Compatibility
-- Native ADK data structures and execution patterns
-- Minimal performance overhead
-- Direct integration with Vertex AI Agent Engine
-
-### 2. Extensibility Without Refactoring
-- Universal contracts designed for multi-framework support
-- Progressive enhancement rather than breaking changes
-- Contract-driven development ensures interface stability
-
-### 3. Clear Layer Separation
-- Well-defined responsibilities at each layer
-- Contract-driven interfaces reduce coupling
-- Easy testing and debugging through layer isolation
-
-### 4. Configuration-Driven Architecture
-- Strategy selection through configuration
-- Framework capabilities declared statically
-- Runtime behavior controlled through config files
 
 ## Key Design Decisions
 
@@ -1018,6 +1038,37 @@ task_request = TaskRequest(
 - Task characteristics determine optimal framework
 - Support for delegation to framework-native implementations
 
+### 5. Unified Tool Service Architecture
+- Single ToolService interface handles both management and execution
+- Framework-agnostic tool execution with support for multiple tool types
+- MCP integration with namespace-aware multi-server support
+- Streaming execution capabilities through AsyncIterator pattern
+
+## Implementation Strategy
+
+### Progressive Framework Support Strategy
+
+#### Phase 1: ADK-First Implementation
+- Implement all contracts with native ADK compatibility
+- Universal data structures optimized for ADK runtime
+- Minimal conversion overhead for ADK operations
+
+#### Phase 2: Additional Framework Support
+- TBD: Determine next framework to support (AutoGen, LangGraph, or others)
+- TBD: Extend universal data structures for chosen framework compatibility
+- TBD: Implement framework-specific adapter
+- TBD: Maintain backward compatibility with existing implementations
+
+#### Phase 3: Multi-Framework Integration
+- TBD: Add support for additional frameworks based on requirements
+- TBD: Optimize cross-framework interoperability
+- TBD: Unified interface supporting multiple frameworks simultaneously
+
+#### Phase 4: Framework-Agnostic Evolution
+- Optimize universal contracts based on multi-framework experience
+- Remove framework-specific fields where possible
+- Achieve true framework independence in application layer
+
 ## Implementation Notes
 
 - Layer contracts defined independently of framework specifics
@@ -1025,3 +1076,4 @@ task_request = TaskRequest(
 - Framework adapters handle all framework-specific conversions
 - Universal data structures provide common foundation for all frameworks
 - Progressive enhancement strategy enables smooth evolution from ADK-only to multi-framework support
+- Tool Service Layer provides unified abstraction for all tool types with streaming support
