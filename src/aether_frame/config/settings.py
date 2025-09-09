@@ -1,11 +1,11 @@
 """Application settings using Pydantic."""
 
 from typing import Optional, List
-from pydantic import BaseSettings, Field
-from pydantic_settings import BaseSettings as PydanticBaseSettings
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
-class Settings(PydanticBaseSettings):
+class Settings(BaseSettings):
     """Application settings."""
     
     # Application settings

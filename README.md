@@ -4,28 +4,29 @@ A multi-agent framework abstraction layer supporting ADK, AutoGen, and LangGraph
 
 ## Overview
 
-Aether Frame provides a unified abstraction layer for building multi-agent applications that can seamlessly switch between different agent frameworks. It supports both static workflow execution and dynamic agent coordination patterns.
+Aether Frame provides a unified abstraction layer for building multi-agent applications that can seamlessly switch between different agent frameworks. It supports flexible execution patterns through a strategy-based approach with intelligent framework routing.
 
 ## Key Features
 
 - **Multi-Framework Support**: Unified interface for ADK, AutoGen, and LangGraph
-- **Dual Execution Modes**: Static workflows and dynamic agent coordination
-- **Intelligent Routing**: AI Assistant automatically selects optimal execution pattern
-- **Memory Management**: Built-in session and context management with pluggable storage
-- **Tool Integration**: Extensible tool registry with LLM, search, and external API tools
-- **Observability**: Comprehensive monitoring, logging, and tracing capabilities
+- **Framework Abstraction**: Clean separation between business logic and framework specifics
+- **Intelligent Routing**: AI Assistant automatically selects optimal framework and execution strategy
+- **Unified Data Contracts**: Consistent data structures across all framework integrations
+- **Tool Integration**: Extensible tool registry with MCP, ADK native, external API, and builtin tools
+- **Infrastructure Services**: Built-in session management, logging, monitoring, and storage
 
 ## Architecture
 
-Aether Frame follows a layered architecture:
+Aether Frame follows a layered architecture based on the Framework Abstraction Layer design:
 
-- **Execution Layer**: AI Assistant, Workflow Engine, and Coordinator Agent
-- **Framework Abstraction Layer**: Unified APIs for multiple agent frameworks
-- **Core Agent Layer**: Domain-specific agents and tool services
-- **Infrastructure Layer**: Runtime integrations and external services
-- **Memory Layer**: Session management and context persistence
+- **Application Execution Layer**: AIAssistant, ExecutionEngine, TaskRouter
+- **Framework Abstraction Layer**: FrameworkRegistry and unified interfaces for multiple agent frameworks
+- **Core Agent Layer**: AgentManager and framework-agnostic agent interfaces  
+- **Tool Service Layer**: Unified tool execution service supporting multiple tool types
+- **Infrastructure Layer**: Session, storage, logging, monitoring, and framework-specific adapters
+- **Data Contracts Layer**: Well-defined inter-layer communication structures
 
-For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md) and [docs/framework_abstraction.md](docs/framework_abstraction.md).
 
 ## Quick Start
 
@@ -68,18 +69,28 @@ cp .env.example .env
 ### Basic Usage
 
 ```python
-from aether_frame.execution.ai_assistant import AIAssistant
+from aether_frame import AIAssistant, TaskRequest
 from aether_frame.config.settings import Settings
 
 # Initialize the framework
 settings = Settings()
 assistant = AIAssistant(settings)
 
-# Execute a task (AI Assistant will choose optimal execution mode)
-result = await assistant.execute_task({
-    "description": "Analyze customer feedback and generate insights",
-    "context": {"domain": "customer_service"}
-})
+# Create a task request using data contracts
+task = TaskRequest(
+    task_id="example_001",
+    task_type="chat",
+    description="Analyze customer feedback and generate insights",
+    user_context={"user_id": "user_123"},
+    session_context={"session_id": "session_456"},
+    messages=[],
+    available_tools=[],
+    available_knowledge=[],
+    execution_config={}
+)
+
+# Execute the task (AI Assistant will choose optimal framework and strategy)
+result = await assistant.process_request(task)
 ```
 
 ## Development
@@ -120,8 +131,23 @@ python dev.py version           # Show version
 To add support for a new agent framework:
 
 1. Create a new adapter in `src/aether_frame/framework/new_framework/`
-2. Implement the unified agent interface
-3. Register the framework in the configuration
+2. Implement the `FrameworkAdapter` abstract interface
+3. Create framework-specific agent implementations in `src/aether_frame/agents/new_framework/`
+4. Register the framework adapter with the `FrameworkRegistry`
+
+Example structure:
+```
+# Framework abstraction layer
+src/aether_frame/framework/new_framework/
+├── __init__.py
+└── adapter.py          # NewFrameworkAdapter
+
+# Agent implementations
+src/aether_frame/agents/new_framework/
+├── __init__.py
+├── domain_agent.py     # NewDomainAgent
+└── agent_hooks.py      # NewAgentHooks
+```
 
 ## Configuration
 
