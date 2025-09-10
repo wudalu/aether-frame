@@ -2,7 +2,7 @@
 """Execution Engine - Central orchestration for task processing."""
 
 from typing import Optional
-from ..contracts import TaskRequest, TaskResult, TaskStatus, AgentRequest, AgentConfig
+from ..contracts import TaskRequest, TaskResult, TaskStatus
 from ..config.settings import Settings
 from .task_router import TaskRouter
 from ..framework.framework_registry import FrameworkRegistry
@@ -46,21 +46,10 @@ class ExecutionEngine:
                     error_message=f"Framework {strategy.framework_type} not available"
                 )
             
-            # Create agent request based on strategy
-            agent_request = AgentRequest(
-                agent_type=strategy.agent_type,
-                framework_type=strategy.framework_type,
-                task_request=task_request,
-                agent_config=AgentConfig(
-                    agent_type=strategy.agent_type,
-                    framework_type=strategy.framework_type,
-                    **strategy.agent_config
-                ),
-                runtime_options=strategy.runtime_options
+            # Pass task and strategy to framework adapter - let it handle agent specifics
+            result = await framework_adapter.execute_task_with_strategy(
+                task_request, strategy
             )
-            
-            # Execute through framework adapter
-            result = await framework_adapter.execute_task(agent_request)
             return result
             
         except Exception as e:

@@ -81,20 +81,40 @@ class FrameworkRegistry:
                 pass
     
     async def _auto_load_adapter(self, framework_type: FrameworkType):
-        """Auto-load adapter for the specified framework type."""
+        """Auto-load adapter for the specified framework type with capability config."""
         try:
             if framework_type == FrameworkType.ADK:
                 from ..framework.adk.adk_adapter import AdkFrameworkAdapter
+                from ..config.framework_capabilities import get_framework_capability_config
+                
                 adapter = AdkFrameworkAdapter()
-                self.register_adapter(framework_type, adapter)
+                # Get static capability configuration for ADK
+                capability_config = get_framework_capability_config(framework_type)
+                # Convert to dict for registration
+                config = {
+                    "capabilities": capability_config,
+                    "async_execution": capability_config.async_execution,
+                    "memory_management": capability_config.memory_management,
+                    "observability": capability_config.observability,
+                    "streaming": capability_config.streaming,
+                    "execution_modes": capability_config.execution_modes,
+                    "default_timeout": capability_config.default_timeout,
+                    "max_iterations": capability_config.max_iterations,
+                    **capability_config.extra_config
+                }
+                self.register_adapter(framework_type, adapter, config)
             elif framework_type == FrameworkType.AUTOGEN:
-                # Future implementation
+                # Future implementation with capability config
                 pass
             elif framework_type == FrameworkType.LANGGRAPH:
-                # Future implementation
+                # Future implementation with capability config
                 pass
         except ImportError:
             # Framework not available
+            pass
+        except ValueError as e:
+            # Capability configuration not found
+            print(f"Warning: {e}")
             pass
     
     async def _initialize_adapter(self, framework_type: FrameworkType, adapter: FrameworkAdapter):

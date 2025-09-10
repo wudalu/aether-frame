@@ -2,6 +2,7 @@
 """End-to-end validation test for Aether Frame."""
 
 import pytest
+import pytest_asyncio
 import asyncio
 from aether_frame.contracts import (
     TaskRequest, UserContext, SessionContext, ExecutionContext, 
@@ -19,7 +20,7 @@ from aether_frame.config.settings import Settings
 class TestEndToEndFlow:
     """Test complete end-to-end execution flow."""
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def ai_assistant(self):
         """Create AI Assistant with ADK framework."""
         settings = Settings()
@@ -29,7 +30,23 @@ class TestEndToEndFlow:
         await adk_adapter.initialize()
         
         framework_registry = FrameworkRegistry()
-        await framework_registry.register_adapter(FrameworkType.ADK, adk_adapter)
+        
+        # Register ADK adapter with capability configuration
+        from aether_frame.config.framework_capabilities import get_framework_capability_config
+        capability_config = get_framework_capability_config(FrameworkType.ADK)
+        config = {
+            "capabilities": capability_config,
+            "async_execution": capability_config.async_execution,
+            "memory_management": capability_config.memory_management,
+            "observability": capability_config.observability,
+            "streaming": capability_config.streaming,
+            "execution_modes": capability_config.execution_modes,
+            "default_timeout": capability_config.default_timeout,
+            "max_iterations": capability_config.max_iterations,
+            **capability_config.extra_config
+        }
+        
+        framework_registry.register_adapter(FrameworkType.ADK, adk_adapter, config)
         
         task_router = TaskRouter(settings)
         execution_engine = ExecutionEngine(framework_registry, settings)

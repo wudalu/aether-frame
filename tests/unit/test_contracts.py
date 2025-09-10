@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """Tests for contract data structures."""
 
-import pytest
+import sys
+import os
+
+# Add project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(project_root, 'src'))
+
 from aether_frame.contracts import (
     TaskRequest, TaskResult, AgentRequest, AgentResponse, ToolRequest, ToolResult,
     UserContext, SessionContext, ExecutionContext, UniversalMessage, UniversalTool, KnowledgeSource,
@@ -238,4 +244,43 @@ class TestComplexMessages:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__])
+    # Run all tests
+    print("🧪 Running Unit Tests for Data Contracts")
+    print("=" * 50)
+    
+    test_creation = TestDataStructureCreation()
+    test_adk = TestADKCompatibility()
+    test_complex = TestComplexMessages()
+    
+    tests = [
+        (test_creation, "test_task_request_creation"),
+        (test_creation, "test_universal_message_creation"),
+        (test_creation, "test_tool_call_and_content_part"),
+        (test_creation, "test_universal_tool_creation"),
+        (test_creation, "test_agent_config_creation"),
+        (test_creation, "test_execution_strategy_creation"),
+        (test_adk, "test_user_context_adk_user_id"),
+        (test_adk, "test_session_context_adk_session_id"),
+        (test_adk, "test_task_request_adk_conversion"),
+        (test_complex, "test_universal_message_with_tool_calls"),
+        (test_complex, "test_universal_message_with_content_parts"),
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for test_obj, test_method in tests:
+        try:
+            getattr(test_obj, test_method)()
+            print(f"✅ {test_method}")
+            passed += 1
+        except Exception as e:
+            print(f"❌ {test_method}: {e}")
+            failed += 1
+    
+    print("=" * 50)
+    print(f"📊 Results: {passed} passed, {failed} failed")
+    if failed == 0:
+        print("🎉 All unit tests passed!")
+    else:
+        print("⚠️  Some tests failed")
