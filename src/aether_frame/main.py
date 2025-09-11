@@ -12,27 +12,27 @@ async def main() -> None:
     """Main application entry point."""
     # Load configuration
     settings = Settings()
-    
+
     # Setup logging
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
+
     logger = logging.getLogger(__name__)
     logger.info(f"Starting Aether Frame v{settings.app_version}")
-    
+
     # Initialize AI Assistant
     assistant = AIAssistant(settings)
-    
+
     # Example usage
     task = {
         "description": "Example task for demonstration",
-        "context": {"domain": "example"}
+        "context": {"domain": "example"},
     }
-    
+
     try:
-        result = await assistant.execute_task(task)
+        result = await assistant.process_request(task)
         logger.info(f"Task completed: {result}")
     except Exception as e:
         logger.error(f"Task failed: {e}")

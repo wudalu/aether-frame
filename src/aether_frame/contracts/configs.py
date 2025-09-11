@@ -2,13 +2,15 @@
 """Configuration data structures for Aether Frame."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
-from .enums import FrameworkType, ExecutionMode, TaskComplexity
+from typing import Any, Dict, List, Optional
+
+from .enums import ExecutionMode, FrameworkType, TaskComplexity
 
 
 @dataclass
 class AgentConfig:
     """Configuration for agent initialization and behavior."""
+
     agent_type: str
     framework_type: FrameworkType = FrameworkType.ADK
     capabilities: List[str] = field(default_factory=list)
@@ -24,6 +26,7 @@ class AgentConfig:
 @dataclass
 class ExecutionConfig:
     """Configuration for task execution."""
+
     execution_mode: ExecutionMode = ExecutionMode.SYNC
     max_retries: int = 3
     timeout: Optional[int] = None
@@ -38,6 +41,7 @@ class ExecutionConfig:
 @dataclass
 class StrategyConfig:
     """Configuration for strategy selection and routing."""
+
     strategy_name: str
     applicable_task_types: List[str] = field(default_factory=list)
     complexity_levels: List[TaskComplexity] = field(default_factory=list)

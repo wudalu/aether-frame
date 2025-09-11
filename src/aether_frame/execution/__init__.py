@@ -9,8 +9,8 @@ This module provides the main execution orchestration:
 """
 
 from .ai_assistant import AIAssistant
-from .execution_engine import ExecutionEngine  
-from .task_router import TaskRouter, ExecutionStrategy
+from .execution_engine import ExecutionEngine
+from .task_router import ExecutionStrategy, TaskRouter
 
 __all__ = [
     "AIAssistant",

@@ -2,11 +2,11 @@
 
 import asyncio
 import hashlib
+import json
 import time
 import uuid
-from typing import Any, Dict, Optional, Callable, Awaitable
 from datetime import datetime, timezone
-import json
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from aether_frame.common.exceptions import TimeoutError
 
@@ -46,9 +46,7 @@ def deserialize_json(json_str: str) -> Any:
 
 
 async def with_timeout(
-    coro: Awaitable[Any], 
-    timeout: float, 
-    error_message: Optional[str] = None
+    coro: Awaitable[Any], timeout: float, error_message: Optional[str] = None
 ) -> Any:
     """Execute coroutine with timeout."""
     try:
@@ -77,23 +75,23 @@ def truncate_string(text: str, max_length: int = 100) -> str:
     """Truncate string to maximum length."""
     if len(text) <= max_length:
         return text
-    return text[:max_length - 3] + "..."
+    return text[: max_length - 3] + "..."
 
 
 class Timer:
     """Context manager for timing operations."""
-    
+
     def __init__(self):
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
-    
+
     def __enter__(self):
         self.start_time = time.time()
         return self
-    
+
     def __exit__(self, *args):
         self.end_time = time.time()
-    
+
     @property
     def elapsed(self) -> float:
         """Get elapsed time in seconds."""

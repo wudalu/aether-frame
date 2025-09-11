@@ -8,8 +8,8 @@ for agent implementations across different frameworks:
 - agent_hooks.py: AgentHooks interface for framework-specific extensions
 """
 
-from .domain_agent import DomainAgent
 from .agent_hooks import AgentHooks
+from .domain_agent import DomainAgent
 
 __all__ = [
     "DomainAgent",

@@ -6,7 +6,7 @@ from aether_frame.common.types import FrameworkType
 SUPPORTED_FRAMEWORKS = [
     FrameworkType.ADK.value,
     FrameworkType.AUTOGEN.value,
-    FrameworkType.LANGGRAPH.value
+    FrameworkType.LANGGRAPH.value,
 ]
 
 # Default configuration values

@@ -6,6 +6,7 @@ from enum import Enum
 
 class FrameworkType(Enum):
     """Supported agent frameworks."""
+
     ADK = "adk"
     AUTOGEN = "autogen"
     LANGGRAPH = "langgraph"
@@ -13,6 +14,7 @@ class FrameworkType(Enum):
 
 class TaskStatus(Enum):
     """Task execution status."""
+
     SUCCESS = "success"
     ERROR = "error"
     PARTIAL = "partial"
@@ -22,6 +24,7 @@ class TaskStatus(Enum):
 
 class ToolStatus(Enum):
     """Tool execution status."""
+
     SUCCESS = "success"
     ERROR = "error"
     TIMEOUT = "timeout"
@@ -31,6 +34,7 @@ class ToolStatus(Enum):
 
 class TaskComplexity(Enum):
     """Task complexity levels for strategy selection."""
+
     SIMPLE = "simple"
     MODERATE = "moderate"
     COMPLEX = "complex"
@@ -39,6 +43,7 @@ class TaskComplexity(Enum):
 
 class ExecutionMode(Enum):
     """Execution modes."""
+
     SYNC = "sync"
     ASYNC = "async"
     STREAMING = "streaming"
@@ -47,6 +52,7 @@ class ExecutionMode(Enum):
 
 class AgentStatus(Enum):
     """Agent lifecycle status."""
+
     INITIALIZING = "initializing"
     READY = "ready"
     PROCESSING = "processing"

@@ -8,13 +8,13 @@ This module provides the agent management and lifecycle functionality:
 - adk/: ADK-specific domain agent implementations
 """
 
+from .adk import AdkAgentHooks, AdkDomainAgent
+from .base import AgentHooks, DomainAgent
 from .manager import AgentManager
-from .base import DomainAgent, AgentHooks
-from .adk import AdkDomainAgent, AdkAgentHooks
 
 __all__ = [
     "AgentManager",
-    "DomainAgent", 
+    "DomainAgent",
     "AgentHooks",
     "AdkDomainAgent",
     "AdkAgentHooks",

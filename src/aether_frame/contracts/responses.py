@@ -3,7 +3,8 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from .contexts import ExecutionContext, UniversalMessage
 from .enums import TaskStatus, ToolStatus
 
@@ -11,6 +12,7 @@ from .enums import TaskStatus, ToolStatus
 @dataclass
 class TaskResult:
     """Unified task result from framework processing."""
+
     task_id: str
     status: TaskStatus
     result_data: Optional[Dict[str, Any]] = None
@@ -26,6 +28,7 @@ class TaskResult:
 @dataclass
 class AgentResponse:
     """Response from agent execution."""
+
     agent_id: Optional[str] = None
     agent_type: str = "general"
     task_result: Optional[TaskResult] = None
@@ -39,6 +42,7 @@ class AgentResponse:
 @dataclass
 class ToolResult:
     """Result from tool execution."""
+
     tool_name: str
     status: ToolStatus
     tool_namespace: Optional[str] = None

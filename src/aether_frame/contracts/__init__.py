@@ -5,37 +5,50 @@ This module contains all the data structures that define contracts between
 different layers of the architecture:
 
 - requests.py: Request data structures (TaskRequest, AgentRequest, ToolRequest)
-- responses.py: Response data structures (TaskResult, AgentResponse, ToolResult)  
+- responses.py: Response data structures (TaskResult, AgentResponse, ToolResult)
 - contexts.py: Context data structures (UserContext, SessionContext, ExecutionContext)
 - configs.py: Configuration data structures (AgentConfig, ExecutionConfig, StrategyConfig)
 - enums.py: Enumerations (FrameworkType, TaskStatus, ToolStatus, etc.)
 """
 
-from .requests import TaskRequest, AgentRequest, ToolRequest
-from .responses import TaskResult, AgentResponse, ToolResult
-from .contexts import (
-    UserContext, SessionContext, ExecutionContext,
-    UserPermissions, UserPreferences,
-    UniversalMessage, UniversalTool, KnowledgeSource,
-    ToolCall, FileReference, ImageReference, ContentPart
-)
 from .configs import AgentConfig, ExecutionConfig, StrategyConfig
-from .enums import FrameworkType, TaskStatus, ToolStatus, TaskComplexity, ExecutionMode, AgentStatus
+from .contexts import (
+    ContentPart,
+    ExecutionContext,
+    FileReference,
+    ImageReference,
+    KnowledgeSource,
+    SessionContext,
+    ToolCall,
+    UniversalMessage,
+    UniversalTool,
+    UserContext,
+    UserPermissions,
+    UserPreferences,
+)
+from .enums import (
+    AgentStatus,
+    ExecutionMode,
+    FrameworkType,
+    TaskComplexity,
+    TaskStatus,
+    ToolStatus,
+)
+from .requests import AgentRequest, TaskRequest, ToolRequest
+from .responses import AgentResponse, TaskResult, ToolResult
 
 __all__ = [
     # Request types
     "TaskRequest",
-    "AgentRequest", 
+    "AgentRequest",
     "ToolRequest",
-    
     # Response types
     "TaskResult",
     "AgentResponse",
     "ToolResult",
-    
     # Context types
     "UserContext",
-    "SessionContext", 
+    "SessionContext",
     "ExecutionContext",
     "UserPermissions",
     "UserPreferences",
@@ -46,16 +59,14 @@ __all__ = [
     "FileReference",
     "ImageReference",
     "ContentPart",
-    
     # Configuration types
     "AgentConfig",
     "ExecutionConfig",
     "StrategyConfig",
-    
     # Enums
     "FrameworkType",
     "TaskStatus",
-    "ToolStatus", 
+    "ToolStatus",
     "TaskComplexity",
     "ExecutionMode",
     "AgentStatus",

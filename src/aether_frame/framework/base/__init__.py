@@ -8,10 +8,10 @@ for framework-specific implementations:
 - agent_manager.py: AgentManager interface for agent lifecycle management
 """
 
-from .framework_adapter import FrameworkAdapter
 from .agent_manager import AgentManager
+from .framework_adapter import FrameworkAdapter
 
 __all__ = [
     "FrameworkAdapter",
-    "AgentManager", 
+    "AgentManager",
 ]
