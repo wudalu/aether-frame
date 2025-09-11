@@ -74,6 +74,9 @@ class AgentManager(AgentManagerInterface):
     ) -> AgentResponse:
         """
         Execute an agent with the given request.
+        
+        Creates a temporary agent instance for the request execution,
+        then cleans it up after completion.
 
         Args:
             agent_request: Request containing execution details
@@ -81,10 +84,12 @@ class AgentManager(AgentManagerInterface):
         Returns:
             AgentResponse: Response from agent execution
         """
-        agent_id = agent_request.agent_id
-        if not agent_id or agent_id not in self._agents:
-            raise ValueError(f"Agent {agent_id} not found")
-
+        # Create temporary agent for this request
+        if not agent_request.agent_config:
+            raise ValueError("Agent config is required for execution")
+            
+        agent_id = await self.create_agent(agent_request.agent_config)
+        
         try:
             # Execute through domain agent
             agent = self._agents[agent_id]
@@ -108,6 +113,9 @@ class AgentManager(AgentManagerInterface):
                 error_details=f"Agent execution failed: {str(e)}",
                 metadata=agent_request.metadata,
             )
+        finally:
+            # Cleanup temporary agent
+            await self.destroy_agent(agent_id)
 
     async def get_agent_status(self, agent_id: str) -> Dict[str, Any]:
         """
@@ -165,6 +173,21 @@ class AgentManager(AgentManagerInterface):
             del self._agent_configs[agent_id]
 
     async def get_agent_metrics(self, agent_id: str) -> Dict[str, Any]:
+        """
+        Get performance metrics for an agent.
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            Dict[str, Any]: Agent performance metrics
+        """
+        if agent_id not in self._agents:
+            return {}
+
+        # Get metrics from domain agent state
+        agent_state = await self._agents[agent_id].get_state()
+        return agent_state.get("metrics", {})
         """
         Get performance metrics for an agent.
 

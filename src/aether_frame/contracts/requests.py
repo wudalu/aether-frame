@@ -75,7 +75,6 @@ class TaskRequest:
 class AgentRequest:
     """Request for agent execution within a framework."""
 
-    agent_id: Optional[str] = None
     agent_type: str = "general"
     framework_type: FrameworkType = FrameworkType.ADK
     task_request: Optional[TaskRequest] = None
