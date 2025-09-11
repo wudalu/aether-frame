@@ -3,10 +3,12 @@
 Aether Frame - Multi-Agent Framework Abstraction Layer
 
 A unified abstraction layer for building multi-agent applications
-that can seamlessly switch between different agent frameworks (ADK, AutoGen, LangGraph).
+that can seamlessly switch between different agent frameworks
+(ADK, AutoGen, LangGraph).
 
 Architecture Layers:
-- Application Execution Layer: AIAssistant, ExecutionEngine, TaskRouter
+- Application Execution Layer: AIAssistant, ExecutionEngine,
+  TaskRouter
 - Framework Abstraction Layer: FrameworkRegistry, FrameworkAdapter implementations
 - Core Agent Layer: AgentManager, DomainAgent, AgentHooks implementations
 - Tool Service Layer: ToolService, Tool implementations
@@ -22,4 +24,6 @@ from aether_frame.config.settings import Settings
 from aether_frame.contracts import TaskRequest, TaskResult
 from aether_frame.execution import AIAssistant
 
-__all__ = ["Settings", "AIAssistant", "TaskRequest", "TaskResult", "__version__"]
+__all__ = [
+    "Settings", "AIAssistant", "TaskRequest", "TaskResult", "__version__"
+]

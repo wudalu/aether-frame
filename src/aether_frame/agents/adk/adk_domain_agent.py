@@ -2,7 +2,7 @@
 """ADK Domain Agent Implementation."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ...contracts import AgentRequest, TaskResult, TaskStatus, UniversalMessage
 from ..base.domain_agent import DomainAgent
@@ -20,8 +20,9 @@ class AdkDomainAgent(DomainAgent):
     def __init__(self, agent_id: str, config: Dict[str, Any]):
         """Initialize ADK domain agent."""
         super().__init__(agent_id, config)
-        # FIXME: Use factory pattern for agent creation instead of direct framework check
-        # See CLAUDE.md - AgentManager should use registered factories, not if/elif framework selection
+        # FIXME: Use factory pattern for agent creation instead of direct
+        # framework check See CLAUDE.md - AgentManager should use
+        # registered factories, not if/elif framework selection
         self.adk_agent = None
         self.hooks = AdkAgentHooks(self)
 
@@ -34,7 +35,9 @@ class AdkDomainAgent(DomainAgent):
                 from google.adk.agents import Agent, LlmAgent
 
                 # Determine agent type based on configuration
-                agent_type = self.config.get("agent_type", "conversational_agent")
+                agent_type = self.config.get(
+                    "agent_type", "conversational_agent"
+                )
                 model = self.config.get("model_config", {}).get(
                     "model", "gemini-2.0-flash"
                 )
@@ -45,21 +48,27 @@ class AdkDomainAgent(DomainAgent):
                 )
 
                 # Create simple ADK agent based on type
-                if agent_type in ["conversational_agent", "general_agent"]:
+                if agent_type in [
+                    "conversational_agent", "general_agent"
+                ]:
                     self.adk_agent = Agent(
-                        name=self.agent_id, model=model, instruction=system_instruction
+                        name=self.agent_id,
+                        model=model,
+                        instruction=system_instruction
                     )
                 else:
                     # Use LlmAgent for other types
                     self.adk_agent = LlmAgent(
-                        name=self.agent_id, model=model, instruction=system_instruction
+                        name=self.agent_id,
+                        model=model,
+                        instruction=system_instruction
                     )
 
                 # Apply ADK-specific hooks
                 await self.hooks.on_agent_created()
                 self._initialized = True
 
-            except ImportError as import_err:
+            except ImportError:
                 # ADK not installed - use mock implementation
                 self.adk_agent = None
                 await self.hooks.on_agent_created()
@@ -117,7 +126,9 @@ class AdkDomainAgent(DomainAgent):
 
             return error_result
 
-    async def _execute_adk_task(self, agent_request: AgentRequest) -> TaskResult:
+    async def _execute_adk_task(
+        self, agent_request: AgentRequest
+    ) -> TaskResult:
         """Execute task using ADK native functionality."""
         task_request = agent_request.task_request
 
@@ -125,7 +136,9 @@ class AdkDomainAgent(DomainAgent):
             # Use real ADK agent
             try:
                 # Convert our messages to ADK format
-                adk_input = self._convert_messages_for_adk(task_request.messages)
+                adk_input = self._convert_messages_for_adk(
+                    task_request.messages
+                )
 
                 # Execute through ADK agent using standard chat interface
                 # ADK agents use chat() method for conversation
@@ -285,6 +298,6 @@ class AdkDomainAgent(DomainAgent):
             await self.hooks.on_agent_destroyed()
             self._initialized = False
 
-        except Exception as e:
+        except Exception:
             # Log error but don't raise to avoid blocking cleanup
             pass

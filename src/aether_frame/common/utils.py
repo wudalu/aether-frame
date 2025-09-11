@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Dict, Optional
 
 from aether_frame.common.exceptions import TimeoutError
 

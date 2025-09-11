@@ -48,6 +48,7 @@ class ExecutionMode(Enum):
     ASYNC = "async"
     STREAMING = "streaming"
     BATCH = "batch"
+    INTERACTIVE = "interactive"  # New: Live streaming mode
 
 
 class AgentStatus(Enum):
@@ -60,3 +61,26 @@ class AgentStatus(Enum):
     ERROR = "error"
     CLEANUP = "cleanup"
     TERMINATED = "terminated"
+
+
+class TaskChunkType(Enum):
+    """Streaming task chunk types for live execution."""
+
+    PROCESSING = "processing"
+    TOOL_CALL_REQUEST = "tool_call_request"
+    TOOL_APPROVAL_REQUEST = "tool_approval_request"
+    USER_INPUT_REQUEST = "user_input_request"
+    RESPONSE = "response"
+    PROGRESS = "progress"
+    COMPLETE = "complete"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+
+
+class InteractionType(Enum):
+    """Types of user interactions during live execution."""
+
+    TOOL_APPROVAL = "tool_approval"
+    USER_INPUT = "user_input"
+    CONFIRMATION = "confirmation"
+    CANCELLATION = "cancellation"

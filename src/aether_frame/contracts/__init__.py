@@ -4,11 +4,17 @@
 This module contains all the data structures that define contracts between
 different layers of the architecture:
 
-- requests.py: Request data structures (TaskRequest, AgentRequest, ToolRequest)
-- responses.py: Response data structures (TaskResult, AgentResponse, ToolResult)
-- contexts.py: Context data structures (UserContext, SessionContext, ExecutionContext)
-- configs.py: Configuration data structures (AgentConfig, ExecutionConfig, StrategyConfig)
+- requests.py: Request data structures (TaskRequest, AgentRequest,
+  ToolRequest)
+- responses.py: Response data structures (TaskResult, AgentResponse,
+  ToolResult)
+- contexts.py: Context data structures (UserContext, SessionContext,
+  ExecutionContext)
+- configs.py: Configuration data structures (AgentConfig, ExecutionConfig,
+  StrategyConfig)
 - enums.py: Enumerations (FrameworkType, TaskStatus, ToolStatus, etc.)
+- streaming.py: Live streaming data structures (TaskStreamChunk,
+  InteractionRequest, etc.)
 """
 
 from .configs import AgentConfig, ExecutionConfig, StrategyConfig
@@ -30,12 +36,21 @@ from .enums import (
     AgentStatus,
     ExecutionMode,
     FrameworkType,
+    InteractionType,
+    TaskChunkType,
     TaskComplexity,
     TaskStatus,
     ToolStatus,
 )
 from .requests import AgentRequest, TaskRequest, ToolRequest
 from .responses import AgentResponse, TaskResult, ToolResult
+from .streaming import (
+    InteractionRequest,
+    InteractionResponse,
+    LiveExecutionResult,
+    LiveSession,
+    TaskStreamChunk,
+)
 
 __all__ = [
     # Request types
@@ -63,6 +78,12 @@ __all__ = [
     "AgentConfig",
     "ExecutionConfig",
     "StrategyConfig",
+    # Streaming types
+    "TaskStreamChunk",
+    "InteractionRequest",
+    "InteractionResponse",
+    "LiveSession",
+    "LiveExecutionResult",
     # Enums
     "FrameworkType",
     "TaskStatus",
@@ -70,4 +91,6 @@ __all__ = [
     "TaskComplexity",
     "ExecutionMode",
     "AgentStatus",
+    "TaskChunkType",
+    "InteractionType",
 ]

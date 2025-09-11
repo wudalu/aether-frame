@@ -9,8 +9,9 @@ from ..framework.base.framework_adapter import FrameworkAdapter
 
 class FrameworkRegistry:
     """
-    FrameworkRegistry manages the registration and lifecycle of framework adapters,
-    providing a unified interface for framework discovery and access.
+    FrameworkRegistry manages the registration and lifecycle of framework
+    adapters, providing a unified interface for framework discovery and
+    access.
     """
 
     def __init__(self):
@@ -54,7 +55,9 @@ class FrameworkRegistry:
             await self._auto_load_adapter(framework_type)
 
         adapter = self._adapters.get(framework_type)
-        if adapter and not self._initialization_status.get(framework_type, False):
+        if adapter and not self._initialization_status.get(
+            framework_type, False
+        ):
             await self._initialize_adapter(framework_type, adapter)
 
         return adapter
@@ -89,7 +92,8 @@ class FrameworkRegistry:
                 pass
 
     async def _auto_load_adapter(self, framework_type: FrameworkType):
-        """Auto-load adapter for the specified framework type with capability config."""
+        """Auto-load adapter for the specified framework type with
+        capability config."""
         try:
             if framework_type == FrameworkType.ADK:
                 from ..config.framework_capabilities import (
@@ -99,7 +103,9 @@ class FrameworkRegistry:
 
                 adapter = AdkFrameworkAdapter()
                 # Get static capability configuration for ADK
-                capability_config = get_framework_capability_config(framework_type)
+                capability_config = get_framework_capability_config(
+                    framework_type
+                )
                 # Convert to dict for registration
                 config = {
                     "capabilities": capability_config,
@@ -144,6 +150,8 @@ class FrameworkRegistry:
         """Get status information for a framework adapter."""
         return {
             "registered": framework_type in self._adapters,
-            "initialized": self._initialization_status.get(framework_type, False),
+            "initialized": self._initialization_status.get(
+                framework_type, False
+            ),
             "config": self._adapter_configs.get(framework_type, {}),
         }

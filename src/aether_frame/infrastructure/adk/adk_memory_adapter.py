@@ -4,13 +4,12 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ...contracts import ExecutionContext, SessionContext, UserContext
-
 
 class AdkMemoryAdapter:
     """
-    ADK Memory Adapter provides integration with ADK's native memory management
-    through context.state, enabling session persistence and conversation history.
+    ADK Memory Adapter provides integration with ADK's native memory
+    management through context.state, enabling session persistence and
+    conversation history.
     """
 
     def __init__(self, adk_client=None):

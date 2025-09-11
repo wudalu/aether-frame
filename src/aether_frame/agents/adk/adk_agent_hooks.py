@@ -30,7 +30,8 @@ class AdkAgentHooks(AgentHooks):
         try:
             # Initialize ADK context and memory adapter
             # TODO: Initialize actual ADK context integration
-            # from ...infrastructure.adk.adk_memory_adapter import AdkMemoryAdapter
+            # from ...infrastructure.adk.adk_memory_adapter import \
+            #     AdkMemoryAdapter
             # from ...infrastructure.adk.adk_observer import AdkObserver
 
             # self.memory_adapter = AdkMemoryAdapter(self.agent.adk_client)
@@ -42,7 +43,7 @@ class AdkAgentHooks(AgentHooks):
             # Set up observability integration
             await self._setup_observability_integration()
 
-        except Exception as e:
+        except Exception:
             # Log error but don't fail agent creation
             pass
 
@@ -58,11 +59,13 @@ class AdkAgentHooks(AgentHooks):
             # Apply ADK-specific preprocessing
             await self._preprocess_request(agent_request)
 
-        except Exception as e:
+        except Exception:
             # Log error but continue execution
             pass
 
-    async def after_execution(self, agent_request: AgentRequest, result: TaskResult):
+    async def after_execution(
+        self, agent_request: AgentRequest, result: TaskResult
+    ):
         """Hook called after task execution."""
         try:
             # Save session state to ADK memory
@@ -74,7 +77,7 @@ class AdkAgentHooks(AgentHooks):
             # Update conversation history
             await self._update_conversation_history(agent_request, result)
 
-        except Exception as e:
+        except Exception:
             # Log error but don't fail the execution
             pass
 
@@ -123,7 +126,8 @@ class AdkAgentHooks(AgentHooks):
         if not agent_request.task_request.session_context:
             return
 
-        session_id = agent_request.task_request.session_context.get_adk_session_id()
+        session_id = agent_request.task_request.session_context.\
+            get_adk_session_id()
         if session_id and self.memory_adapter:
             # TODO: Load from ADK context.state
             # session_data = await self.memory_adapter.load_session(session_id)
@@ -137,7 +141,8 @@ class AdkAgentHooks(AgentHooks):
         if not agent_request.task_request.session_context:
             return
 
-        session_id = agent_request.task_request.session_context.get_adk_session_id()
+        session_id = agent_request.task_request.session_context.\
+            get_adk_session_id()
         if session_id and self.memory_adapter:
             # TODO: Save to ADK context.state
             # session_data = agent_request.task_request.session_context.session_state
@@ -200,7 +205,9 @@ class AdkAgentHooks(AgentHooks):
             # )
             pass
 
-    async def _save_error_context(self, agent_request: AgentRequest, error: Exception):
+    async def _save_error_context(
+        self, agent_request: AgentRequest, error: Exception
+    ):
         """Save error context for debugging."""
         if self.memory_adapter:
             # TODO: Save error context to ADK memory

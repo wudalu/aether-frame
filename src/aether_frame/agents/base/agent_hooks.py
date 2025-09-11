@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from ...contracts import AgentRequest, TaskResult
 
 if TYPE_CHECKING:
-    from .domain_agent import DomainAgent
+    pass
 
 
 class AgentHooks(ABC):
@@ -34,7 +34,9 @@ class AgentHooks(ABC):
         pass
 
     @abstractmethod
-    async def after_execution(self, agent_request: AgentRequest, result: TaskResult):
+    async def after_execution(
+        self, agent_request: AgentRequest, result: TaskResult
+    ):
         """
         Hook called after task execution.
 

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """Agent Manager Implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ..contracts import AgentConfig, AgentRequest, AgentResponse, FrameworkType
-from ..framework.base.agent_manager import AgentManager as AgentManagerInterface
+from ..framework.base.agent_manager import \
+    AgentManager as AgentManagerInterface
 from .base.domain_agent import DomainAgent
 
 
@@ -34,7 +35,8 @@ class AgentManager(AgentManagerInterface):
             str: Agent identifier
         """
         # Generate unique agent ID
-        agent_id = f"{agent_config.framework_type.value}_agent_{self._agent_counter}"
+        agent_id = f"{agent_config.framework_type.value}_agent_"\
+                   f"{self._agent_counter}"
         self._agent_counter += 1
 
         # Create framework-specific domain agent
@@ -67,7 +69,9 @@ class AgentManager(AgentManagerInterface):
         agent = self._agents[agent_id]
         agent.config.update(config)
 
-    async def execute_agent(self, agent_request: AgentRequest) -> AgentResponse:
+    async def execute_agent(
+        self, agent_request: AgentRequest
+    ) -> AgentResponse:
         """
         Execute an agent with the given request.
 
@@ -186,13 +190,19 @@ class AgentManager(AgentManagerInterface):
         if framework_type == FrameworkType.ADK:
             from .adk.adk_domain_agent import AdkDomainAgent
 
-            agent = AdkDomainAgent(agent_id=agent_id, config=agent_config.__dict__)
+            agent = AdkDomainAgent(
+                agent_id=agent_id, config=agent_config.__dict__
+            )
         elif framework_type == FrameworkType.AUTOGEN:
             # TODO: Implement AutoGen domain agent
-            raise NotImplementedError("AutoGen framework not yet implemented")
+            raise NotImplementedError(
+                "AutoGen framework not yet implemented"
+            )
         elif framework_type == FrameworkType.LANGGRAPH:
             # TODO: Implement LangGraph domain agent
-            raise NotImplementedError("LangGraph framework not yet implemented")
+            raise NotImplementedError(
+                "LangGraph framework not yet implemented"
+            )
         else:
             raise ValueError(f"Unsupported framework type: {framework_type}")
 

@@ -1,6 +1,6 @@
 """Application settings using Pydantic."""
 
-from typing import List, Optional
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
 
-    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
+    anthropic_api_key: Optional[str] = Field(
+        default=None, env="ANTHROPIC_API_KEY"
+    )
     anthropic_model: str = Field(
         default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
     )

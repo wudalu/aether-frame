@@ -2,10 +2,19 @@
 """Framework Adapter Abstract Base Class."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...contracts import AgentRequest, FrameworkType, TaskRequest, TaskResult
-from ...execution.task_router import ExecutionStrategy
+from ...contracts import (
+    AgentRequest,
+    ExecutionContext,
+    FrameworkType,
+    LiveExecutionResult,
+    TaskRequest,
+    TaskResult,
+)
+
+if TYPE_CHECKING:
+    from ...execution.task_router import ExecutionStrategy
 
 
 class FrameworkAdapter(ABC):
@@ -35,22 +44,66 @@ class FrameworkAdapter(ABC):
 
     @abstractmethod
     async def execute_task(
-        self, task_request: TaskRequest, strategy: ExecutionStrategy
+        self, task_request: TaskRequest, strategy: "ExecutionStrategy"
     ) -> TaskResult:
         """
         Execute a task through this framework with the given strategy.
 
         Args:
             task_request: The universal task request
-            strategy: Execution strategy containing framework type and execution mode
+            strategy: Execution strategy containing framework type and
+            execution mode
 
         Returns:
             TaskResult: The result of task execution
         """
         pass
 
+    @abstractmethod
+    async def execute_task_live(
+        self, task_request: TaskRequest, context: ExecutionContext
+    ) -> LiveExecutionResult:
+        """
+        Execute a task in live/interactive mode with real-time bidirectional
+        communication.
+
+        This method enables interactive workflows such as tool approval,
+        user input requests, and real-time cancellation. The returned iterator
+        yields streaming chunks of the execution progress, while the
+        communicator enables sending user responses back to the executing
+        agent.
+
+        Args:
+            task_request: The universal task request
+            context: Execution context with user and session information
+
+        Returns:
+            LiveExecutionResult: Tuple of (event_stream, communicator)
+                - event_stream: AsyncIterator[TaskStreamChunk] for real-time
+                events
+                - communicator: LiveCommunicator for bidirectional
+                communication
+
+        Raises:
+            NotImplementedError: If the framework doesn't support live
+            execution
+        """
+        pass
+
+    def supports_live_execution(self) -> bool:
+        """
+        Check if this framework adapter supports live/interactive execution
+        mode.
+
+        Returns:
+            bool: True if live execution is supported, False otherwise
+        """
+        return hasattr(self, "execute_task_live") and callable(
+            getattr(self, "execute_task_live")
+        )
+
     def _convert_task_to_agent_request(
-        self, task_request: TaskRequest, strategy: ExecutionStrategy
+        self, task_request: TaskRequest, strategy: "ExecutionStrategy"
     ) -> "AgentRequest":
         """
         Convert TaskRequest to AgentRequest using Strategy guidance.
@@ -114,7 +167,8 @@ class FrameworkAdapter(ABC):
         """
         Map task type to agent type - Framework Layer responsibility.
 
-        This logic was moved from TaskRouter to maintain proper layer separation.
+        This logic was moved from TaskRouter to maintain proper layer
+        separation.
         """
         # Default task type to agent type mapping
         task_to_agent_mapping = {

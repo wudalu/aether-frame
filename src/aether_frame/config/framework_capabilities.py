@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Static framework capability configurations - simplified for core capabilities."""
+"""Static framework capability configurations - simplified for core
+capabilities."""
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -9,11 +10,14 @@ from ..contracts import FrameworkType
 
 @dataclass
 class FrameworkCapabilityConfig:
-    """Simplified framework capability configuration - focus on core capabilities."""
+    """Simplified framework capability configuration - focus on core
+    capabilities."""
 
     # Core capabilities - main focus
-    async_execution: bool = False  # Framework supports async/sync execution
-    memory_management: bool = False  # Framework supports memory/context management
+    # Framework supports async/sync execution
+    async_execution: bool = False
+    # Framework supports memory/context management
+    memory_management: bool = False
     observability: bool = False  # Framework supports monitoring/logging
     streaming: bool = False  # Framework supports streaming responses
 
@@ -31,8 +35,10 @@ class FrameworkCapabilityConfig:
 
     # Future capabilities (commented for now)
     # tool_integration: bool = True        # Most frameworks support this
-    # session_management: bool = False     # Can be derived from memory_management
-    # state_persistence: bool = False      # Can be derived from memory_management
+    # Can be derived from memory_management
+    # session_management: bool = False
+    # Can be derived from memory_management
+    # state_persistence: bool = False
     # scalability: str = "medium"          # Can have default values
     # performance: str = "medium"          # Can have default values
     # reliability: str = "medium"          # Can have default values
@@ -57,7 +63,8 @@ FRAMEWORK_CAPABILITIES: Dict[FrameworkType, FrameworkCapabilityConfig] = {
         max_iterations=50,  # Higher iterations for complex workflows
         # ADK-specific configuration
         extra_config={
-            "default_model": "gemini-1.5-pro",  # FIXME: replace with actual model
+            # FIXME: replace with actual model
+            "default_model": "gemini-1.5-pro",
             "supports_multimodal": True,
             "supports_function_calling": True,
             "cloud_based": True,
@@ -93,7 +100,9 @@ def framework_supports_capability(
         return False
 
 
-def framework_supports_execution_mode(framework_type: FrameworkType, mode: str) -> bool:
+def framework_supports_execution_mode(
+    framework_type: FrameworkType, mode: str
+) -> bool:
     """Check if a framework supports a specific execution mode."""
     try:
         config = get_framework_capability_config(framework_type)

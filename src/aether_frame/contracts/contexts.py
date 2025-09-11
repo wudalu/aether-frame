@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from .enums import FrameworkType
 
 if TYPE_CHECKING:
-    from .contexts import KnowledgeSource, UniversalTool
+    pass
 
 
 @dataclass
@@ -98,7 +98,8 @@ class UniversalMessage:
     """Framework-agnostic message format with ADK compatibility."""
 
     role: str  # Message role: "user", "assistant", "system", "tool"
-    content: Union[str, List[ContentPart]]  # Message content (text or multi-modal)
+    # Message content (text or multi-modal)
+    content: Union[str, List[ContentPart]]
     author: Optional[str] = None  # ADK uses 'author' instead of 'role'
     name: Optional[str] = None  # AutoGen agent name identifier
     tool_calls: Optional[List[ToolCall]] = None  # Tool invocation requests

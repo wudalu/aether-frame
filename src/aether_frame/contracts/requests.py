@@ -49,11 +49,14 @@ class TaskRequest:
             if session_id:
                 adk_request["session_id"] = session_id
             adk_request["conversation_history"] = [
-                msg.to_adk_format() for msg in self.session_context.conversation_history
+                msg.to_adk_format()
+                for msg in self.session_context.conversation_history
             ]
 
         if self.messages:
-            adk_request["messages"] = [msg.to_adk_format() for msg in self.messages]
+            adk_request["messages"] = [
+                msg.to_adk_format() for msg in self.messages
+            ]
 
         if self.available_tools:
             adk_request["tools"] = [

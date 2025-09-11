@@ -40,7 +40,9 @@ class AgentManager(ABC):
         pass
 
     @abstractmethod
-    async def execute_agent(self, agent_request: AgentRequest) -> AgentResponse:
+    async def execute_agent(
+        self, agent_request: AgentRequest
+    ) -> AgentResponse:
         """
         Execute an agent with the given request.
 

@@ -70,7 +70,8 @@ class AIAssistant:
         """Check system health status."""
         return {
             "status": "healthy",
-            "frameworks": await self.framework_registry.get_available_frameworks(),
+            "frameworks": await self.framework_registry.\
+                get_available_frameworks(),
             "version": (
                 self.settings.version
                 if hasattr(self.settings, "version")

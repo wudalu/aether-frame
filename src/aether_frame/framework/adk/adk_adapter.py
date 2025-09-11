@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 
 from ...agents.manager import AgentManager
 from ...contracts import (
-    AgentRequest,
     FrameworkType,
     TaskRequest,
     TaskResult,
@@ -40,7 +39,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Initialize ADK framework adapter.
 
         Args:
-            config: ADK-specific configuration including project, location, etc.
+            config: ADK-specific configuration including project, location,
+            etc.
         """
         self._config = config or {}
 
@@ -67,12 +67,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         """
         Execute a task through ADK framework coordination.
 
-        ADK framework uses single-agent execution patterns as specified in strategy.
-        This adapter coordinates the execution flow and converts between data layers.
+        ADK framework uses single-agent execution patterns as specified in
+        strategy. This adapter coordinates the execution flow and converts
+        between data layers.
 
         Args:
             task_request: The universal task request
-            strategy: Execution strategy containing framework type and execution mode
+            strategy: Execution strategy containing framework type and
+            execution mode
 
         Returns:
             TaskResult: The result of task execution
@@ -86,7 +88,9 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
         try:
             # Convert TaskRequest to AgentRequest using strategy guidance
-            agent_request = self._convert_task_to_agent_request(task_request, strategy)
+            agent_request = self._convert_task_to_agent_request(
+                task_request, strategy
+            )
 
             # Ensure agent manager is available
             if not self._agent_manager:
@@ -101,7 +105,9 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
             # Coordinate ADK execution through unified agent manager
             # ADK uses single-agent pattern - delegate to agent manager
-            agent_response = await self._agent_manager.execute_agent(agent_request)
+            agent_response = await self._agent_manager.execute_agent(
+                agent_request
+            )
 
             # Convert agent response back to task result for unified interface
             return TaskResult(
