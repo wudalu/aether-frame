@@ -198,6 +198,43 @@ sequenceDiagram
         FW-->>FAL: LangGraph response
         FAL->>FAL: Convert to TaskResult
         FAL-->>ENGINE: Return TaskResult
+    
+    else Live Interactive Execution
+        ENTRY->>ENGINE: execute_task_live(TaskRequest, ExecutionContext)
+        ENGINE->>ROUTER: select_strategy(task, context)
+        ROUTER-->>ENGINE: Return StrategyConfig (with live support)
+        ENGINE->>REGISTRY: get_adapter(target_framework)
+        REGISTRY-->>ENGINE: Return FrameworkAdapter (live-capable)
+        ENGINE->>FAL: execute_task_live(task, context)
+        
+        FAL->>FAL: Create LiveRequestQueue and Agent
+        FAL->>FW: Start live execution (run_live)
+        FW-->>FAL: Return (event_stream, communicator)
+        FAL-->>ENGINE: Return LiveExecutionResult
+        ENGINE-->>ENTRY: Return (event_stream, communicator)
+        
+        loop Real-time Interaction
+            FW->>FW: Generate events (text, tool_calls, errors)
+            FW-->>ENTRY: Stream TaskStreamChunk events
+            
+            alt Tool Approval Required
+                ENTRY->>FAL: send_user_response(approved/denied)
+                FAL->>FW: Forward user decision
+                FW->>DA: Continue/abort tool execution
+            end
+            
+            alt User Message
+                ENTRY->>FAL: send_user_message(message)
+                FAL->>FW: Forward user input
+                FW->>DA: Process user message
+            end
+            
+            alt Session Cancellation
+                ENTRY->>FAL: send_cancellation(reason)
+                FAL->>FW: Terminate session
+                FW-->>ENTRY: Final completion event
+            end
+        end
     end
     
     ENGINE-->>ENTRY: Return TaskResult
@@ -213,6 +250,8 @@ sequenceDiagram
 #### Framework Adapter
 - **Role**: Unified interface for different agent frameworks (ADK, AutoGen, LangGraph)
 - **Function**: Translates high-level orchestration commands to framework-specific operations
+- **Live Execution**: Supports real-time bidirectional communication through `execute_task_live()` method
+- **Streaming Capabilities**: Enables interactive workflows with tool approval, user input, and real-time cancellation
 - **Configuration**: Runtime framework selection based on task requirements or configuration
 - **Benefits**: Framework-agnostic development, easy migration between frameworks
 
@@ -237,8 +276,9 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 **Core Responsibilities**:
 - **Strategy Selection**: Uses TaskRouter to analyze and select appropriate execution strategy
 - **Framework Routing**: Directly maps strategy to framework adapter via FrameworkRegistry
-- **Task Execution**: Delegates execution to selected framework adapter
-- **Result Management**: Returns unified TaskResult regardless of underlying framework
+- **Task Execution**: Delegates execution to selected framework adapter (sync and live modes)
+- **Live Session Management**: Coordinates real-time interactive execution sessions
+- **Result Management**: Returns unified TaskResult or LiveExecutionResult regardless of underlying framework
 
 **Task Router**:
 - **Role**: Analyze task characteristics and select appropriate execution strategy
@@ -306,6 +346,13 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 - **Direct Framework Routing**: Strategies directly specify target frameworks
 - **Simplified Architecture**: Eliminates unnecessary intermediate layers
 - **Framework Agnostic**: Consistent behavior across ADK, AutoGen, and LangGraph frameworks
+
+### 4. Live Execution and Streaming Strategy
+- **Bidirectional Communication**: Real-time event streaming with user interaction support
+- **Framework Integration**: Live execution capabilities exposed through framework adapters
+- **Event Conversion**: ADK events converted to unified TaskStreamChunk format
+- **Interactive Workflows**: Built-in support for tool approval and user intervention scenarios
+- **Session Management**: Proper lifecycle handling for long-running interactive sessions
 
 ## Security and Compliance
 

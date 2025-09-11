@@ -4,7 +4,7 @@
 from typing import Optional
 
 from ..config.settings import Settings
-from ..contracts import TaskRequest, TaskResult, TaskStatus
+from ..contracts import TaskRequest, TaskResult, TaskStatus, LiveExecutionResult, ExecutionContext, FrameworkType
 from ..framework.framework_registry import FrameworkRegistry
 from .execution_engine import ExecutionEngine
 
@@ -55,6 +55,39 @@ class AIAssistant:
                 status=TaskStatus.ERROR,
                 error_message=f"Processing failed: {str(e)}",
             )
+
+    async def start_live_session(self, task_request: TaskRequest) -> LiveExecutionResult:
+        """
+        Start a live interactive session for real-time task processing.
+
+        Args:
+            task_request: The task to be processed in live mode
+
+        Returns:
+            LiveExecutionResult: Tuple of (event_stream, communicator) for 
+            bidirectional communication
+        """
+        try:
+            # Validate the request
+            if not self._validate_request(task_request):
+                raise ValueError("Invalid task request")
+
+            # Create execution context - use existing one or create minimal one
+            if task_request.execution_context:
+                execution_context = task_request.execution_context
+            else:
+                execution_context = ExecutionContext(
+                    execution_id=f"live_{task_request.task_id}",
+                    framework_type=FrameworkType.ADK,
+                    execution_mode="live",
+                    timeout=300
+                )
+
+            # Delegate to execution engine for live execution
+            return await self.execution_engine.execute_task_live(task_request, execution_context)
+
+        except Exception as e:
+            raise RuntimeError(f"Live session failed to start: {str(e)}")
 
     def _validate_request(self, task_request: TaskRequest) -> bool:
         """Validate the incoming task request."""
