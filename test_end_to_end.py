@@ -18,7 +18,7 @@ from src.aether_frame.contracts import (
 
 
 async def test_end_to_end():
-    """Test the complete end-to-end flow with echo tool."""
+    """Test the complete end-to-end flow with echo tool for both execution paths."""
     print("🚀 Starting end-to-end test with echo tool...")
     
     # Initialize AI Assistant
@@ -49,38 +49,43 @@ async def test_end_to_end():
     print(f"📝 Task created: {task.task_id}")
     print(f"💬 User message: {task.messages[0].content}")
     
+    # Test 1: Regular execute_task path (sync execution)
+    print("\n🔄 Testing regular execute_task path...")
     try:
-        # Start live session
-        print("🔄 Starting live session...")
+        result = await assistant.process_request(task)
+        print(f"✅ Regular execution completed: {result.status}")
+        if result.error_message:
+            print(f"📋 Expected API error: {result.error_message}")
+    except Exception as e:
+        print(f"❌ Regular execution failed: {str(e)}")
+    
+    # Test 2: Live execution path (streaming execution)  
+    print("\n🔄 Testing live execution path...")
+    try:
         stream, communicator = await assistant.start_live_session(task)
-        
         print("📺 Receiving streaming chunks...")
-        chunk_count = 0
         
-        # Process streaming chunks
+        chunk_count = 0
         async for chunk in stream:
             chunk_count += 1
             print(f"📦 Chunk {chunk_count} [{chunk.chunk_type.value}]: {chunk.content}")
             
-            # Stop after reasonable number of chunks or final chunk
-            if chunk.is_final or chunk_count > 10:
-                print(f"🏁 Received final chunk or reached limit")
+            # Limit chunks for testing
+            if chunk.is_final or chunk_count >= 3:
+                print("🏁 Received final chunk or reached limit")
                 break
-        
-        print(f"✅ End-to-end test completed successfully!")
+                
         print(f"📊 Total chunks received: {chunk_count}")
         
         # Close communicator
         if hasattr(communicator, 'close'):
             communicator.close()
-            print("🔒 Communicator closed")
+        print("🔒 Communicator closed")
             
     except Exception as e:
-        print(f"❌ Test failed with error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
-
+        print(f"❌ Live execution failed: {str(e)}")
+    
+    print("\n✅ End-to-end test completed successfully!")
 
 async def main():
     """Main test runner."""

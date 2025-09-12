@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     try:
         from google.adk.runners import InMemoryRunner, LiveRequestQueue
         from google.adk.sessions import Session
-        from google.genai.adk import RunConfig
+        from google.adk.agents.run_config import RunConfig
         from google.adk.events import Event as AdkEvent
     except ImportError:
         InMemoryRunner = Any
@@ -233,38 +233,20 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             
         try:
             # Import ADK components at runtime to avoid import errors
-            from google.adk.runners import InMemoryRunner, LiveRequestQueue, RunConfig
-            from google.adk.agents.run_config import StreamingMode
+            from google.adk.runners import InMemoryRunner, LiveRequestQueue
+            from google.adk.agents.run_config import RunConfig, StreamingMode
             from google.adk import Agent
             
-            # Step 2: Create echo tool for testing - ADK automatically wraps functions as FunctionTools
-            def echo_tool(message: str) -> dict:
-                """Echo the input message back to the user.
-                
-                Args:
-                    message (str): The message to echo back
-                    
-                Returns:
-                    dict: Response with echoed message
-                """
-                return {
-                    "status": "success",
-                    "echoed_message": f"Echo: {message}",
-                    "original_message": message
-                }
+            # Use conversion methods to create proper ADK configuration
+            session_config = self._convert_contexts_to_session_config(task_request)
+            agent_config = self._convert_task_request_to_agent_config(task_request)
+            run_config = self._convert_execution_context_to_run_config(context)
             
-            # Create basic agent with echo tool
-            agent = Agent(
-                name=f"task_agent_{task_request.task_id[:8]}",
-                model="gemini-1.5-flash",  # TODO: Make model configurable
-                description="Agent for live task execution with echo tool",
-                instruction="You have access to an echo tool. Use it when users ask you to echo something. Always use the echo tool when asked to repeat or echo messages.",
-                tools=[echo_tool]  # Add the echo tool
-            )
+            # Create ADK Agent using converted configuration
+            agent = Agent(**agent_config)
             
-            # TODO: Future enhancement - Make app_name configurable
-            # Currently using task_id, but should be configurable per deployment
-            app_name = f"aether_frame_live_{task_request.task_id}"
+            # Extract app_name from session config
+            app_name = session_config["app_name"]
             
             # Create InMemoryRunner - TODO: Support other runner types via configuration
             # Current implementation uses InMemoryRunner for development/testing
@@ -273,30 +255,12 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             # - Custom runners based on configuration
             runner = InMemoryRunner(app_name=app_name, agent=agent)
             
-            # Create session for this live execution
-            # TODO: Future enhancement - Session management improvements
-            # Currently creating new session per request, but could:
-            # 1. Reuse existing sessions for continuous conversations
-            # 2. Support session resumption for interrupted live connections
-            # 3. Integrate with context.session_context if available
-            # 4. Extract user information from task_request if needed
-            user_id = "anonymous"
-            if hasattr(context, 'user_context') and context.user_context:
-                user_id = context.user_context.user_id
-            elif task_request.user_context:
-                user_id = task_request.user_context.user_id
-            
+            # Create session for this live execution using comprehensive session config
             session = await runner.session_service.create_session(
-                app_name=app_name,
-                user_id=user_id
-            )
-            
-            # Configure live execution - using correct RunConfig parameters
-            run_config = RunConfig(
-                response_modalities=["AUDIO", "TEXT"],    # Support both audio and text
-                streaming_mode=StreamingMode.BIDI,        # Enable bidirectional streaming
-                max_llm_calls=100,                        # Limit LLM calls for testing
-                save_input_blobs_as_artifacts=False       # Don't save artifacts for testing
+                app_name=session_config["app_name"],
+                user_id=session_config["user_id"],
+                session_id=session_config.get("session_id"),  # May be None for new sessions
+                state=session_config.get("initial_state", {})  # Comprehensive state integration using correct parameter name
             )
             
             # Create LiveRequestQueue for bidirectional communication
@@ -380,6 +344,322 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             raise RuntimeError(f"ADK dependencies not available: {str(e)}")
         except Exception as e:
             raise RuntimeError(f"Failed to start live execution: {str(e)}")
+
+    def _convert_execution_context_to_run_config(self, context: ExecutionContext):
+        """
+        Convert ExecutionContext to ADK RunConfig (runtime behavior configuration).
+        
+        Maps execution context parameters to ADK's runtime configuration for
+        controlling agent execution behavior, streaming modes, and limits.
+        
+        Args:
+            context: The execution context containing runtime parameters
+            
+        Returns:
+            RunConfig: ADK runtime configuration object
+        """
+        from google.adk.agents.run_config import RunConfig, StreamingMode
+        
+        # Map execution mode to streaming mode
+        streaming_mode = StreamingMode.BIDI  # Default to bidirectional for live execution
+        if context.execution_mode == "sync":
+            streaming_mode = StreamingMode.NONE
+        elif context.execution_mode == "async":
+            streaming_mode = StreamingMode.BIDI
+            
+        # Configure response modalities
+        response_modalities = ["TEXT"]  # Default to text
+        if context.metadata.get("support_audio", False):
+            response_modalities.append("AUDIO")
+            
+        return RunConfig(
+            response_modalities=response_modalities,
+            streaming_mode=streaming_mode,
+            max_llm_calls=context.metadata.get("max_llm_calls", 100),
+            save_input_blobs_as_artifacts=context.metadata.get("save_artifacts", False)
+        )
+    
+    def _convert_contexts_to_session_config(self, task_request: TaskRequest) -> Dict[str, Any]:
+        """
+        Convert TaskRequest contexts to comprehensive ADK Session configuration.
+        
+        Builds complete initial state by integrating all context information:
+        user preferences, session history, execution metadata, and knowledge sources.
+        
+        Args:
+            task_request: The task request containing multiple contexts
+            
+        Returns:
+            Dict containing comprehensive session configuration
+        """
+        # Build comprehensive initial state integrating all contexts
+        initial_state = {
+            # Core task information
+            "task_id": task_request.task_id,
+            "task_type": task_request.task_type,
+            "task_description": task_request.description or "",
+        }
+        
+        # User context integration
+        if task_request.user_context:
+            user_context = task_request.user_context
+            initial_state.update({
+                "user_id": user_context.user_id,
+                "user_name": getattr(user_context, 'user_name', ''),
+            })
+            
+            # User preferences with prefix to avoid conflicts
+            user_prefs = getattr(user_context, 'preferences', None)
+            if user_prefs:
+                initial_state.update({
+                    f"user_pref_{k}": v for k, v in user_prefs.items()
+                })
+            
+            # User permissions for tool access control
+            user_permissions = getattr(user_context, 'permissions', None)
+            if user_permissions:
+                initial_state["user_permissions"] = user_permissions
+        
+        # Session context integration
+        if task_request.session_context:
+            session_ctx = task_request.session_context
+            initial_state.update({
+                "session_id": session_ctx.session_id,
+            })
+            
+            # Existing session state (safely)
+            if hasattr(session_ctx, 'session_state') and session_ctx.session_state:
+                initial_state.update(session_ctx.session_state)
+            
+            # Conversation history for context continuity
+            if hasattr(session_ctx, 'conversation_history') and session_ctx.conversation_history:
+                initial_state["conversation_history"] = [
+                    {"role": msg.role, "content": msg.content} 
+                    for msg in session_ctx.conversation_history
+                ]
+            
+            # Session context variables (safely)
+            context_vars = getattr(session_ctx, 'context_variables', None)
+            if context_vars:
+                initial_state.update({
+                    f"session_{k}": v for k, v in context_vars.items()
+                })
+        
+        # Execution context integration
+        if task_request.execution_context:
+            exec_ctx = task_request.execution_context
+            initial_state.update({
+                "execution_id": exec_ctx.execution_id,
+                "trace_id": exec_ctx.trace_id or "",
+                "execution_mode": exec_ctx.execution_mode,
+                # Execution metadata
+                **{f"exec_{k}": v for k, v in exec_ctx.metadata.items()}
+            })
+        
+        # Knowledge sources integration
+        if task_request.available_knowledge:
+            initial_state["knowledge_sources"] = [
+                {
+                    "id": kb.knowledge_id,
+                    "type": kb.knowledge_type,
+                    "source": kb.source,
+                    "metadata": kb.metadata
+                }
+                for kb in task_request.available_knowledge
+            ]
+        
+        # Task metadata integration
+        if task_request.metadata:
+            initial_state.update({
+                f"meta_{k}": v for k, v in task_request.metadata.items()
+            })
+        
+        # Extract core session parameters
+        user_id = "anonymous"
+        if task_request.user_context:
+            user_id = task_request.user_context.get_adk_user_id()
+        
+        session_id = None
+        if task_request.session_context:
+            session_id = getattr(task_request.session_context, 'session_id', None)
+        
+        return {
+            "app_name": f"aether_frame_{task_request.task_id}",
+            "user_id": user_id,
+            "session_id": session_id,
+            "initial_state": initial_state
+        }
+        
+    def _convert_task_request_to_agent_config(self, task_request: TaskRequest) -> Dict[str, Any]:
+        """
+        Convert TaskRequest to comprehensive ADK Agent configuration.
+        
+        Maps task information, tools, and capabilities to ADK Agent constructor
+        parameters, integrating strategy-driven model selection and intelligent
+        instruction building.
+        
+        Args:
+            task_request: The task request containing agent requirements
+            
+        Returns:
+            Dict containing comprehensive agent configuration parameters
+        """
+        # Extract model from execution config or use default
+        model = self._extract_model_configuration(task_request)
+        
+        # Build comprehensive system instruction
+        instruction_parts = []
+        
+        # Base instruction based on task type
+        task_type_instructions = {
+            "chat": "You are a conversational AI assistant designed to help users with their questions and tasks.",
+            "analysis": "You are an analytical AI assistant specialized in data analysis and insights.",
+            "coding": "You are a coding AI assistant that helps with programming tasks and technical questions.",
+            "creative": "You are a creative AI assistant that helps with writing, brainstorming, and creative tasks."
+        }
+        base_instruction = task_type_instructions.get(
+            task_request.task_type, 
+            f"You are an AI assistant handling {task_request.task_type} tasks."
+        )
+        instruction_parts.append(base_instruction)
+        
+        # Add task-specific context
+        if task_request.description:
+            instruction_parts.append(f"Current task: {task_request.description}")
+        
+        # Add user preferences if available
+        if task_request.user_context and hasattr(task_request.user_context, 'preferences'):
+            user_prefs = task_request.user_context.preferences
+            if user_prefs:
+                pref_parts = []
+                if user_prefs.get('communication_style'):
+                    pref_parts.append(f"communication style: {user_prefs['communication_style']}")
+                if user_prefs.get('detail_level'):
+                    pref_parts.append(f"detail level: {user_prefs['detail_level']}")
+                if user_prefs.get('language'):
+                    pref_parts.append(f"preferred language: {user_prefs['language']}")
+                
+                if pref_parts:
+                    instruction_parts.append(f"User preferences: {', '.join(pref_parts)}")
+        
+        # Add knowledge sources context
+        if task_request.available_knowledge:
+            knowledge_desc = []
+            for kb in task_request.available_knowledge:
+                knowledge_desc.append(f"{kb.knowledge_type} from {kb.source}")
+            
+            if knowledge_desc:
+                instruction_parts.append(
+                    f"You have access to the following knowledge sources: {', '.join(knowledge_desc)}"
+                )
+        
+        # Add tool usage instructions
+        if task_request.available_tools:
+            tools_desc = [tool.name for tool in task_request.available_tools]
+            instruction_parts.append(
+                f"You have access to the following tools: {', '.join(tools_desc)}. "
+                "Use them appropriately to complete tasks effectively."
+            )
+        else:
+            # Add echo tool for testing when no real tools available
+            instruction_parts.append(
+                "You have access to an echo tool for testing. Use it when users ask you to repeat or echo messages."
+            )
+        
+        # Extract execution config instructions
+        if (task_request.execution_config and 
+            isinstance(task_request.execution_config, dict) and 
+            task_request.execution_config.get('system_instruction')):
+            instruction_parts.append(task_request.execution_config['system_instruction'])
+        
+        # Build agent tools
+        agent_tools = self._convert_available_tools_to_adk(task_request)
+        
+        # Create safe agent name
+        safe_task_id = task_request.task_id.replace('-', '_').replace(':', '_')[:8]
+        
+        return {
+            "name": f"agent_{safe_task_id}",
+            "model": model,
+            "description": f"ADK agent for {task_request.task_type}: {task_request.description or 'task execution'}",
+            "instruction": "\n\n".join(instruction_parts),
+            "tools": agent_tools
+        }
+    
+    def _extract_model_configuration(self, task_request: TaskRequest) -> str:
+        """
+        Extract model configuration from task request and execution config.
+        
+        Priority order:
+        1. execution_config.model
+        2. task metadata model
+        3. user preferences model
+        4. default model
+        """
+        # Check execution config first
+        if (task_request.execution_config and 
+            isinstance(task_request.execution_config, dict) and 
+            task_request.execution_config.get('model')):
+            return task_request.execution_config['model']
+        
+        # Check task metadata
+        if task_request.metadata and task_request.metadata.get('preferred_model'):
+            return task_request.metadata['preferred_model']
+        
+        # Check user preferences
+        if (task_request.user_context and 
+            hasattr(task_request.user_context, 'preferences') and 
+            task_request.user_context.preferences.get('preferred_model')):
+            return task_request.user_context.preferences['preferred_model']
+        
+        # Default model based on task type
+        task_type_models = {
+            "coding": "gemini-1.5-pro",
+            "analysis": "gemini-1.5-pro", 
+            "creative": "gemini-1.5-flash",
+            "chat": "gemini-1.5-flash"
+        }
+        
+        return task_type_models.get(task_request.task_type, "gemini-1.5-flash")
+    
+    def _convert_available_tools_to_adk(self, task_request: TaskRequest) -> list:
+        """
+        Convert TaskRequest.available_tools to ADK-compatible function tools.
+        
+        Args:
+            task_request: Task request containing available tools
+            
+        Returns:
+            List of ADK-compatible function tools
+        """
+        adk_tools = []
+        
+        if task_request.available_tools:
+            for available_tool in task_request.available_tools:
+                # TODO: Implement proper tool conversion based on tool type
+                # For now, this is a placeholder for the conversion logic
+                # Will convert available_tool to ADK function format
+                _ = available_tool  # Acknowledge the variable to avoid unused warning
+                pass
+        
+        # Always add echo tool for testing/debugging
+        def echo_tool(message: str) -> dict:
+            """Echo the input message back to the user.
+            
+            Args:
+                message (str): The message to echo back
+                
+            Returns:
+                dict: Response with echoed message
+            """
+            return {
+                "status": "success",
+                "echoed_message": f"Echo: {message}",
+                "original_message": message
+            }
+        
+        adk_tools.append(echo_tool)
+        return adk_tools
 
     def _convert_adk_event_to_chunk(
         self, adk_event: "AdkEvent", task_id: str, sequence_id: int
