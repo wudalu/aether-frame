@@ -4,8 +4,8 @@
 Git Push Plan Execution Script for feat_execution_layer Branch
 ============================================================
 
-This script executes the 5-phase commit plan to safely commit 14,000+ lines of code
-while staying under the 3000-line limit per commit.
+This script executes the 7-phase commit plan to safely commit 14,000+ lines of code
+while staying under the 2000-line limit per commit.
 
 🚀 USAGE:
 ---------
@@ -13,11 +13,13 @@ while staying under the 3000-line limit per commit.
 python git_push_plan.py
 
 # Execute Specific Phase
-python git_push_plan.py 1    # Phase 1: Core contracts and architecture
-python git_push_plan.py 2    # Phase 2: Framework abstraction layer
-python git_push_plan.py 3    # Phase 3: Agent management system
-python git_push_plan.py 4    # Phase 4: Test suite
-python git_push_plan.py 5    # Phase 5: Streaming features and final components
+python git_push_plan.py 1    # Phase 1: Core contracts and base configuration
+python git_push_plan.py 2    # Phase 2: Framework abstraction foundation
+python git_push_plan.py 3    # Phase 3: Execution engine and tools
+python git_push_plan.py 4    # Phase 4: Agent management system
+python git_push_plan.py 5    # Phase 5: Unit tests
+python git_push_plan.py 6    # Phase 6: Integration and e2e tests
+python git_push_plan.py 7    # Phase 7: Final components and streaming
 
 # Execute All Phases Sequentially  
 python git_push_plan.py all
@@ -27,32 +29,41 @@ python git_push_plan.py copy <target_directory> [phase_number]
 
 📋 PHASES:
 ----------
-Phase 1 (~2,800 lines): Core Contracts and Base Architecture
+Phase 1 (~1,950 lines): Core Contracts and Base Configuration
 - Contracts layer (src/aether_frame/contracts/)
-- Configuration updates (config/, pyproject.toml, requirements/)
-- Project documentation (docs/, README.md)
+- Basic configuration (config/settings.py, logging.py)
+- Environment and project files (.env.example, .gitignore)
 
-Phase 2 (~3,000 lines): Framework Abstraction Layer
-- Framework adapter system (src/aether_frame/framework/)
+Phase 2 (~1,850 lines): Framework Abstraction Foundation
+- Framework registry and base abstractions
+- Basic framework adapters structure
+- Core framework interface definitions
+
+Phase 3 (~1,900 lines): Execution Engine and Tools
 - Execution engine (src/aether_frame/execution/)
 - Tool service layer (src/aether_frame/tools/)
+- Task routing and coordination
 
-Phase 3 (~2,500 lines): Agent Management System
+Phase 4 (~1,950 lines): Agent Management System
 - Agent management (src/aether_frame/agents/)
 - Infrastructure layer (src/aether_frame/infrastructure/)
 - Bootstrap system (src/aether_frame/bootstrap.py)
 
-Phase 4 (~3,200 lines): Test Suite
+Phase 5 (~1,800 lines): Unit Tests
 - Unit tests (tests/unit/)
+- Basic test infrastructure
+- Core component testing
+
+Phase 6 (~1,900 lines): Integration and E2E Tests
 - Integration tests (tests/integration/)
 - End-to-end tests (tests/e2e/)
 - Manual tests (tests/manual/)
 
-Phase 5 (~2,500 lines): Streaming Features and Final Components
+Phase 7 (~1,800 lines): Final Components and Streaming
 - ADK streaming components (deepseek_*.py, model_factory.py)
 - Event conversion system (adk_event_converter.py)
 - Debug tools (tests/debug/)
-- Archive and cleanup
+- Archive and cleanup (archive/, cc_tools/)
 
 ⚡ FEATURES:
 -----------
@@ -98,7 +109,7 @@ import sys
 import subprocess
 import os
 import shutil
-from typing import List, Dict, Any
+from typing import List
 import argparse
 from pathlib import Path
 
@@ -109,73 +120,73 @@ class GitPushPlan:
     def __init__(self):
         self.phases = {
             1: {
-                "name": "Core Contracts and Base Architecture",
-                "description": "feat: establish core contracts and base architecture foundation",
+                "name": "Core Contracts and Base Configuration",
+                "description": "feat: establish core contracts and base configuration foundation",
                 "files": [
                     "src/aether_frame/contracts/",
-                    "src/aether_frame/config/framework_capabilities.py",
-                    "src/aether_frame/config/routing_config.py", 
                     "src/aether_frame/config/settings.py",
-                    "src/aether_frame/config/__init__.py",
                     "src/aether_frame/config/logging.py",
-                    "src/aether_frame/common/",
+                    "src/aether_frame/config/__init__.py",
                     ".env.example",
                     ".gitignore",
-                    "README.md",
-                    "docs/architecture.md",
-                    "docs/framework_abstraction.md",
-                    "docs/layout.md",
-                    "docs/bootstrap.md",
-                    "pyproject.toml",
-                    "requirements/base.in",
                     "src/aether_frame/__init__.py",
                     "src/aether_frame/main.py"
                 ]
             },
             2: {
-                "name": "Framework Abstraction Layer",
-                "description": "feat: implement framework abstraction layer and registry system",
+                "name": "Framework Abstraction Foundation",
+                "description": "feat: implement framework registry and base abstraction interfaces",
                 "files": [
-                    "src/aether_frame/framework/",
-                    "src/aether_frame/execution/",
-                    "src/aether_frame/tools/base/",
-                    "src/aether_frame/tools/builtin/",
-                    "src/aether_frame/tools/adk_native/",
-                    "src/aether_frame/tools/mcp/",
-                    "src/aether_frame/tools/service.py",
-                    "src/aether_frame/tools/__init__.py"
+                    "src/aether_frame/framework/__init__.py",
+                    "src/aether_frame/framework/base/",
+                    "src/aether_frame/framework/framework_registry.py"
                 ]
             },
             3: {
+                "name": "Execution Engine and Tools",
+                "description": "feat: implement execution engine and tool service layer",
+                "files": [
+                    "src/aether_frame/execution/",
+                    "src/aether_frame/tools/",
+                    "src/aether_frame/config/framework_capabilities.py",
+                    "src/aether_frame/config/routing_config.py"
+                ]
+            },
+            4: {
                 "name": "Agent Management System",
                 "description": "feat: implement comprehensive agent management system",
                 "files": [
                     "src/aether_frame/agents/",
-                    "src/aether_frame/infrastructure/",
+                    "src/aether_frame/framework/adk/",
                     "src/aether_frame/bootstrap.py",
-                    "src/aether_frame/agents/domain/",
-                    "src/aether_frame/execution/coordinator/",
-                    "src/aether_frame/execution/workflow/",
-                    "src/aether_frame/memory/",
-                    "src/aether_frame/observability/",
-                    "src/aether_frame/tools/external/",
-                    "src/aether_frame/tools/llm/",
-                    "src/aether_frame/tools/search/"
-                ]
-            },
-            4: {
-                "name": "Test Suite",
-                "description": "test: add comprehensive test suite for all layers",
-                "files": [
-                    "tests/unit/",
-                    "tests/integration/",
-                    "tests/e2e/",
-                    "tests/manual/",
-                    "tests/conftest.py"
+                    "pyproject.toml",
+                    "requirements/base.in",
+                    "README.md",
+                    "docs/architecture.md",
+                    "docs/framework_abstraction.md",
+                    "docs/layout.md",
+                    "docs/bootstrap.md"
                 ]
             },
             5: {
-                "name": "Streaming Features and Final Components", 
+                "name": "Unit Tests",
+                "description": "test: add comprehensive unit test suite",
+                "files": [
+                    "tests/unit/",
+                    "tests/conftest.py"
+                ]
+            },
+            6: {
+                "name": "Integration and E2E Tests",
+                "description": "test: add integration and end-to-end test suites",
+                "files": [
+                    "tests/integration/",
+                    "tests/e2e/",
+                    "tests/manual/"
+                ]
+            },
+            7: {
+                "name": "Final Components and Streaming", 
                 "description": "feat: add streaming features and complete architecture implementation",
                 "files": [
                     "src/aether_frame/framework/adk/deepseek_llm.py",
@@ -191,22 +202,30 @@ class GitPushPlan:
         }
     
     def print_colored(self, text: str, color: str = "white") -> None:
-        """Print colored text to console (Windows PowerShell compatible)"""
-        # For Windows PowerShell compatibility, use simple text
+        """Print colored text to console (cross-platform compatible)"""
+        colors = {
+            "red": "\033[91m",
+            "green": "\033[92m", 
+            "yellow": "\033[93m",
+            "blue": "\033[94m",
+            "magenta": "\033[95m",
+            "cyan": "\033[96m",
+            "white": "\033[97m",
+            "bold": "\033[1m",
+            "reset": "\033[0m"
+        }
+        
+        # For Windows compatibility, check if we can use colors
         if os.name == 'nt':
-            print(f"[{color.upper()}] {text}")
+            try:
+                # Try to enable ANSI color support on Windows
+                import msvcrt
+                color_code = colors.get(color, colors["white"])
+                print(f"{color_code}{text}{colors['reset']}")
+            except ImportError:
+                # Fallback to simple text on Windows without color support
+                print(f"[{color.upper()}] {text}")
         else:
-            colors = {
-                "red": "\033[91m",
-                "green": "\033[92m", 
-                "yellow": "\033[93m",
-                "blue": "\033[94m",
-                "magenta": "\033[95m",
-                "cyan": "\033[96m",
-                "white": "\033[97m",
-                "bold": "\033[1m",
-                "reset": "\033[0m"
-            }
             color_code = colors.get(color, colors["white"])
             print(f"{color_code}{text}{colors['reset']}")
     
@@ -331,14 +350,14 @@ class GitPushPlan:
                 all_files.extend(phase["files"])
             return self.copy_files(target_dir, all_files)
         
-        elif phase_num.isdigit() and 1 <= int(phase_num) <= 5:
+        elif phase_num.isdigit() and 1 <= int(phase_num) <= 7:
             phase_number = int(phase_num)
             phase = self.phases[phase_number]
             self.print_colored(f"Copying Phase {phase_number}: {phase['name']}", "cyan")
             return self.copy_files(target_dir, phase["files"])
         
         else:
-            self.print_colored(f"Invalid phase: {phase_num}. Use 1-5 or 'all'.", "red")
+            self.print_colored(f"Invalid phase: {phase_num}. Use 1-7 or 'all'.", "red")
             return False
     
     def execute_phase(self, phase_num: int) -> bool:
@@ -360,6 +379,38 @@ class GitPushPlan:
         
         self.show_commit_preview()
         
+        # Check line count before commit confirmation
+        success, diff_output = self.run_command(["git", "diff", "--cached", "--stat"], capture_output=True)
+        if success and diff_output:
+            lines = diff_output.split()
+            insertions = 0
+            deletions = 0
+            
+            # Extract insertion/deletion counts from git diff --stat output
+            for i, word in enumerate(lines):
+                if "insertion" in word and i > 0:
+                    try:
+                        insertions = int(lines[i-1])
+                    except (ValueError, IndexError):
+                        pass
+                elif "deletion" in word and i > 0:
+                    try:
+                        deletions = int(lines[i-1])
+                    except (ValueError, IndexError):
+                        pass
+            
+            total_lines = insertions + deletions
+            if total_lines > 0:
+                self.print_colored(f"Estimated lines in this commit: {total_lines} (~{insertions} insertions, ~{deletions} deletions)", "cyan")
+                
+                if total_lines > 2000:
+                    self.print_colored(f"WARNING: This commit has {total_lines} lines (>2000 limit)", "yellow")
+                    confirm = input("This exceeds the 2000-line limit. Continue anyway? (y/n): ").strip().lower()
+                    if confirm not in ['y', 'yes']:
+                        self.print_colored(f"Phase {phase_num} cancelled due to line count.", "yellow")
+                        self.run_command(["git", "reset"])
+                        return False
+        
         # Confirm commit
         confirm = input(f"Proceed with Phase {phase_num} commit? (y/n): ").strip().lower()
         if confirm not in ['y', 'yes']:
@@ -377,7 +428,7 @@ class GitPushPlan:
 
 This commit includes:
 - {phase['name']}
-- Phase {phase_num}/5 of feat_execution_layer branch
+- Phase {phase_num}/7 of feat_execution_layer branch
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
 
@@ -396,7 +447,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"""
         """Execute all phases sequentially"""
         self.print_colored("Executing all phases sequentially...", "cyan")
         
-        for phase_num in range(1, 6):
+        for phase_num in range(1, 8):
             success = self.execute_phase(phase_num)
             if not success:
                 self.print_colored(f"Stopping at phase {phase_num} due to failure.", "red")
@@ -452,7 +503,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"""
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(description="Git Push Plan Execution Script")
-    parser.add_argument("phase", nargs="?", help="Phase number (1-5), 'all', 'copy', or 'list'")
+    parser.add_argument("phase", nargs="?", help="Phase number (1-7), 'all', 'copy', or 'list'")
     parser.add_argument("target_dir", nargs="?", help="Target directory for copy mode")
     parser.add_argument("copy_phase", nargs="?", help="Phase to copy (for copy mode)")
     parser.add_argument("--no-checks", action="store_true", help="Skip code quality checks")
@@ -500,14 +551,14 @@ def main():
     
     if phase == "all":
         git_plan.execute_all_phases()
-    elif phase.isdigit() and 1 <= int(phase) <= 5:
+    elif phase.isdigit() and 1 <= int(phase) <= 7:
         phase_num = int(phase)
         success = git_plan.execute_phase(phase_num)
         
-        # Run final tests only after phase 5
-        if success and phase_num == 5:
+        # Run final tests only after phase 7
+        if success and phase_num == 7:
             print()
-            git_plan.print_colored("Phase 5 completed! Running final verification...", "yellow")
+            git_plan.print_colored("Phase 7 completed! Running final verification...", "yellow")
             if os.path.exists("dev.py"):
                 test_success, test_output = git_plan.run_command(["python", "dev.py", "test"])
                 if test_success:
@@ -522,7 +573,7 @@ def main():
             else:
                 git_plan.print_colored("dev.py not found, skipping final tests", "yellow")
     else:
-        git_plan.print_colored("Invalid choice. Use 1-5, 'all', 'copy <target_dir> [phase]', or 'list'.", "red")
+        git_plan.print_colored("Invalid choice. Use 1-7, 'all', 'copy <target_dir> [phase]', or 'list'.", "red")
         return 1
     
     print()
