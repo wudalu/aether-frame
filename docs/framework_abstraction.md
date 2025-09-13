@@ -160,6 +160,56 @@ class ToolResult:
 
 ### Supporting Data Structures
 
+#### Live Execution and Streaming Contracts
+
+##### TaskStreamChunk (Real-time Event Streaming)
+```python
+@dataclass
+class TaskStreamChunk:
+    """Streaming execution block for real-time task processing."""
+    task_id: str  # Task identifier for event correlation
+    chunk_type: TaskChunkType  # Event type: RESPONSE, PROGRESS, TOOL_CALL_REQUEST, ERROR, etc.
+    sequence_id: int  # Sequential ordering for event stream
+    content: Union[str, Dict[str, Any]]  # Event content (text or structured data)
+    timestamp: datetime = field(default_factory=datetime.now)
+    is_final: bool = False  # Indicates final event in stream
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional event metadata
+```
+
+##### InteractionResponse (User Feedback)
+```python
+@dataclass
+class InteractionResponse:
+    """User response to an interaction request during live execution."""
+    interaction_id: str  # Unique identifier for interaction tracking
+    interaction_type: InteractionType  # Type of interaction: TOOL_APPROVAL, USER_INPUT, etc.
+    approved: bool  # User's approval decision
+    response_data: Optional[Dict[str, Any]] = None  # Additional response data
+    user_message: Optional[str] = None  # Optional user message
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+```
+
+##### InteractionRequest (System Interaction Requests)
+```python
+@dataclass
+class InteractionRequest:
+    """Request for user interaction during task execution."""
+    interaction_id: str  # Unique identifier for tracking
+    interaction_type: InteractionType  # Type of interaction needed
+    task_id: str  # Associated task identifier
+    content: Union[str, Dict[str, Any]]  # Interaction content or prompt
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+```
+
+##### Type Aliases for Live Execution
+```python
+# Type aliases for better readability
+LiveSession = AsyncIterator[TaskStreamChunk]  # Event stream type
+LiveExecutionResult = tuple[LiveSession, "LiveCommunicator"]  # Complete live result
+```
+
 #### User and Session Management
 ```python
 @dataclass
@@ -330,6 +380,27 @@ class AgentStatus(Enum):
     ERROR = "error"
     CLEANUP = "cleanup"
     TERMINATED = "terminated"
+
+@dataclass
+class TaskChunkType(Enum):
+    """Types of streaming execution events"""
+    PROCESSING = "processing"  # Task processing started
+    TOOL_CALL_REQUEST = "tool_call_request"  # Agent requests tool execution
+    TOOL_APPROVAL_REQUEST = "tool_approval_request"  # User approval needed for tool
+    USER_INPUT_REQUEST = "user_input_request"  # Agent requests user input
+    RESPONSE = "response"  # Agent response (final or partial)
+    PROGRESS = "progress"  # Intermediate progress update
+    COMPLETE = "complete"  # Task completion
+    ERROR = "error"  # Error occurred
+    CANCELLED = "cancelled"  # Task was cancelled
+
+@dataclass
+class InteractionType(Enum):
+    """Types of user interactions during live execution"""
+    TOOL_APPROVAL = "tool_approval"  # Approve/deny tool execution
+    USER_INPUT = "user_input"  # Provide requested input
+    CONFIRMATION = "confirmation"  # Confirm action
+    SELECTION = "selection"  # Select from options
 ```
 
 ## Layer Interface Design
@@ -376,9 +447,10 @@ class AgentStatus(Enum):
 - **ExecutionEngine** delegates task execution to selected **FrameworkAdapter**
 
 #### 2. Framework Abstraction Layer → Core Agent Layer  
-- **FrameworkAdapter** obtains **AgentManager** for agent lifecycle operations
-- **FrameworkAdapter** coordinates with **AgentManager** for agent creation and execution
+- **FrameworkAdapter** creates **DomainAgent** instances directly for task execution
+- **FrameworkAdapter** manages agent lifecycle (creation, execution, cleanup) internally  
 - **FrameworkAdapter** converts TaskRequest/TaskResult to/from framework-specific formats
+- **AgentManager** provides optional session-based agent lifecycle management for persistent sessions
 
 #### 3. Core Agent Layer → Tool Service Layer
 - **AgentManager** provides **DomainAgent** instances with access to **ToolService**
@@ -506,6 +578,7 @@ class ExecutionEngine:
     - Performance monitoring and execution metrics
     - Error handling and recovery strategies
     - Execution context management
+    - Live execution support with real-time interaction management
     
     Dependencies:
     - TaskRouter: Analyzes tasks and selects execution strategies
@@ -523,6 +596,15 @@ class ExecutionEngine:
     
     async def execute_task(self, task: TaskRequest, context: ExecutionContext) -> TaskResult:
         """Execute task using strategy-based framework selection"""
+        pass
+    
+    async def execute_task_live(
+        self, task: TaskRequest, context: ExecutionContext
+    ) -> LiveExecutionResult:
+        """
+        Execute task in live/interactive mode with real-time bidirectional
+        communication through framework-agnostic routing.
+        """
         pass
     
     def register_framework_adapter(self, framework_type: FrameworkType, adapter: 'FrameworkAdapter') -> None:
@@ -567,6 +649,36 @@ class TaskRouter:
 ```
 
 ### 2. Framework Abstraction Layer
+
+#### Live Communication Protocol
+
+##### LiveCommunicator Interface
+```python
+class LiveCommunicator(Protocol):
+    """
+    Protocol for bidirectional communication during live execution.
+    
+    Enables real-time interaction between executing agent and client during
+    interactive workflows such as tool approval, user input requests, and
+    session management.
+    """
+    
+    async def send_user_response(self, response: InteractionResponse) -> None:
+        """Send user response to interaction request"""
+        pass
+    
+    async def send_cancellation(self, reason: str = "user_cancelled") -> None:
+        """Send cancellation signal to stop execution"""
+        pass
+    
+    async def send_user_message(self, message: str) -> None:
+        """Send regular user message during live session"""
+        pass
+    
+    def close(self) -> None:
+        """Close communication channel and cleanup resources"""
+        pass
+```
 
 #### FrameworkRegistry Interface
 ```python
@@ -617,6 +729,7 @@ class FrameworkAdapter(ABC):
     - Agent lifecycle delegation through framework-optimized AgentManager
     - Framework capability reporting and task compatibility validation
     - Performance monitoring and framework-specific optimization
+    - Live execution support with real-time bidirectional communication
     
     Dependencies:
     - AgentManager: Delegates agent lifecycle operations to framework-optimized manager
@@ -640,6 +753,25 @@ class FrameworkAdapter(ABC):
         pass
     
     @abstractmethod
+    async def execute_task_live(
+        self, task: TaskRequest, context: ExecutionContext
+    ) -> LiveExecutionResult:
+        """
+        Execute task in live/interactive mode with real-time bidirectional communication.
+        
+        Returns tuple of (event_stream, communicator) where:
+        - event_stream: AsyncIterator[TaskStreamChunk] for real-time events
+        - communicator: LiveCommunicator for bidirectional communication
+        """
+        pass
+    
+    def supports_live_execution(self) -> bool:
+        """Check if framework supports live/interactive execution mode"""
+        return hasattr(self, "execute_task_live") and callable(
+            getattr(self, "execute_task_live")
+        )
+    
+    @abstractmethod
     def get_agent_manager(self) -> 'AgentManager':
         """Get framework-optimized agent manager for agent lifecycle operations"""
         pass
@@ -661,45 +793,43 @@ class FrameworkAdapter(ABC):
 ```python
 class AgentManager:
     """
-    Universal agent lifecycle coordinator that manages agent creation, execution,
-    and cleanup across different framework implementations.
+    Session-based agent lifecycle coordinator that manages persistent agent instances
+    for multi-turn conversations and long-running tasks.
     
     Core Capabilities:
-    - Framework-agnostic agent factory registration and management
-    - Agent instance lifecycle (creation, caching, cleanup) with resource tracking
-    - Agent execution coordination with request/response handling
-    - Cross-framework agent capability discovery and reporting
-    - Agent performance monitoring and health checking
+    - Session-based agent lifecycle management with automatic cleanup
+    - Long-lived agent instances for persistent conversations
+    - Agent resource tracking and session health monitoring
+    - Factory registration for framework-specific agent creation
+    - Expired session cleanup and resource management
     
     Dependencies:
-    - DomainAgent: Creates and manages framework-specific agent instances
-    - AgentConfig: Uses configuration to determine agent creation parameters
-    - AgentRequest/AgentResponse: Handles agent communication protocols
-    - FrameworkType: Routes to appropriate framework-specific agent factories
+    - DomainAgent: Manages framework-specific agent instances
+    - AgentConfig: Uses configuration for session agent creation
+    - FrameworkType: Routes to appropriate agent factories for sessions
     
-    Why it exists: Provides unified agent management that abstracts framework
-    differences while enabling framework-specific optimizations, allowing agents
-    from different frameworks to be managed consistently through a single interface.
+    Why it exists: Provides session-aware agent management for scenarios requiring
+    persistent agent state across multiple task executions, while keeping the
+    primary execution path (single-task agents) simple and direct through
+    FrameworkAdapter direct creation.
     """
     
-    def register_agent_factory(self, framework_type: FrameworkType, factory: Callable[[AgentConfig], DomainAgent]):
-        """Register factory function for creating framework-specific agents"""
+    async def get_or_create_session_agent(
+        self, session_id: str, agent_factory: Callable, agent_config: AgentConfig
+    ) -> DomainAgent:
+        """Get existing session agent or create new one using provided factory"""
         pass
     
-    async def create_agent(self, agent_config: AgentConfig) -> DomainAgent:
-        """Create new domain agent instance using registered factory"""
+    async def cleanup_session(self, session_id: str) -> bool:
+        """Clean up all resources for a session"""
         pass
     
-    async def get_or_create_agent(self, agent_config: AgentConfig) -> DomainAgent:
-        """Get existing agent or create new one"""
+    async def cleanup_expired_sessions(self, max_idle_time: timedelta) -> List[str]:
+        """Clean up sessions that have been idle for too long"""
         pass
     
-    async def invoke_agent(self, agent: DomainAgent, request: AgentRequest) -> AgentResponse:
-        """Execute agent request using domain agent"""
-        pass
-    
-    async def cleanup_agent(self, agent_id: str) -> bool:
-        """Clean up agent resources and remove from tracking"""
+    async def get_health_status(self) -> Dict[str, Any]:
+        """Get overall health status of the agent manager"""
         pass
 ```
 
@@ -1043,6 +1173,14 @@ class BuiltinTool(Tool):
 - Framework-agnostic tool execution with support for multiple tool types
 - MCP integration with namespace-aware multi-server support
 - Streaming execution capabilities through AsyncIterator pattern
+
+### 6. Live Execution Architecture
+- **Framework-Agnostic Streaming**: Live execution capabilities exposed through unified interfaces
+- **Bidirectional Communication**: Real-time event streaming with user interaction support  
+- **Event Standardization**: ADK events converted to unified TaskStreamChunk format for consistency
+- **Interactive Workflow Support**: Built-in patterns for tool approval, user input, and cancellation
+- **Protocol Abstraction**: LiveCommunicator protocol enables framework-specific implementations
+- **Session Lifecycle**: Proper management of long-running interactive sessions with cleanup
 
 ## Implementation Strategy
 

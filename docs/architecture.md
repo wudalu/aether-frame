@@ -149,6 +149,7 @@ sequenceDiagram
     participant DA as Domain Agents
     participant Tools as Tools Layer
     participant LLM as LLM Models
+    participant AM as Agent Manager<br/>(Session Management)
 
     ENTRY->>ENTRY: Create ExecutionContext
     ENTRY->>ENGINE: execute_task(TaskRequest, context)
@@ -158,52 +159,84 @@ sequenceDiagram
     ROUTER-->>ENGINE: Return StrategyConfig (with target_framework)
     ENGINE->>REGISTRY: get_adapter(target_framework)
     REGISTRY-->>ENGINE: Return FrameworkAdapter
-    ENGINE->>FAL: execute_task(task, context)
+    ENGINE->>FAL: execute_task(task, strategy)
     
-    alt ADK Framework Execution
-        FAL->>FAL: Convert TaskRequest to ADK format
-        FAL->>FW: Execute using ADK runtime
-        FW->>DA: Route to domain agents
+    alt Direct Framework Execution (Simplified)
+        FAL->>FAL: Build agent configuration from task
+        FAL->>FAL: Create domain agent directly
+        FAL->>DA: Execute task through domain agent
         DA->>Tools: Execute tools as needed
         Tools->>LLM: Process requests
         LLM-->>Tools: Return results
         Tools-->>DA: Tool results
-        DA-->>FW: Agent results
-        FW-->>FAL: ADK response
-        FAL->>FAL: Convert to TaskResult
-        FAL-->>ENGINE: Return TaskResult
-    
-    else AutoGen Framework Execution
-        FAL->>FAL: Convert TaskRequest to AutoGen format
-        FAL->>FW: Execute using AutoGen runtime
-        FW->>DA: Multi-agent conversation
-        DA->>Tools: Collaborative tool usage
-        Tools->>LLM: Generate content
-        LLM-->>Tools: Generated content
-        Tools-->>DA: Tool results
-        DA-->>FW: Conversation results
-        FW-->>FAL: AutoGen response
-        FAL->>FAL: Convert to TaskResult
+        DA-->>FAL: Task results
+        FAL->>FAL: Cleanup temporary agent
         FAL-->>ENGINE: Return TaskResult
         
-    else LangGraph Framework Execution
-        FAL->>FAL: Convert TaskRequest to LangGraph format
-        FAL->>FW: Execute using LangGraph workflow
-        FW->>DA: Graph-based execution
-        DA->>Tools: Workflow tool calls
-        Tools->>LLM: Execute workflow steps
-        LLM-->>Tools: Step results
-        Tools-->>DA: Tool results
-        DA-->>FW: Workflow results
-        FW-->>FAL: LangGraph response
-        FAL->>FAL: Convert to TaskResult
+        Note over FAL,DA: Direct agent creation<br/>No AgentManager routing
+        
+    else Session-Based Execution (Optional)
+        FAL->>AM: get_or_create_session_agent(session_id, factory)
+        AM->>AM: Check session cache
+        alt Session exists
+            AM-->>FAL: Return existing agent
+        else New session
+            AM->>FAL: Use provided factory
+            FAL->>DA: Create domain agent
+            AM->>AM: Store session agent
+            AM-->>FAL: Return new agent
+        end
+        FAL->>DA: Execute task through session agent
+        DA-->>FAL: Task results
         FAL-->>ENGINE: Return TaskResult
+        
+        Note over AM,DA: Session-based lifecycle<br/>for persistent agents
+    
+    else Live Interactive Execution
+        ENTRY->>ENGINE: execute_task_live(TaskRequest, ExecutionContext)
+        ENGINE->>ROUTER: select_strategy(task, context)
+        ROUTER-->>ENGINE: Return StrategyConfig (with live support)
+        ENGINE->>REGISTRY: get_adapter(target_framework)
+        REGISTRY-->>ENGINE: Return FrameworkAdapter (live-capable)
+        ENGINE->>FAL: execute_task_live(task, context)
+        
+        FAL->>FAL: Build agent configuration
+        FAL->>FAL: Create domain agent directly
+        FAL->>DA: Start live execution
+        DA-->>FAL: Return (event_stream, communicator)
+        FAL-->>ENGINE: Return LiveExecutionResult
+        ENGINE-->>ENTRY: Return (event_stream, communicator)
+        
+        loop Real-time Interaction
+            DA->>DA: Generate events (text, tool_calls, errors)
+            DA-->>ENTRY: Stream TaskStreamChunk events
+            
+            alt Tool Approval Required
+                ENTRY->>FAL: send_user_response(approved/denied)
+                FAL->>DA: Forward user decision
+                DA->>Tools: Continue/abort tool execution
+            end
+            
+            alt User Message
+                ENTRY->>FAL: send_user_message(message)
+                FAL->>DA: Forward user input
+                DA->>Tools: Process user message
+            end
+            
+            alt Session Cancellation
+                ENTRY->>FAL: send_cancellation(reason)
+                FAL->>DA: Terminate session
+                DA-->>ENTRY: Final completion event
+            end
+        end
+        
+        FAL->>FAL: Cleanup agent on session end
     end
     
     ENGINE-->>ENTRY: Return TaskResult
     
-    Note over ENGINE,REGISTRY: Simplified flow:<br/>Strategy → Framework → Execution
-    Note over FAL,FW: Framework Abstraction Layer<br/>handles all framework-specific<br/>conversions and execution
+    Note over ENGINE,REGISTRY: Simplified flow:<br/>Strategy → Framework → Direct Execution
+    Note over FAL,DA: Direct agent management<br/>eliminates routing complexity
 ```
 
 ## Core Components
@@ -213,6 +246,8 @@ sequenceDiagram
 #### Framework Adapter
 - **Role**: Unified interface for different agent frameworks (ADK, AutoGen, LangGraph)
 - **Function**: Translates high-level orchestration commands to framework-specific operations
+- **Live Execution**: Supports real-time bidirectional communication through `execute_task_live()` method
+- **Streaming Capabilities**: Enables interactive workflows with tool approval, user input, and real-time cancellation
 - **Configuration**: Runtime framework selection based on task requirements or configuration
 - **Benefits**: Framework-agnostic development, easy migration between frameworks
 
@@ -237,8 +272,9 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 **Core Responsibilities**:
 - **Strategy Selection**: Uses TaskRouter to analyze and select appropriate execution strategy
 - **Framework Routing**: Directly maps strategy to framework adapter via FrameworkRegistry
-- **Task Execution**: Delegates execution to selected framework adapter
-- **Result Management**: Returns unified TaskResult regardless of underlying framework
+- **Task Execution**: Delegates execution to selected framework adapter (sync and live modes)
+- **Live Session Management**: Coordinates real-time interactive execution sessions
+- **Result Management**: Returns unified TaskResult or LiveExecutionResult regardless of underlying framework
 
 **Task Router**:
 - **Role**: Analyze task characteristics and select appropriate execution strategy
@@ -306,6 +342,13 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 - **Direct Framework Routing**: Strategies directly specify target frameworks
 - **Simplified Architecture**: Eliminates unnecessary intermediate layers
 - **Framework Agnostic**: Consistent behavior across ADK, AutoGen, and LangGraph frameworks
+
+### 4. Live Execution and Streaming Strategy
+- **Bidirectional Communication**: Real-time event streaming with user interaction support
+- **Framework Integration**: Live execution capabilities exposed through framework adapters
+- **Event Conversion**: ADK events converted to unified TaskStreamChunk format
+- **Interactive Workflows**: Built-in support for tool approval and user intervention scenarios
+- **Session Management**: Proper lifecycle handling for long-running interactive sessions
 
 ## Security and Compliance
 

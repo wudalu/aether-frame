@@ -210,3 +210,12 @@ grafana/
 CLAUDE.md
 chat.md
 personal/
+coding_plan.md
+llm.txt
+llmfull.txt
+cr.md
+todo.md
+refactor.md
+outsider/
+.env.test
+archive/

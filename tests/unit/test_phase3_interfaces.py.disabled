@@ -1,0 +1,207 @@
+# -*- coding: utf-8 -*-
+"""Tests for Phase 3 Interface Clean Separation."""
+
+import pytest
+import sys
+from unittest.mock import MagicMock, AsyncMock
+
+from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
+from src.aether_frame.contracts import TaskRequest, ExecutionContext, FrameworkType
+
+
+# Mock ADK modules at the system level for Phase 3
+def setup_adk_mocks_phase3():
+    """Setup mock ADK modules for Phase 3 testing."""
+    # Create mock modules
+    mock_adk = MagicMock()
+    mock_adk_runners = MagicMock()
+    mock_adk_agents = MagicMock()
+    mock_run_config_module = MagicMock()
+    
+    # Setup services
+    mock_session_service = AsyncMock()
+    mock_artifact_service = MagicMock()
+    mock_runner_instance = MagicMock()
+    mock_runner_instance.session_service = mock_session_service
+    mock_runner_instance.artifact_service = mock_artifact_service
+    
+    # Setup service classes
+    mock_adk.sessions = MagicMock()
+    mock_adk.sessions.SessionService = MagicMock()
+    mock_adk.sessions.SessionService.return_value = mock_session_service
+    
+    mock_adk.artifacts = MagicMock()
+    mock_adk.artifacts.ArtifactService = MagicMock()
+    mock_adk.artifacts.ArtifactService.return_value = mock_artifact_service
+    
+    # Setup runner
+    mock_adk_runners.Runner = MagicMock()
+    mock_adk_runners.Runner.return_value = mock_runner_instance
+    
+    # Setup agents
+    mock_adk.Agent = MagicMock()
+    mock_adk_agents.run_config = mock_run_config_module
+    mock_adk.agents = mock_adk_agents
+    
+    # Register in sys.modules
+    sys.modules['google.adk'] = mock_adk
+    sys.modules['google.adk.runners'] = mock_adk_runners
+    sys.modules['google.adk.agents'] = mock_adk_agents
+    sys.modules['google.adk.agents.run_config'] = mock_run_config_module
+    sys.modules['google.adk.sessions'] = mock_adk.sessions
+    sys.modules['google.adk.artifacts'] = mock_adk.artifacts
+    
+    return mock_adk, mock_adk_runners, mock_run_config_module
+
+
+@pytest.fixture(scope='session', autouse=True)
+def adk_mocks_phase3():
+    """Session-wide fixture to setup ADK mocks for Phase 3."""
+    mocks = setup_adk_mocks_phase3()
+    yield mocks
+    # Cleanup
+    modules_to_remove = [
+        'google.adk', 'google.adk.runners', 'google.adk.agents',
+        'google.adk.agents.run_config', 'google.adk.sessions', 'google.adk.artifacts'
+    ]
+    for module in modules_to_remove:
+        if module in sys.modules:
+            del sys.modules[module]
+
+
+@pytest.fixture
+async def initialized_adapter_phase3():
+    """Create an initialized ADK framework adapter for Phase 3 testing."""
+    adapter = AdkFrameworkAdapter()
+    await adapter.initialize({"app_name": "test_phase3"})
+    return adapter
+
+
+class TestPhase3InterfaceCleanSeparation:
+    """Test cases for Phase 3 Interface Clean Separation."""
+
+    def test_dependency_injection_interfaces_before_init(self):
+        """Test dependency injection interfaces before initialization."""
+        adapter = AdkFrameworkAdapter()
+        
+        # get_runner should fail before initialization
+        with pytest.raises(RuntimeError, match="Framework not initialized"):
+            adapter.get_runner()
+        
+        # Other interfaces should handle uninitialized state gracefully
+        assert adapter.get_session("test") is None
+        assert adapter.list_active_sessions() == []
+        assert adapter.get_session_service() is None
+        assert adapter.is_runtime_ready() is False
+
+    async def test_dependency_injection_interfaces_after_init(self, initialized_adapter_phase3):
+        """Test dependency injection interfaces after initialization."""
+        adapter = initialized_adapter_phase3
+        
+        # get_runner should work
+        runner = adapter.get_runner()
+        assert runner is not None
+        assert runner == adapter._runner
+        
+        # get_session_service should work
+        session_service = adapter.get_session_service()
+        assert session_service is not None
+        assert session_service == adapter._runner.session_service
+        
+        # is_runtime_ready should return True
+        assert adapter.is_runtime_ready() is True
+
+    async def test_session_management_interfaces(self, initialized_adapter_phase3):
+        """Test session management interfaces."""
+        adapter = initialized_adapter_phase3
+        
+        # Initially no sessions
+        assert adapter.list_active_sessions() == []
+        assert adapter.get_session("nonexistent") is None
+        
+        # Add a session manually for testing
+        mock_session = MagicMock()
+        adapter._active_sessions["test_session_1"] = mock_session
+        adapter._active_sessions["test_session_2"] = MagicMock()
+        
+        # Test session access
+        assert adapter.get_session("test_session_1") == mock_session
+        assert adapter.get_session("test_session_2") is not None
+        assert adapter.get_session("nonexistent") is None
+        
+        # Test listing sessions
+        active_sessions = adapter.list_active_sessions()
+        assert len(active_sessions) == 2
+        assert "test_session_1" in active_sessions
+        assert "test_session_2" in active_sessions
+
+    async def test_runner_access_error_handling(self):
+        """Test error handling in Runner access methods."""
+        adapter = AdkFrameworkAdapter()
+        
+        # Test with uninitialized adapter
+        with pytest.raises(RuntimeError, match="Framework not initialized"):
+            adapter.get_runner()
+        
+        # Initialize but simulate Runner creation failure
+        adapter._initialized = True
+        adapter._runner = None
+        
+        with pytest.raises(RuntimeError, match="ADK Runner not available"):
+            adapter.get_runner()
+
+    async def test_session_service_access_with_missing_runner(self):
+        """Test session service access when Runner is missing or incomplete."""
+        adapter = AdkFrameworkAdapter()
+        
+        # No runner
+        assert adapter.get_session_service() is None
+        
+        # Runner without session_service
+        adapter._runner = MagicMock()
+        del adapter._runner.session_service  # Remove session_service attribute
+        assert adapter.get_session_service() is None
+        
+        # Runner with session_service
+        adapter._runner.session_service = MagicMock()
+        assert adapter.get_session_service() == adapter._runner.session_service
+
+    async def test_is_runtime_ready_comprehensive(self):
+        """Test is_runtime_ready with various states."""
+        adapter = AdkFrameworkAdapter()
+        
+        # Not initialized
+        assert adapter.is_runtime_ready() is False
+        
+        # Initialized but no runner
+        adapter._initialized = True
+        assert adapter.is_runtime_ready() is False
+        
+        # Initialized with runner but no session service
+        adapter._runner = MagicMock()
+        del adapter._runner.session_service
+        assert adapter.is_runtime_ready() is False
+        
+        # Initialized with runner and session service but None
+        adapter._runner.session_service = None
+        assert adapter.is_runtime_ready() is False
+        
+        # Fully ready
+        adapter._runner.session_service = MagicMock()
+        assert adapter.is_runtime_ready() is True
+
+    async def test_interface_integration_with_execute_task_live(self, initialized_adapter_phase3):
+        """Test that Phase 3 interfaces work with existing execute_task_live."""
+        adapter = initialized_adapter_phase3
+        
+        # Verify interfaces are accessible during execution setup
+        assert adapter.is_runtime_ready() is True
+        runner = adapter.get_runner()
+        session_service = adapter.get_session_service()
+        
+        assert runner is adapter._runner
+        assert session_service is adapter._runner.session_service
+        
+        # The interfaces should be ready for AgentManager integration
+        assert runner is not None
+        assert session_service is not None

@@ -1,6 +1,6 @@
 # Aether Frame Project Layout
 
-This document defines the complete directory structure and organization of the Aether Frame project.
+This document defines the complete directory structure and organization of the Aether Frame project based on the Framework Abstraction Layer architecture.
 
 ## Overall Project Structure
 
@@ -18,7 +18,9 @@ aether-frame/
 ├── .env.example                    # Environment variable template
 ├── dev.py                          # Python-based development command management
 ├── docs/                          # Documentation directory
-│   └── architecture.md            # Architecture design document
+│   ├── architecture.md            # Architecture design document
+│   ├── framework_abstraction.md   # Framework abstraction layer design
+│   └── layout.md                  # This document
 ├── scripts/                       # Scripts directory
 │   ├── compile-requirements.sh    # Dependency compilation script
 │   ├── setup.sh                   # Environment setup script
@@ -33,26 +35,38 @@ aether-frame/
     └── aether_frame/              # Main package
         ├── __init__.py
         ├── main.py                # Application entry point
+        ├── contracts/             # Data contracts layer
+        ├── execution/             # Application Execution Layer
+        ├── framework/             # Framework Abstraction Layer
+        ├── agents/                # Core Agent Layer
+        ├── tools/                 # Tool Service Layer
+        ├── infrastructure/        # Infrastructure Layer
         ├── config/                # Configuration module
-        ├── common/                # Common utilities module
-        ├── execution/             # Execution layer
-        ├── framework/             # Framework abstraction layer
-        ├── agents/                # Core Agent layer
-        ├── tools/                 # Tool service layer
-        ├── memory/                # Memory/context module
-        ├── observability/         # Observability module
-        └── infrastructure/        # Infrastructure layer
+        └── common/                # Common utilities module
 ```
 
 ## Core Module Detailed Structure
+
+### Data Contracts Layer (contracts/)
+Defines all data structures for inter-layer communication following the Framework Abstraction Layer design.
+
+```
+contracts/
+├── __init__.py
+├── requests.py         # TaskRequest, AgentRequest, ToolRequest
+├── responses.py        # TaskResult, AgentResponse, ToolResult
+├── contexts.py         # UserContext, SessionContext, ExecutionContext
+├── configs.py          # AgentConfig, ExecutionConfig, StrategyConfig
+└── enums.py           # FrameworkType, TaskStatus, ToolStatus, etc.
+```
 
 ### Configuration Module (config/)
 ```
 config/
 ├── __init__.py
-├── settings.py        # Application settings
-├── logging.py         # Logging configuration
-└── environment.py     # Environment variable management
+├── settings.py         # Application settings
+├── logging.py          # Logging configuration
+└── environment.py      # Environment variable management
 ```
 
 ### Common Utilities Module (common/)
@@ -65,133 +79,100 @@ common/
 └── types.py           # Type definitions
 ```
 
-### Execution Layer (execution/)
-Corresponds to the Application Orchestration Layer in the architecture, responsible for task execution routing and control.
+### Application Execution Layer (execution/)
+Corresponds to the Application Execution Layer in the architecture, responsible for task execution orchestration and framework routing.
 
 ```
 execution/
 ├── __init__.py
-├── ai_assistant.py    # AI Assistant component - task routing decisions
-├── workflow/          # Workflow Engine - static workflows
-│   ├── __init__.py
-│   ├── engine.py
-│   └── executor.py
-└── coordinator/       # Coordinator Agent - dynamic workflows
-    ├── __init__.py
-    ├── agent.py
-    └── planner.py
+├── ai_assistant.py     # AIAssistant - system entry point
+├── execution_engine.py # ExecutionEngine - central orchestration
+└── task_router.py      # TaskRouter - strategy selection
 ```
 
 ### Framework Abstraction Layer (framework/)
-Corresponds to the Framework Abstraction Layer in the architecture, providing multi-framework support.
+Provides unified interfaces for multiple agent frameworks with framework-specific implementations.
 
 ```
 framework/
 ├── __init__.py
-├── adapter.py         # Framework Adapter
-├── api.py            # Unified Agent API
-├── config.py         # Framework Config
-├── adk/              # ADK framework implementation
+├── framework_registry.py # FrameworkRegistry - framework adapter management
+├── base/              # Abstract base classes
 │   ├── __init__.py
-│   ├── runtime.py
-│   └── adapter.py
-├── autogen/          # AutoGen framework implementation
+│   ├── framework_adapter.py # FrameworkAdapter ABC
+│   └── agent_manager.py     # AgentManager interface
+├── adk/               # ADK framework implementation
 │   ├── __init__.py
-│   └── adapter.py
-└── langgraph/        # LangGraph framework implementation
+│   └── adk_adapter.py       # AdkFrameworkAdapter
+├── autogen/           # AutoGen framework implementation
+│   ├── __init__.py
+│   └── adapter.py     # AutoGenFrameworkAdapter (future)
+└── langgraph/         # LangGraph framework implementation
     ├── __init__.py
-    └── adapter.py
+    └── adapter.py     # LangGraphFrameworkAdapter (future)
 ```
 
 ### Core Agent Layer (agents/)
-Corresponds to the Core Agent Layer in the architecture.
+Provides unified agent management and framework-agnostic agent interfaces.
 
 ```
 agents/
 ├── __init__.py
-├── base/             # Base agent classes
+├── manager.py         # AgentManager - unified agent lifecycle management
+├── base/              # Abstract agent interfaces
 │   ├── __init__.py
-│   ├── agent.py      # Agent base class
-│   └── lifecycle.py  # Agent lifecycle management
-├── domain/           # Domain Agents - domain-specific agents
-│   ├── __init__.py
-│   ├── agent1/       # Example domain agent 1
-│   │   ├── __init__.py
-│   │   └── agent.py
-│   ├── agent2/       # Example domain agent 2
-│   │   ├── __init__.py
-│   │   └── agent.py
-│   └── registry.py   # Agent Registry
-└── factory.py        # Agent Factory
+│   ├── domain_agent.py # DomainAgent ABC
+│   └── agent_hooks.py  # AgentHooks interface
+└── adk/               # ADK-specific domain agent implementations
+    ├── __init__.py
+    ├── adk_domain_agent.py # AdkDomainAgent
+    └── adk_agent_hooks.py  # AdkAgentHooks
 ```
 
 ### Tool Service Layer (tools/)
-Corresponds to the Tool Service Layer in the architecture, as an independent service layer.
+Unified tool execution service supporting multiple tool types and protocols.
 
 ```
 tools/
 ├── __init__.py
-├── base.py           # Tool base class
-├── registry.py       # Tool Registry
-├── search/           # Search tools
+├── service.py         # ToolService - unified tool interface
+├── base/              # Abstract tool interfaces
 │   ├── __init__.py
-│   └── engines.py
-├── llm/             # LLM tools
+│   └── tool.py        # Tool ABC
+├── builtin/           # Built-in system tools
 │   ├── __init__.py
-│   ├── openai.py
-│   └── vertexai.py
-└── external/        # External API tools
+│   └── tools.py       # Echo, timestamp, etc.
+├── adk_native/        # ADK framework native tool wrappers
+│   ├── __init__.py
+│   └── wrappers.py
+└── mcp/               # Model Context Protocol integration
     ├── __init__.py
-    └── apis.py
-```
-
-### Memory/Context Module (memory/)
-Manages application-level memory and context, including session management.
-
-```
-memory/
-├── __init__.py
-├── interface.py      # Memory interface definitions
-├── store.py         # State Store implementation
-├── context.py       # Context management
-├── session/         # Session Manager
-│   ├── __init__.py
-│   └── manager.py
-└── providers/       # External memory implementations
-    ├── __init__.py
-    ├── redis.py     # Redis storage implementation
-    └── postgres.py  # PostgreSQL storage implementation
-```
-
-### Observability Module (observability/)
-Integrates observability-related capabilities.
-
-```
-observability/
-├── __init__.py
-├── metrics.py       # Metrics collection
-├── tracing.py       # Distributed tracing
-├── logging.py       # Log management
-└── monitoring.py    # Monitoring integration
+    ├── client_manager.py # MCPClientManager
+    └── tools.py       # MCPTool implementation
 ```
 
 ### Infrastructure Layer (infrastructure/)
-Corresponds to the Infrastructure Layer in the architecture.
+Core infrastructure services including memory, session management, and observability.
 
 ```
 infrastructure/
 ├── __init__.py
-├── runtime/         # Framework runtime integrations
+├── session/           # Session Manager - session lifecycle
 │   ├── __init__.py
-│   ├── adk_runtime.py      # ADK Runtime integration
-│   ├── autogen_runtime.py  # AutoGen Runtime integration
-│   └── langgraph_runtime.py # LangGraph Runtime integration
-├── storage/         # Storage related
+│   └── manager.py
+├── storage/           # State Store - state persistence
 │   ├── __init__.py
 │   └── providers.py
-└── external/        # External service integrations
+├── logging/           # Logging System - centralized logging
+│   ├── __init__.py
+│   └── handlers.py
+├── monitoring/        # Monitoring - performance metrics
+│   ├── __init__.py
+│   └── collectors.py
+└── adk/               # ADK-specific infrastructure adapters
     ├── __init__.py
-    └── services.py
+    ├── adk_memory_adapter.py  # ADK context.state integration
+    └── adk_observer.py        # ADK monitoring integration
 ```
 
 ## Dependency Management Strategy
@@ -239,41 +220,59 @@ python dev.py clean
 
 | Architecture Layer | Directory | Description |
 |-------------------|-----------|-------------|
-| Application Orchestration Layer | `execution/` | Execution layer, containing AI Assistant and two workflow modes |
-| Framework Abstraction Layer | `framework/` | Framework abstraction layer, supporting multi-framework switching |
-| Core Agent Layer | `agents/` + `tools/` | Core Agent layer and tool service layer |
-| Infrastructure Layer | `infrastructure/` | Infrastructure layer, containing various external integrations |
-| Memory/Context | `memory/` | Memory and context management, including session management |
+| Application Execution Layer | `execution/` | Entry point, orchestration, and framework routing |
+| Framework Abstraction Layer | `framework/` | Multi-framework support with unified interfaces |
+| Core Agent Layer | `agents/` | Agent lifecycle management and abstract interfaces |
+| Tool Service Layer | `tools/` | Unified tool execution and management |
+| Infrastructure Layer | `infrastructure/` | Session, storage, logging, monitoring, and ADK adapters |
+| Data Contracts Layer | `contracts/` | Inter-layer communication data structures |
+| Configuration | `config/` | Settings and environment management |
+| Common Utilities | `common/` | Shared utilities and exceptions |
 
 ## Development Conventions
 
-1. **Code Organization**: Organized by architectural layers, each layer has clear responsibilities
-2. **Dependency Management**: Use pip-tools to manage deterministic dependencies
-3. **Testing Strategy**: Separate unit tests, integration tests, and end-to-end tests
-4. **Configuration Management**: Environment variables + configuration file separation
-5. **Observability**: Built-in monitoring, logging, and tracing capabilities
+1. **Code Organization**: Organized by architectural layers with clear separation of concerns
+2. **Data Contracts**: All inter-layer communication through well-defined data structures
+3. **Framework Abstraction**: Framework-specific code isolated in framework/ subdirectories
+4. **Infrastructure Services**: Cross-cutting concerns handled by infrastructure layer
+5. **Dependency Management**: Use pip-tools to manage deterministic dependencies
+6. **Testing Strategy**: Separate unit tests, integration tests, and end-to-end tests
+7. **Configuration Management**: Environment variables + configuration file separation
+8. **Observability**: Built-in logging and monitoring through infrastructure layer
 
 ## Extension Guide
-
-### Adding New Domain Agents
-```
-agents/domain/new_agent/
-├── __init__.py
-├── agent.py
-└── config.py
-```
 
 ### Adding New Framework Support
 ```
 framework/new_framework/
 ├── __init__.py
-├── adapter.py
-└── runtime.py
+├── adapter.py          # NewFrameworkAdapter extending FrameworkAdapter
+└── (configuration files specific to the framework)
 ```
 
-### Adding New Tools
+**Agent implementations for new frameworks go in the agents layer:**
 ```
-tools/new_tool/
+agents/new_framework/
 ├── __init__.py
-└── implementation.py
+├── new_domain_agent.py # Framework-specific domain agent
+└── new_agent_hooks.py  # Framework-specific hooks
+```
+
+### Adding New Tool Types
+```
+tools/new_tool_type/
+├── __init__.py
+├── tools.py           # Tool implementations extending Tool ABC
+└── client.py          # Protocol-specific client (if needed)
+```
+
+### Adding New Domain Agents
+Domain agents are now created through the framework adapter system rather than pre-defined directories. They are managed by the AgentManager using factory patterns.
+
+### Adding Infrastructure Services
+```
+infrastructure/new_service/
+├── __init__.py
+├── service.py         # Service implementation
+└── adapters.py        # Framework-specific adapters (if needed)
 ```
