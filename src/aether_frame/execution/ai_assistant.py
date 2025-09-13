@@ -4,8 +4,14 @@
 from typing import Optional
 
 from ..config.settings import Settings
-from ..contracts import TaskRequest, TaskResult, TaskStatus, LiveExecutionResult, ExecutionContext, FrameworkType
-from ..framework.framework_registry import FrameworkRegistry
+from ..contracts import (
+    ExecutionContext,
+    FrameworkType,
+    LiveExecutionResult,
+    TaskRequest,
+    TaskResult,
+    TaskStatus,
+)
 from .execution_engine import ExecutionEngine
 
 
@@ -18,13 +24,27 @@ class AIAssistant:
     formatting.
     """
 
-    def __init__(self, settings: Optional[Settings] = None):
-        """Initialize AI Assistant with configuration."""
+    def __init__(
+        self, execution_engine: ExecutionEngine, settings: Optional[Settings] = None
+    ):
+        """Initialize AI Assistant with pre-initialized execution engine."""
+        self.execution_engine = execution_engine
         self.settings = settings or Settings()
-        self.framework_registry = FrameworkRegistry()
-        self.execution_engine = ExecutionEngine(
-            framework_registry=self.framework_registry, settings=self.settings
-        )
+
+    @classmethod
+    async def create(cls, settings: Optional[Settings] = None) -> "AIAssistant":
+        """
+        Alternative constructor using bootstrap.
+
+        Args:
+            settings: Optional application settings
+
+        Returns:
+            AIAssistant: Fully initialized AI Assistant
+        """
+        from ..bootstrap import create_ai_assistant
+
+        return await create_ai_assistant(settings)
 
     async def process_request(self, task_request: TaskRequest) -> TaskResult:
         """
@@ -56,7 +76,9 @@ class AIAssistant:
                 error_message=f"Processing failed: {str(e)}",
             )
 
-    async def start_live_session(self, task_request: TaskRequest) -> LiveExecutionResult:
+    async def start_live_session(
+        self, task_request: TaskRequest
+    ) -> LiveExecutionResult:
         """
         Start a live interactive session for real-time task processing.
 
@@ -64,7 +86,7 @@ class AIAssistant:
             task_request: The task to be processed in live mode
 
         Returns:
-            LiveExecutionResult: Tuple of (event_stream, communicator) for 
+            LiveExecutionResult: Tuple of (event_stream, communicator) for
             bidirectional communication
         """
         try:
@@ -80,11 +102,13 @@ class AIAssistant:
                     execution_id=f"live_{task_request.task_id}",
                     framework_type=FrameworkType.ADK,
                     execution_mode="live",
-                    timeout=300
+                    timeout=300,
                 )
 
             # Delegate to execution engine for live execution
-            return await self.execution_engine.execute_task_live(task_request, execution_context)
+            return await self.execution_engine.execute_task_live(
+                task_request, execution_context
+            )
 
         except Exception as e:
             raise RuntimeError(f"Live session failed to start: {str(e)}")
@@ -103,11 +127,9 @@ class AIAssistant:
         """Check system health status."""
         return {
             "status": "healthy",
-            "frameworks": await self.framework_registry.\
-                get_available_frameworks(),
             "version": (
-                self.settings.version
-                if hasattr(self.settings, "version")
+                self.settings.app_version
+                if hasattr(self.settings, "app_version")
                 else "unknown"
             ),
         }

@@ -22,9 +22,7 @@ class ExecutionEngine:
     """
 
     def __init__(
-        self,
-        framework_registry: FrameworkRegistry,
-        settings: Optional[Settings] = None
+        self, framework_registry: FrameworkRegistry, settings: Optional[Settings] = None
     ):
         """Initialize execution engine with framework registry and settings."""
         self.framework_registry = framework_registry
@@ -55,13 +53,11 @@ class ExecutionEngine:
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=f"Framework {strategy.framework_type} not "
-                                  f"available",
+                    f"available",
                 )
 
             # Pass TaskRequest and Strategy to framework adapter
-            result = await framework_adapter.execute_task(
-                task_request, strategy
-            )
+            result = await framework_adapter.execute_task(task_request, strategy)
             return result
 
         except Exception as e:

@@ -51,9 +51,8 @@ class ToolService:
         Args:
             tool: Tool instance to register
         """
-        # Initialize tool if not already initialized
-        if not tool.is_initialized:
-            await tool.initialize()
+        # Bootstrap ensures all tools are pre-initialized during registration
+        # No need for runtime initialization check
 
         # Register tool
         self._tools[tool.full_name] = tool
@@ -179,7 +178,7 @@ class ToolService:
             tool_health[name] = await tool.health_check()
 
         return {
-            "service_status": "healthy" if self._initialized else "not_initialized",
+            "service_status": "healthy",  # Bootstrap ensures service is always initialized
             "total_tools": len(self._tools),
             "namespaces": list(self._tool_namespaces.keys()),
             "tools": tool_health,

@@ -1,6 +1,6 @@
 """Application settings using Pydantic."""
 
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -32,13 +32,28 @@ class Settings(BaseSettings):
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
 
-    anthropic_api_key: Optional[str] = Field(
-        default=None, env="ANTHROPIC_API_KEY"
-    )
+    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(
         default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
     )
     anthropic_max_tokens: int = Field(default=4096, env="ANTHROPIC_MAX_TOKENS")
+
+    # DeepSeek configuration
+    deepseek_api_key: Optional[str] = Field(default=None, env="DEEPSEEK_API_KEY")
+    deepseek_model: str = Field(default="deepseek-chat", env="DEEPSEEK_MODEL")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
+    deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
+    deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
+
+    # Google AI/Vertex AI configuration
+    google_ai_api_key: Optional[str] = Field(default=None, env="GOOGLE_AI_API_KEY")
+    vertex_ai_project_id: Optional[str] = Field(default=None, env="VERTEX_AI_PROJECT_ID")
+    vertex_ai_location: str = Field(default="us-central1", env="VERTEX_AI_LOCATION")
+    vertex_ai_model: str = Field(default="gemini-pro", env="VERTEX_AI_MODEL")
+
+    # Default model configuration
+    default_model_provider: str = Field(default="deepseek", env="DEFAULT_MODEL_PROVIDER")
+    default_model: str = Field(default="deepseek-chat", env="DEFAULT_MODEL")
 
     # Memory & Storage configuration
     memory_backend: str = Field(default="redis", env="MEMORY_BACKEND")
@@ -59,6 +74,15 @@ class Settings(BaseSettings):
     max_concurrent_tasks: int = Field(default=10, env="MAX_CONCURRENT_TASKS")
     task_timeout: int = Field(default=300, env="TASK_TIMEOUT")
     memory_limit_mb: int = Field(default=1024, env="MEMORY_LIMIT_MB")
+
+    # Bootstrap configuration
+    enable_tool_service: bool = Field(default=True, env="ENABLE_TOOL_SERVICE")
+    enable_mcp_tools: bool = Field(default=False, env="ENABLE_MCP_TOOLS")
+    enable_adk_native_tools: bool = Field(default=False, env="ENABLE_ADK_NATIVE_TOOLS")
+
+    # Framework preferences
+    preferred_frameworks: List[str] = Field(default=["adk"], env="PREFERRED_FRAMEWORKS")
+    framework_timeout: int = Field(default=30, env="FRAMEWORK_TIMEOUT")
 
     class Config:
         """Pydantic configuration."""

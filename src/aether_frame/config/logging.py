@@ -10,9 +10,7 @@ import structlog
 
 
 def setup_logging(
-    level: str = "INFO",
-    log_format: str = "json",
-    log_file_path: Optional[str] = None
+    level: str = "INFO", log_format: str = "json", log_file_path: Optional[str] = None
 ) -> None:
     """Setup structured logging configuration."""
 
@@ -44,12 +42,8 @@ def setup_logging(
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
-            "json": {
-                "format": "%(asctime)s %(name)s %(levelname)s %(message)s"
-            },
-            "standard": {
-                "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-            },
+            "json": {"format": "%(asctime)s %(name)s %(levelname)s %(message)s"},
+            "standard": {"format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"},
         },
         "handlers": {
             "console": {

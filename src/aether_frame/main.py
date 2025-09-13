@@ -4,12 +4,13 @@ import asyncio
 import logging
 from typing import Optional
 
+from aether_frame.bootstrap import create_ai_assistant
 from aether_frame.config.settings import Settings
-from aether_frame.execution.ai_assistant import AIAssistant
+from aether_frame.contracts import TaskRequest
 
 
 async def main() -> None:
-    """Main application entry point."""
+    """Main application entry point using bootstrap."""
     # Load configuration
     settings = Settings()
 
@@ -22,17 +23,19 @@ async def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info(f"Starting Aether Frame v{settings.app_version}")
 
-    # Initialize AI Assistant
-    assistant = AIAssistant(settings)
+    # Initialize AI Assistant using bootstrap
+    assistant = await create_ai_assistant(settings)
 
     # Example usage
-    task = {
-        "description": "Example task for demonstration",
-        "context": {"domain": "example"},
-    }
+    task_request = TaskRequest(
+        task_id="demo_task_001",
+        task_type="chat",
+        description="Example task for demonstration",
+        metadata={"domain": "example"},
+    )
 
     try:
-        result = await assistant.process_request(task)
+        result = await assistant.process_request(task_request)
         logger.info(f"Task completed: {result}")
     except Exception as e:
         logger.error(f"Task failed: {e}")

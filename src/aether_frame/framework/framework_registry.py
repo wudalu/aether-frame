@@ -55,21 +55,30 @@ class FrameworkRegistry:
             await self._auto_load_adapter(framework_type)
 
         adapter = self._adapters.get(framework_type)
-        if adapter and not self._initialization_status.get(
-            framework_type, False
-        ):
+        if adapter and not self._initialization_status.get(framework_type, False):
             await self._initialize_adapter(framework_type, adapter)
 
         return adapter
 
     async def get_available_frameworks(self) -> List[FrameworkType]:
-        """Get list of available framework types."""
+        """Get list of available framework types.
+
+        For core frameworks (like ADK), availability is determined by successful initialization.
+        For optional frameworks, availability checking may still be used.
+        """
         available = []
         for framework_type in FrameworkType:
             try:
                 adapter = await self.get_adapter(framework_type)
-                if adapter and await adapter.is_available():
-                    available.append(framework_type)
+                if adapter and self._initialization_status.get(framework_type, False):
+                    # Core frameworks: check initialization status
+                    if framework_type == FrameworkType.ADK:
+                        # ADK is available if successfully initialized
+                        available.append(framework_type)
+                    else:
+                        # Optional frameworks: use availability check
+                        if await adapter.is_available():
+                            available.append(framework_type)
             except Exception:
                 # Skip unavailable frameworks
                 continue
@@ -103,9 +112,7 @@ class FrameworkRegistry:
 
                 adapter = AdkFrameworkAdapter()
                 # Get static capability configuration for ADK
-                capability_config = get_framework_capability_config(
-                    framework_type
-                )
+                capability_config = get_framework_capability_config(framework_type)
                 # Convert to dict for registration
                 config = {
                     "capabilities": capability_config,
@@ -150,8 +157,6 @@ class FrameworkRegistry:
         """Get status information for a framework adapter."""
         return {
             "registered": framework_type in self._adapters,
-            "initialized": self._initialization_status.get(
-                framework_type, False
-            ),
+            "initialized": self._initialization_status.get(framework_type, False),
             "config": self._adapter_configs.get(framework_type, {}),
         }

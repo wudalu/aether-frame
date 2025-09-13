@@ -34,9 +34,7 @@ class AgentHooks(ABC):
         pass
 
     @abstractmethod
-    async def after_execution(
-        self, agent_request: AgentRequest, result: TaskResult
-    ):
+    async def after_execution(self, agent_request: AgentRequest, result: TaskResult):
         """
         Hook called after task execution.
 

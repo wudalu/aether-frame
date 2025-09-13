@@ -111,36 +111,28 @@ class RoutingConfig:
         """Initialize default complexity routing."""
         self.complexity_routing = {
             TaskComplexity.SIMPLE: ComplexityRouting(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.AUTOGEN
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.AUTOGEN],
                 execution_mode=ExecutionMode.SYNC,
                 max_iterations=5,
                 timeout=30,
                 retry_count=2,
             ),
             TaskComplexity.MODERATE: ComplexityRouting(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
                 execution_mode=ExecutionMode.ASYNC,
                 max_iterations=10,
                 timeout=120,
                 retry_count=3,
             ),
             TaskComplexity.COMPLEX: ComplexityRouting(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
                 execution_mode=ExecutionMode.ASYNC,
                 max_iterations=20,
                 timeout=300,
                 retry_count=3,
             ),
             TaskComplexity.ADVANCED: ComplexityRouting(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
                 execution_mode=ExecutionMode.STREAMING,
                 max_iterations=50,
                 timeout=600,
@@ -153,28 +145,18 @@ class RoutingConfig:
         self.task_type_mapping = {
             "chat": TaskTypeMapping(
                 preferred_frameworks=[FrameworkType.ADK],
-                required_capabilities=[
-                    "memory_management", "session_management"
-                ],
+                required_capabilities=["memory_management", "session_management"],
             ),
             "analysis": TaskTypeMapping(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
-                required_capabilities=[
-                    "tool_integration", "state_persistence"
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
+                required_capabilities=["tool_integration", "state_persistence"],
             ),
             "code": TaskTypeMapping(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
                 required_capabilities=["tool_integration", "observability"],
             ),
             "research": TaskTypeMapping(
-                preferred_frameworks=[
-                    FrameworkType.ADK, FrameworkType.LANGGRAPH
-                ],
+                preferred_frameworks=[FrameworkType.ADK, FrameworkType.LANGGRAPH],
                 required_capabilities=[
                     "tool_integration",
                     "memory_management",
@@ -182,9 +164,7 @@ class RoutingConfig:
                 ],
             ),
             "planning": TaskTypeMapping(
-                preferred_frameworks=[
-                    FrameworkType.LANGGRAPH, FrameworkType.ADK
-                ],
+                preferred_frameworks=[FrameworkType.LANGGRAPH, FrameworkType.ADK],
                 required_capabilities=[
                     "state_persistence",
                     "memory_management",
@@ -192,12 +172,8 @@ class RoutingConfig:
                 ],
             ),
             "orchestration": TaskTypeMapping(
-                preferred_frameworks=[
-                    FrameworkType.LANGGRAPH, FrameworkType.ADK
-                ],
-                required_capabilities=[
-                    "async_execution", "streaming", "observability"
-                ],
+                preferred_frameworks=[FrameworkType.LANGGRAPH, FrameworkType.ADK],
+                required_capabilities=["async_execution", "streaming", "observability"],
             ),
         }
 

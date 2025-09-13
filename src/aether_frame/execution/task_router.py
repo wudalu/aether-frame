@@ -6,9 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config.routing_config import RoutingConfig
 from ..config.settings import Settings
-from ..contracts import (
-    ExecutionMode, FrameworkType, TaskComplexity, TaskRequest
-)
+from ..contracts import ExecutionMode, FrameworkType, TaskComplexity, TaskRequest
 
 
 @dataclass
@@ -20,6 +18,7 @@ class ExecutionStrategy:
     task_complexity: TaskComplexity
     execution_config: Dict[str, Any]
     runtime_options: Dict[str, Any]
+    execution_mode: str = "sync"
     framework_score: float = 0.0
     fallback_frameworks: List[FrameworkType] = None
 
@@ -90,14 +89,13 @@ class TaskRouter:
             task_complexity=complexity,
             execution_config=execution_config,
             runtime_options=runtime_options,
+            execution_mode="async",  # ADK supports async execution
             framework_score=1.0,  # ADK gets full score as primary framework
             # No fallbacks needed in ADK-first approach
             fallback_frameworks=[],
         )
 
-    def _analyze_task_complexity(
-        self, task_request: TaskRequest
-    ) -> TaskComplexity:
+    def _analyze_task_complexity(self, task_request: TaskRequest) -> TaskComplexity:
         """
         Simple task complexity analysis for ADK routing.
 
@@ -116,9 +114,7 @@ class TaskRouter:
         else:
             return TaskComplexity.SIMPLE
 
-    def _build_execution_config(
-        self, task_request: TaskRequest
-    ) -> Dict[str, Any]:
+    def _build_execution_config(self, task_request: TaskRequest) -> Dict[str, Any]:
         """
         Build basic execution configuration for ADK.
 
@@ -128,9 +124,7 @@ class TaskRouter:
         # Basic configuration for ADK execution
         config = {
             "framework_type": FrameworkType.ADK.value,
-            "available_tools": [
-                tool.name for tool in task_request.available_tools
-            ],
+            "available_tools": [tool.name for tool in task_request.available_tools],
             "timeout": 300,  # Default 5 minutes for ADK
             "max_iterations": 20,  # ADK default
             "required_capabilities": [],  # ADK handles all capabilities
@@ -140,13 +134,10 @@ class TaskRouter:
         if task_request.execution_config:
             config.update(
                 {
-                    "execution_mode": task_request.execution_config.
-                                      execution_mode.value,
+                    "execution_mode": task_request.execution_config.execution_mode.value,
                     "max_retries": task_request.execution_config.max_retries,
-                    "enable_logging": task_request.execution_config.
-                                       enable_logging,
-                    "enable_monitoring": task_request.execution_config.
-                                          enable_monitoring,
+                    "enable_logging": task_request.execution_config.enable_logging,
+                    "enable_monitoring": task_request.execution_config.enable_monitoring,
                 }
             )
 

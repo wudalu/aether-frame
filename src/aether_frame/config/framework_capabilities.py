@@ -100,9 +100,7 @@ def framework_supports_capability(
         return False
 
 
-def framework_supports_execution_mode(
-    framework_type: FrameworkType, mode: str
-) -> bool:
+def framework_supports_execution_mode(framework_type: FrameworkType, mode: str) -> bool:
     """Check if a framework supports a specific execution mode."""
     try:
         config = get_framework_capability_config(framework_type)

@@ -63,9 +63,7 @@ class AdkAgentHooks(AgentHooks):
             # Log error but continue execution
             pass
 
-    async def after_execution(
-        self, agent_request: AgentRequest, result: TaskResult
-    ):
+    async def after_execution(self, agent_request: AgentRequest, result: TaskResult):
         """Hook called after task execution."""
         try:
             # Save session state to ADK memory
@@ -126,8 +124,7 @@ class AdkAgentHooks(AgentHooks):
         if not agent_request.task_request.session_context:
             return
 
-        session_id = agent_request.task_request.session_context.\
-            get_adk_session_id()
+        session_id = agent_request.task_request.session_context.get_adk_session_id()
         if session_id and self.memory_adapter:
             # TODO: Load from ADK context.state
             # session_data = await self.memory_adapter.load_session(session_id)
@@ -141,8 +138,7 @@ class AdkAgentHooks(AgentHooks):
         if not agent_request.task_request.session_context:
             return
 
-        session_id = agent_request.task_request.session_context.\
-            get_adk_session_id()
+        session_id = agent_request.task_request.session_context.get_adk_session_id()
         if session_id and self.memory_adapter:
             # TODO: Save to ADK context.state
             # session_data = agent_request.task_request.session_context.session_state
@@ -205,9 +201,7 @@ class AdkAgentHooks(AgentHooks):
             # )
             pass
 
-    async def _save_error_context(
-        self, agent_request: AgentRequest, error: Exception
-    ):
+    async def _save_error_context(self, agent_request: AgentRequest, error: Exception):
         """Save error context for debugging."""
         if self.memory_adapter:
             # TODO: Save error context to ADK memory

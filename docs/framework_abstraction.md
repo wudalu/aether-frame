@@ -447,9 +447,10 @@ class InteractionType(Enum):
 - **ExecutionEngine** delegates task execution to selected **FrameworkAdapter**
 
 #### 2. Framework Abstraction Layer → Core Agent Layer  
-- **FrameworkAdapter** obtains **AgentManager** for agent lifecycle operations
-- **FrameworkAdapter** coordinates with **AgentManager** for agent creation and execution
+- **FrameworkAdapter** creates **DomainAgent** instances directly for task execution
+- **FrameworkAdapter** manages agent lifecycle (creation, execution, cleanup) internally  
 - **FrameworkAdapter** converts TaskRequest/TaskResult to/from framework-specific formats
+- **AgentManager** provides optional session-based agent lifecycle management for persistent sessions
 
 #### 3. Core Agent Layer → Tool Service Layer
 - **AgentManager** provides **DomainAgent** instances with access to **ToolService**
@@ -792,45 +793,43 @@ class FrameworkAdapter(ABC):
 ```python
 class AgentManager:
     """
-    Universal agent lifecycle coordinator that manages agent creation, execution,
-    and cleanup across different framework implementations.
+    Session-based agent lifecycle coordinator that manages persistent agent instances
+    for multi-turn conversations and long-running tasks.
     
     Core Capabilities:
-    - Framework-agnostic agent factory registration and management
-    - Agent instance lifecycle (creation, caching, cleanup) with resource tracking
-    - Agent execution coordination with request/response handling
-    - Cross-framework agent capability discovery and reporting
-    - Agent performance monitoring and health checking
+    - Session-based agent lifecycle management with automatic cleanup
+    - Long-lived agent instances for persistent conversations
+    - Agent resource tracking and session health monitoring
+    - Factory registration for framework-specific agent creation
+    - Expired session cleanup and resource management
     
     Dependencies:
-    - DomainAgent: Creates and manages framework-specific agent instances
-    - AgentConfig: Uses configuration to determine agent creation parameters
-    - AgentRequest/AgentResponse: Handles agent communication protocols
-    - FrameworkType: Routes to appropriate framework-specific agent factories
+    - DomainAgent: Manages framework-specific agent instances
+    - AgentConfig: Uses configuration for session agent creation
+    - FrameworkType: Routes to appropriate agent factories for sessions
     
-    Why it exists: Provides unified agent management that abstracts framework
-    differences while enabling framework-specific optimizations, allowing agents
-    from different frameworks to be managed consistently through a single interface.
+    Why it exists: Provides session-aware agent management for scenarios requiring
+    persistent agent state across multiple task executions, while keeping the
+    primary execution path (single-task agents) simple and direct through
+    FrameworkAdapter direct creation.
     """
     
-    def register_agent_factory(self, framework_type: FrameworkType, factory: Callable[[AgentConfig], DomainAgent]):
-        """Register factory function for creating framework-specific agents"""
+    async def get_or_create_session_agent(
+        self, session_id: str, agent_factory: Callable, agent_config: AgentConfig
+    ) -> DomainAgent:
+        """Get existing session agent or create new one using provided factory"""
         pass
     
-    async def create_agent(self, agent_config: AgentConfig) -> DomainAgent:
-        """Create new domain agent instance using registered factory"""
+    async def cleanup_session(self, session_id: str) -> bool:
+        """Clean up all resources for a session"""
         pass
     
-    async def get_or_create_agent(self, agent_config: AgentConfig) -> DomainAgent:
-        """Get existing agent or create new one"""
+    async def cleanup_expired_sessions(self, max_idle_time: timedelta) -> List[str]:
+        """Clean up sessions that have been idle for too long"""
         pass
     
-    async def invoke_agent(self, agent: DomainAgent, request: AgentRequest) -> AgentResponse:
-        """Execute agent request using domain agent"""
-        pass
-    
-    async def cleanup_agent(self, agent_id: str) -> bool:
-        """Clean up agent resources and remove from tracking"""
+    async def get_health_status(self) -> Dict[str, Any]:
+        """Get overall health status of the agent manager"""
         pass
 ```
 

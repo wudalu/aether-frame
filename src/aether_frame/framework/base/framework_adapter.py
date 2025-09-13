@@ -182,15 +182,19 @@ class FrameworkAdapter(ABC):
 
         return task_to_agent_mapping.get(task_type, "general_agent")
 
-    @abstractmethod
     async def is_available(self) -> bool:
         """
         Check if the framework is available and ready to process tasks.
 
+        Default implementation for frameworks that don't need availability checking.
+        Core frameworks should override this or implement strong dependency checking
+        in their initialize() method.
+
         Returns:
             bool: True if framework is available, False otherwise
         """
-        pass
+        # Default: framework is available if initialized
+        return getattr(self, "_initialized", False)
 
     @abstractmethod
     async def get_capabilities(self) -> List[str]:

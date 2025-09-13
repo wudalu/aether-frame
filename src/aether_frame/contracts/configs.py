@@ -13,6 +13,12 @@ class AgentConfig:
 
     agent_type: str
     framework_type: FrameworkType = FrameworkType.ADK
+
+    # Core Agent Identity (ADK Requirements)
+    name: Optional[str] = None  # ADK Agent unique identifier
+    description: Optional[str] = None  # ADK Agent description for multi-agent scenarios
+
+    # Agent Behavior
     capabilities: List[str] = field(default_factory=list)
     max_iterations: int = 10
     timeout: Optional[int] = None
@@ -21,6 +27,14 @@ class AgentConfig:
     behavior_settings: Dict[str, Any] = field(default_factory=dict)
     memory_config: Dict[str, Any] = field(default_factory=dict)
     tool_permissions: List[str] = field(default_factory=list)
+
+    # ADK-Specific Configuration
+    include_contents: str = (
+        "default"  # ADK conversation history control: 'default', 'none'
+    )
+    output_schema: Optional[Any] = None  # ADK structured output schema
+    input_schema: Optional[Any] = None  # ADK structured input schema
+    output_key: Optional[str] = None  # ADK state key for storing output
 
 
 @dataclass

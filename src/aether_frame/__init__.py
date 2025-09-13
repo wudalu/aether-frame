@@ -24,6 +24,4 @@ from aether_frame.config.settings import Settings
 from aether_frame.contracts import TaskRequest, TaskResult
 from aether_frame.execution import AIAssistant
 
-__all__ = [
-    "Settings", "AIAssistant", "TaskRequest", "TaskResult", "__version__"
-]
+__all__ = ["Settings", "AIAssistant", "TaskRequest", "TaskResult", "__version__"]
