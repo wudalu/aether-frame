@@ -195,8 +195,7 @@ class GitPushPlan:
                     "src/aether_frame/agents/adk/adk_event_converter.py",
                     "tests/debug/",
                     "tests/unit/test_phase3_interfaces.py.disabled",
-                    "archive/",
-                    "cc_tools/"
+                    "archive/"
                 ]
             }
         }
