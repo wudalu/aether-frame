@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """AI Assistant - System entry point for Aether Frame."""
 
+import logging
 from typing import Optional
+from datetime import datetime
 
 from ..config.settings import Settings
 from ..contracts import (
@@ -30,6 +32,7 @@ class AIAssistant:
         """Initialize AI Assistant with pre-initialized execution engine."""
         self.execution_engine = execution_engine
         self.settings = settings or Settings()
+        self.logger = logging.getLogger(__name__)
 
     @classmethod
     async def create(cls, settings: Optional[Settings] = None) -> "AIAssistant":
@@ -56,20 +59,30 @@ class AIAssistant:
         Returns:
             TaskResult: The result of task processing
         """
+        self.logger.info(f"AI Assistant processing request - task_id: {task_request.task_id}, task_type: {task_request.task_type}")
+            
         try:
             # Validate the request
             if not self._validate_request(task_request):
+                error_msg = "Invalid task request"
+                validation_errors = self._get_validation_errors(task_request)
+                self.logger.error(f"Request validation failed - task_id: {task_request.task_id}, errors: {validation_errors}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
-                    error_message="Invalid task request",
+                    error_message=error_msg,
                 )
+            
+            self.logger.info(f"Request validation passed - task_id: {task_request.task_id}")
 
             # Process through execution engine
             result = await self.execution_engine.execute_task(task_request)
+            
+            self.logger.info(f"Processing completed - task_id: {result.task_id}, status: {result.status.value if result.status else 'unknown'}, has_response: {bool(result.messages)}")
             return result
 
         except Exception as e:
+            self.logger.error(f"AI Assistant processing failed - task_id: {task_request.task_id}, error: {str(e)}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
@@ -122,6 +135,17 @@ class AIAssistant:
         if not task_request.description:
             return False
         return True
+    
+    def _get_validation_errors(self, task_request: TaskRequest) -> list:
+        """Get detailed validation errors for logging."""
+        errors = []
+        if not task_request.task_id:
+            errors.append("missing_task_id")
+        if not task_request.task_type:
+            errors.append("missing_task_type")
+        if not task_request.description:
+            errors.append("missing_description")
+        return errors
 
     async def health_check(self) -> dict:
         """Check system health status."""

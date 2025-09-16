@@ -78,12 +78,16 @@ class AdkDomainAgent(DomainAgent):
             from ...framework.adk.model_factory import AdkModelFactory
             model = AdkModelFactory.create_model(model_identifier, self._get_settings())
             
-            # Create the ADK agent with model configuration
+            # Get tools from runtime context if available
+            tools = self._get_adk_tools()
+            
+            # Create the ADK agent with model configuration and tools
             self.adk_agent = Agent(
                 name=self.config.get("name", self.agent_id),
                 description=self.config.get("description", "ADK Domain Agent"),
                 instruction=self.config.get("system_prompt", "You are a helpful AI assistant."),
                 model=model,
+                tools=tools,
             )
             
         except ImportError as e:
@@ -124,6 +128,125 @@ class AdkDomainAgent(DomainAgent):
         except Exception:
             return None
 
+    def _get_adk_tools(self):
+        """Get tools for ADK agent from runtime context."""
+        try:
+            # Get tool service from runtime context if available
+            tool_service = self.runtime_context.get("tool_service")
+            if not tool_service:
+                # No tool service available, return empty list
+                return []
+            
+            # Convert our tools to ADK tool format
+            adk_tools = []
+            
+            # Create chat_log tool for ADK using function calling format
+            def chat_log_function(content: str):
+                """Save chat conversations to local files with ADK-compliant organization."""
+                # This function will be called by ADK when the model invokes the tool
+                # We need to forward it to our tool service
+                import asyncio
+                from ...contracts import ToolRequest
+                
+                tool_request = ToolRequest(
+                    tool_name="chat_log",
+                    tool_namespace="builtin",
+                    parameters={
+                        "content": content,
+                        "session_id": None,
+                        "format": "json",
+                        "append": True,
+                        "filename": None,
+                    }
+                )
+                
+                # Log tool request in execution chain
+                from ...common.unified_logging import create_execution_context
+                exec_context = create_execution_context(f"agent_tool_{tool_request.tool_name}")
+                exec_context.log_execution_chain({
+                    "agent_request": {
+                        "agent_type": "adk_domain_agent",
+                        "action": "tool_call"
+                    },
+                    "tool_request": {
+                        "tool_name": tool_request.tool_name,
+                        "tool_namespace": tool_request.tool_namespace,
+                        "parameters_count": len(tool_request.parameters)
+                    }
+                })
+                
+                # Execute through tool service synchronously (ADK requirement)
+                try:
+                    # Use thread-based execution to avoid event loop conflicts
+                    import concurrent.futures
+                    import threading
+                    from ...tools.builtin.chat_log_tool import ChatLogTool
+                    
+                    def execute_tool_in_thread():
+                        """Execute tool in separate thread with its own event loop"""
+                        import asyncio
+                        
+                        # Create new event loop for this thread
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        try:
+                            # Create and initialize tool
+                            chat_log_tool = ChatLogTool()
+                            loop.run_until_complete(chat_log_tool.initialize())
+                            
+                            # Execute tool
+                            result = loop.run_until_complete(chat_log_tool.execute(tool_request))
+                            return result
+                        finally:
+                            loop.close()
+                    
+                    # Execute in thread to avoid event loop conflicts
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(execute_tool_in_thread)
+                        result = future.result(timeout=30)  # 30 second timeout
+                    
+                    # Log tool result in execution chain
+                    exec_context.log_execution_chain({
+                        "tool_result": {
+                            "tool_name": result.tool_name if result else tool_request.tool_name,
+                            "status": result.status.value if result and result.status else "unknown",
+                            "execution_time": result.execution_time if result else None,
+                            "has_error": bool(result.error_message) if result else True
+                        },
+                        "agent_response": {
+                            "agent_type": "adk_domain_agent",
+                            "action": "tool_result_processed"
+                        }
+                    })
+                    
+                    if result and result.status.value == "success":
+                        return {
+                            "status": "success",
+                            "message": f"Chat log saved successfully to {result.result_data.get('filename', 'file')}",
+                            "file_path": result.result_data.get("file_path", "unknown"),
+                            "details": result.result_data
+                        }
+                    else:
+                        return {
+                            "status": "error", 
+                            "message": result.error_message if result else "Tool execution failed"
+                        }
+                        
+                except Exception as e:
+                    return {
+                        "status": "error",
+                        "message": f"Tool execution error: {str(e)}"
+                    }
+            
+            adk_tools.append(chat_log_function)
+            return adk_tools
+            
+        except Exception as e:
+            # Log error but don't fail - return empty tools
+            print(f"Warning: Failed to configure ADK tools: {str(e)}")
+            return []
+
     async def execute(self, agent_request: AgentRequest) -> TaskResult:
         """
         Execute task through ADK agent using runtime context.
@@ -150,6 +273,24 @@ class AdkDomainAgent(DomainAgent):
             execution_time = (datetime.now() - start_time).total_seconds()
             result.execution_time = execution_time
             result.created_at = datetime.now()
+            
+            # Log agent response in execution chain  
+            from ...common.unified_logging import create_execution_context
+            exec_context = create_execution_context(f"agent_response_{result.task_id}")
+            exec_context.log_execution_chain({
+                "agent_response": {
+                    "agent_id": self.agent_id,
+                    "agent_type": "adk_domain_agent",
+                    "execution_time": execution_time,
+                    "has_task_result": True
+                },
+                "task_result": {
+                    "task_id": result.task_id,
+                    "status": result.status.value if result.status else "unknown", 
+                    "messages_count": len(result.messages) if result.messages else 0,
+                    "has_error": bool(result.error_message)
+                }
+            })
 
             return result
 
@@ -361,13 +502,69 @@ class AdkDomainAgent(DomainAgent):
             )
 
             # Process events to get final response
-            final_response = None
+            all_responses = []
+            
             async for event in events:
-                if event.is_final_response() and event.content:
-                    final_response = event.content.parts[0].text.strip()
-                    break
-
-            return final_response or "No response from ADK"
+                # Process all events with content
+                if event.content:
+                    # Extract text from parts
+                    if hasattr(event.content, 'parts') and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                text = part.text.strip()
+                                if text and len(text) > 10:  # Minimum content threshold
+                                    all_responses.append({
+                                        'text': text,
+                                        'is_final': event.is_final_response(),
+                                        'length': len(text)
+                                    })
+                    
+                    # Extract text directly from content
+                    if hasattr(event.content, 'text') and event.content.text:
+                        text = event.content.text.strip()
+                        if text and len(text) > 10:
+                            all_responses.append({
+                                'text': text,
+                                'is_final': event.is_final_response(),
+                                'length': len(text)
+                            })
+            
+            # Select best response using general quality heuristics
+            if all_responses:
+                def score_response(resp):
+                    text = resp['text']
+                    score = 0
+                    
+                    # Length score - longer responses often more comprehensive
+                    score += len(text) / 100
+                    
+                    # Content quality indicators
+                    quality_indicators = [
+                        '.',  # Proper sentences
+                        '\n',  # Multi-line structure
+                        ':',  # Explanatory content
+                        '-',  # Lists or bullet points
+                    ]
+                    quality_score = sum(5 for indicator in quality_indicators 
+                                      if text.count(indicator) > 0)
+                    score += quality_score
+                    
+                    # Avoid obviously incomplete responses
+                    incomplete_patterns = ['...', 'please wait', 'loading', 'error occurred']
+                    incomplete_penalty = sum(20 for pattern in incomplete_patterns 
+                                           if pattern.lower() in text.lower())
+                    score -= incomplete_penalty
+                    
+                    # Prefer final responses slightly
+                    if resp['is_final']:
+                        score += 5
+                    
+                    return score
+                
+                best_response = max(all_responses, key=score_response)
+                return best_response['text']
+            else:
+                return "No valid response received from ADK"
 
         except ImportError:
             # ADK not available, return mock response
@@ -409,7 +606,12 @@ class AdkDomainAgent(DomainAgent):
             return TaskResult(
                 task_id=task_id,
                 status=TaskStatus.SUCCESS,
-                result_data={"response": response_message.content},
+                result_data={
+                    "framework": "adk",
+                    "agent_id": self.agent_id,
+                    "response_length": len(str(adk_response)),
+                    "processing_completed": True,
+                },
                 messages=[response_message],
                 metadata={"framework": "adk", "agent_id": self.agent_id},
             )

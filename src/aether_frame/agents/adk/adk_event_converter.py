@@ -50,6 +50,7 @@ class AdkEventConverter:
                 and adk_event.content
                 and hasattr(adk_event.content, "parts")
                 and adk_event.content.parts
+                and len(adk_event.content.parts) > 0
             ):
 
                 first_part = adk_event.content.parts[0]

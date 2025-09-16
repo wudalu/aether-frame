@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """ADK Framework Adapter Implementation."""
 
+import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
+from datetime import datetime
 
 from ...contracts import (
     AgentConfig,
@@ -54,6 +56,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # Session contexts - each session has independent session service, runner, and ADK session
         self._session_contexts: Dict[str, Dict[str, Any]] = {}
         self._adk_available = False  # Initialize availability flag
+        self.logger = logging.getLogger(__name__)
 
     @property
     def framework_type(self) -> FrameworkType:
@@ -62,7 +65,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
     # === Core Interface Methods ===
 
-    async def initialize(self, config: Optional[Dict[str, Any]] = None):
+    async def initialize(self, config: Optional[Dict[str, Any]] = None, tool_service = None):
         """
         Initialize ADK framework adapter with strong dependency checking.
 
@@ -71,11 +74,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
         Args:
             config: ADK-specific configuration including project, location, etc.
+            tool_service: Tool service instance for tool integration
 
         Raises:
             RuntimeError: If ADK dependencies are not available or initialization fails
         """
+        self.logger.info(f"ADK adapter initialization started - config_provided: {config is not None}")
         self._config = config or {}
+        self._tool_service = tool_service
 
         # Strong dependency check - ADK must be available
         try:
@@ -86,15 +92,17 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             # ADK is available
             self._adk_available = True
             self._initialized = True
+            self.logger.info("ADK dependencies verified - Runner and InMemorySessionService available")
 
         except ImportError as e:
             # ADK is a core dependency - system should not start without it
-            raise RuntimeError(
-                f"ADK framework is required but not available. "
-                f"Please install ADK dependencies: {str(e)}"
-            )
+            error_msg = f"ADK framework is required but not available. Please install ADK dependencies: {str(e)}"
+            self.logger.error(f"ADK dependency check failed - {error_msg}")
+            raise RuntimeError(error_msg)
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize ADK framework: {str(e)}")
+            error_msg = f"Failed to initialize ADK framework: {str(e)}"
+            self.logger.error(f"ADK initialization failed - {error_msg}")
+            raise RuntimeError(error_msg)
 
     async def execute_task(
         self, task_request: TaskRequest, strategy: ExecutionStrategy
@@ -117,20 +125,52 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         """
         # Bootstrap ensures adapter is always initialized
         session_id = self._extract_session_id(task_request)
+        self.logger.info(f"ADK task execution started - task_id: {task_request.task_id}, session_id: {session_id}")
 
         try:
             # Get or create domain agent for this session
             domain_agent = await self._get_or_create_session_agent(
                 session_id, task_request, strategy
             )
+            self.logger.info(f"Domain agent ready - session_id: {session_id}, agent_type: {type(domain_agent).__name__ if domain_agent else 'None'}")
 
             # Execute task through persistent session agent
             # Convert TaskRequest to AgentRequest as required by domain agent
             agent_request = self._convert_task_to_agent_request(task_request, strategy)
+            
+            # Log execution chain data
+            from ...common.unified_logging import create_execution_context
+            exec_context = create_execution_context(f"adk_{task_request.task_id}")
+            exec_context.log_execution_chain({
+                "task_request": {
+                    "task_id": task_request.task_id,
+                    "task_type": task_request.task_type,
+                    "session_id": session_id
+                },
+                "agent_request": {
+                    "agent_type": agent_request.agent_type,
+                    "framework_type": agent_request.framework_type.value if agent_request.framework_type else None
+                }
+            })
+            
             task_result = await domain_agent.execute(agent_request)
+            
+            result_status = task_result.status.value if task_result and task_result.status else "unknown"
+            self.logger.info(f"Domain agent execution completed - task_id: {task_request.task_id}, status: {result_status}")
+            
+            # Log final execution chain result
+            exec_context.log_execution_chain({
+                "task_result": {
+                    "task_id": task_result.task_id if task_result else None,
+                    "status": result_status,
+                    "messages_count": len(task_result.messages) if task_result and task_result.messages else 0,
+                    "has_error": bool(task_result.error_message) if task_result else False
+                }
+            })
 
             # Return result based on actual execution status
             if task_result and task_result.status == TaskStatus.SUCCESS:
+                self.logger.info(f"Task execution successful - task_id: {task_request.task_id}, session_id: {session_id}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.SUCCESS,
@@ -141,6 +181,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     metadata={"framework": "adk", "session_id": session_id},
                 )
             elif task_result and task_result.status == TaskStatus.ERROR:
+                self.logger.warning(f"Task execution returned error - task_id: {task_request.task_id}, error: {task_result.error_message}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
@@ -151,14 +192,17 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     metadata={"framework": "adk", "session_id": session_id},
                 )
             else:
+                error_msg = "No result returned from domain agent"
+                self.logger.error(f"No result from domain agent - task_id: {task_request.task_id}, session_id: {session_id}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
-                    error_message="No result returned from domain agent",
+                    error_message=error_msg,
                     metadata={"framework": "adk", "session_id": session_id},
                 )
 
         except Exception as e:
+            self.logger.error(f"ADK task execution failed - task_id: {task_request.task_id}, session_id: {session_id}, error: {str(e)}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
@@ -312,28 +356,42 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
     def _extract_session_id(self, task_request: TaskRequest) -> str:
         """
-        Extract session_id from task request with proper user isolation.
+        Extract session_id from task request with proper user isolation and descriptive context.
 
         CRITICAL: Session ID must include user_id to ensure proper multi-user isolation.
         Multiple users should NEVER share the same session, even if they provide
         the same session_context.session_id.
 
-        Session ID format: "{user_id}:{session_id}" or "{user_id}:default"
+        Enhanced Session ID format: "{user_id}:{framework_type}_{test_framework}_{test_case}" 
+        Fallback format: "{user_id}:{session_id}" or "{user_id}:default"
 
         Args:
-            task_request: Task request containing session context
+            task_request: Task request containing session context and metadata
 
         Returns:
-            str: User-isolated session ID
+            str: User-isolated, descriptive session ID
         """
         # Extract user_id (required for isolation)
         user_id = "anonymous"
         if task_request.user_context and hasattr(task_request.user_context, "user_id"):
             user_id = task_request.user_context.user_id
 
-        # Extract base session_id
+        # Try to build descriptive session_id from metadata first
         base_session_id = None
-        if task_request.session_context and hasattr(
+        if task_request.metadata:
+            framework_type = task_request.metadata.get("framework_type")
+            test_framework = task_request.metadata.get("test_framework") 
+            test_case = task_request.metadata.get("test_case")
+            
+            # Build descriptive session ID if we have framework context
+            if framework_type and test_framework:
+                session_parts = [framework_type, test_framework]
+                if test_case:
+                    session_parts.append(test_case)
+                base_session_id = "_".join(session_parts)
+
+        # Fallback to explicit session_id if no metadata context
+        if not base_session_id and task_request.session_context and hasattr(
             task_request.session_context, "session_id"
         ):
             base_session_id = task_request.session_context.session_id
@@ -413,6 +471,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 "config": dict(self._config),
                 "session_id": session_id,
                 "session_config": session_config,
+                "tool_service": self._tool_service,
             }
 
             # Create domain agent with session context

@@ -167,6 +167,9 @@ python dev.py test
 python dev.py test-unit
 python dev.py test-integration
 python dev.py test-e2e
+
+# Run complete E2E test with execution chain logging
+python tests/manual/test_complete_e2e.py
 ```
 
 ## Contributing
