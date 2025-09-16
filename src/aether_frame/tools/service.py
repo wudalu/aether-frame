@@ -90,6 +90,17 @@ class ToolService:
             )
 
         try:
+            # Log tool execution chain
+            from ..common.unified_logging import create_execution_context
+            exec_context = create_execution_context(f"tool_{full_name}")
+            exec_context.log_execution_chain({
+                "tool_request": {
+                    "tool_name": tool_request.tool_name,
+                    "tool_namespace": tool_request.tool_namespace,
+                    "parameters_count": len(tool_request.parameters)
+                }
+            })
+            
             # Validate parameters
             if not await tool.validate_parameters(tool_request.parameters):
                 return ToolResult(
@@ -101,6 +112,17 @@ class ToolService:
 
             # Execute tool
             result = await tool.execute(tool_request)
+            
+            # Log tool execution result
+            exec_context.log_execution_chain({
+                "tool_result": {
+                    "tool_name": result.tool_name,
+                    "status": result.status.value if result.status else "unknown",
+                    "execution_time": result.execution_time,
+                    "has_error": bool(result.error_message)
+                }
+            })
+            
             return result
 
         except Exception as e:
@@ -197,10 +219,12 @@ class ToolService:
         """Load builtin system tools."""
         try:
             from .builtin.tools import EchoTool, TimestampTool
+            from .builtin.chat_log_tool import ChatLogTool
 
             # Register builtin tools
             await self.register_tool(EchoTool())
             await self.register_tool(TimestampTool())
+            await self.register_tool(ChatLogTool())
 
         except ImportError:
             # Builtin tools not available

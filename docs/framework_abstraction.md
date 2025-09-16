@@ -104,35 +104,40 @@ class TaskRequest:
 class TaskResult:
     task_id: str  # Matching task identifier from request
     status: TaskStatus  # Execution status: success, error, partial, timeout
-    response: UniversalResponse  # Standardized response content
-    execution_metadata: ExecutionMetadata  # Performance and timing data
-    tool_usage: List[ToolUsage]  # Tools used during execution
-    context_updates: Optional[ContextUpdate] = None  # Context changes from execution
+    result_data: Optional[Dict[str, Any]] = None  # Framework-specific result metadata
+    messages: List[UniversalMessage] = field(default_factory=list)  # Response messages
+    tool_results: List[ToolResult] = field(default_factory=list)  # Tool execution results
+    execution_context: Optional[ExecutionContext] = None  # Context information
+    error_message: Optional[str] = None  # Error details if failed
+    execution_time: Optional[float] = None  # Total execution time
+    created_at: Optional[datetime] = None  # Creation timestamp
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 ```
 
 #### AgentRequest (Agent Layer Input)
 ```python
 @dataclass
 class AgentRequest:
-    agent_id: str  # Unique agent identifier for tracking
-    agent_type: str  # Agent type mapping to framework classes
-    messages: List[UniversalMessage]  # Conversation messages for agent processing
-    tools: List[UniversalTool]  # Available tools for agent use
-    knowledge_bases: List[KnowledgeSource]  # Available knowledge sources
-    agent_config: AgentConfig  # Agent-specific configuration
-    runtime_config: RuntimeConfig  # Agent runtime parameters
+    agent_type: str = "general"  # Agent type for framework routing
+    framework_type: FrameworkType = FrameworkType.ADK  # Target framework
+    task_request: Optional[TaskRequest] = None  # Original task request
+    agent_config: Optional[AgentConfig] = None  # Agent-specific configuration
+    runtime_options: Dict[str, Any] = field(default_factory=dict)  # Runtime parameters
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 ```
 
 #### AgentResponse (Agent Layer Output)
 ```python
 @dataclass
 class AgentResponse:
-    agent_id: str  # Matching agent identifier from request
-    content: UniversalMessage  # Agent's response message
-    tool_usage: List[ToolUsage]  # Tools invoked during processing
-    reasoning_trace: Optional[List[ReasoningStep]] = None  # Agent's reasoning steps
-    agent_state: Optional[AgentState] = None  # Updated agent internal state
-    framework_response: Optional[Dict[str, Any]] = None  # Raw framework response data
+    agent_id: Optional[str] = None  # Agent identifier if available
+    agent_type: str = "general"  # Agent type that processed request
+    task_result: Optional[TaskResult] = None  # Processing result
+    agent_state: Dict[str, Any] = field(default_factory=dict)  # Agent internal state
+    performance_metrics: Dict[str, Any] = field(default_factory=dict)  # Performance data
+    error_details: Optional[str] = None  # Error information if failed
+    created_at: Optional[datetime] = None  # Response timestamp
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 ```
 
 #### ToolRequest (Tool Layer Input)
@@ -140,10 +145,13 @@ class AgentResponse:
 @dataclass
 class ToolRequest:
     tool_name: str  # Tool identifier for invocation
-    parameters: Dict[str, Any]  # Tool input parameters
-    user_context: UserContext  # User identification and permissions
-    session_context: SessionContext  # Session state for context
-    tool_config: ToolConfig  # Tool execution settings
+    tool_namespace: Optional[str] = None  # Tool namespace for organization
+    parameters: Dict[str, Any] = field(default_factory=dict)  # Tool input parameters
+    user_context: Optional[UserContext] = None  # User identification and permissions
+    session_context: Optional[SessionContext] = None  # Session state for context
+    execution_context: Optional[ExecutionContext] = None  # Execution environment
+    timeout: Optional[int] = None  # Tool execution timeout
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 ```
 
 #### ToolResult (Tool Layer Output)
@@ -152,10 +160,12 @@ class ToolRequest:
 class ToolResult:
     tool_name: str  # Matching tool identifier from request
     status: ToolStatus  # Execution status: success, error, timeout, unauthorized
-    result: Union[str, Dict[str, Any], bytes]  # Tool output in appropriate format
-    execution_time: float  # Tool execution duration in seconds
+    tool_namespace: Optional[str] = None  # Tool namespace for organization
+    result_data: Optional[Any] = None  # Tool output in appropriate format
+    error_message: Optional[str] = None  # Error details when status indicates failure
+    execution_time: Optional[float] = None  # Tool execution duration in seconds
+    created_at: Optional[datetime] = None  # Result creation timestamp
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional tool-specific data
-    error: Optional[ToolError] = None  # Error details when status indicates failure
 ```
 
 ### Supporting Data Structures

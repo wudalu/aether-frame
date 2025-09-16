@@ -8,6 +8,7 @@ the startup of core system components with proper dependency management.
 
 import logging
 from typing import NamedTuple, Optional
+from datetime import datetime
 
 from .agents.manager import AgentManager
 from .config.settings import Settings
@@ -45,33 +46,16 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
     """
     if settings is None:
         settings = Settings()
-
+    
     logger.info("Starting Aether Frame system initialization...")
 
     try:
-        # Phase 1: Framework Registry & Adapters
+        # Phase 1: Framework Registry 
         logger.info("Phase 1: Initializing Framework Registry...")
         framework_registry = FrameworkRegistry()
+        logger.info(f"Framework registry created - type: {type(framework_registry).__name__}")
 
-        # ADK adapter auto-initialization happens here
-        # FrameworkRegistry.get_adapter(ADK) triggers auto-load
-        # AdkFrameworkAdapter.initialize() handles ADK runtime setup with strong dependency checking
-        logger.info("Loading ADK framework adapter...")
-        try:
-            adk_adapter = await framework_registry.get_adapter(FrameworkType.ADK)
-            # ADK is a core dependency - if initialization succeeded, it's ready
-            if adk_adapter:
-                logger.info("ADK framework adapter loaded successfully")
-            else:
-                raise RuntimeError("Failed to load ADK framework adapter")
-        except Exception as e:
-            logger.error(f"ADK framework adapter failed to load: {str(e)}")
-            # ADK is required - fail the bootstrap process
-            raise RuntimeError(
-                f"System cannot start without ADK framework: {str(e)}"
-            ) from e
-
-        # Phase 2: Tool Service (optional)
+        # Phase 2: Tool Service (create first for adapter integration)
         tool_service = None
         if getattr(settings, "enable_tool_service", True):
             logger.info("Phase 2: Initializing Tool Service...")
@@ -84,24 +68,45 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
                 "enable_builtin": True,
             }
             await tool_service.initialize(tool_config)
-            logger.info(f"Tool Service initialized with config: {tool_config}")
+            logger.info(f"Tool Service initialized - config: {tool_config}")
         else:
             logger.info("Tool Service disabled in configuration")
 
-        # Phase 3: Agent Manager
-        logger.info("Phase 3: Initializing Agent Manager...")
+        # Phase 3: ADK Adapter (with tool service integration)
+        # ADK adapter auto-initialization happens here
+        # FrameworkRegistry.get_adapter(ADK) triggers auto-load
+        # AdkFrameworkAdapter.initialize() handles ADK runtime setup with strong dependency checking
+        logger.info("Phase 3: Loading ADK framework adapter with tool integration...")
+        try:
+            adk_adapter = await framework_registry.get_adapter(FrameworkType.ADK)
+            # Initialize with tool service integration
+            if adk_adapter:
+                await adk_adapter.initialize(config=None, tool_service=tool_service)
+                logger.info(f"ADK framework adapter loaded successfully - type: {type(adk_adapter).__name__}")
+            else:
+                raise RuntimeError("Failed to load ADK framework adapter")
+        except Exception as e:
+            logger.error(f"ADK framework adapter failed to load: {str(e)}")
+            # ADK is required - fail the bootstrap process
+            raise RuntimeError(
+                f"System cannot start without ADK framework: {str(e)}"
+            ) from e
+
+        # Phase 4: Agent Manager
+        logger.info("Phase 4: Initializing Agent Manager...")
         agent_manager = AgentManager()
 
         # TODO: Agent factory registration will be implemented later
         # For now, AgentManager uses direct if/elif logic in _create_domain_agent
-        logger.info("Agent Manager initialized (using direct framework detection)")
+        logger.info("Agent Manager initialized - detection method: direct_framework_check")
 
-        # Phase 4: Execution components
-        logger.info("Phase 4: Initializing Execution Components...")
+        # Phase 5: Execution components
+        logger.info("Phase 5: Initializing Execution Components...")
         task_router = TaskRouter(settings)
         execution_engine = ExecutionEngine(framework_registry, settings)
+        logger.info("Execution components initialized - task_router, execution_engine created")
 
-        logger.info("System initialization completed successfully")
+        logger.info("System initialization completed successfully - 5 phases, 5 components")
 
         return SystemComponents(
             framework_registry=framework_registry,

@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Execution Engine - Central orchestration for task processing."""
 
+import logging
 from typing import Optional
+from datetime import datetime
 
 from ..config.settings import Settings
 from ..contracts import (
@@ -28,6 +30,7 @@ class ExecutionEngine:
         self.framework_registry = framework_registry
         self.task_router = TaskRouter(settings)
         self.settings = settings or Settings()
+        self.logger = logging.getLogger(__name__)
 
     async def execute_task(self, task_request: TaskRequest) -> TaskResult:
         """
@@ -39,9 +42,12 @@ class ExecutionEngine:
         Returns:
             TaskResult: The result of task execution
         """
+        self.logger.info(f"Starting task execution - task_id: {task_request.task_id}, task_type: {task_request.task_type}")
+            
         try:
             # Route task to determine execution strategy
             strategy = await self.task_router.route_task(task_request)
+            self.logger.info(f"Task routing completed - framework: {strategy.framework_type.value}")
 
             # Get the appropriate framework adapter
             framework_adapter = await self.framework_registry.get_adapter(
@@ -49,18 +55,24 @@ class ExecutionEngine:
             )
 
             if not framework_adapter:
+                error_msg = f"Framework {strategy.framework_type} not available"
+                self.logger.error(f"Framework adapter not available - {error_msg}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
-                    error_message=f"Framework {strategy.framework_type} not "
-                    f"available",
+                    error_message=error_msg,
                 )
+            
+            self.logger.info(f"Framework adapter retrieved - type: {type(framework_adapter).__name__}")
 
             # Pass TaskRequest and Strategy to framework adapter
             result = await framework_adapter.execute_task(task_request, strategy)
+            
+            self.logger.info(f"Task execution completed - status: {result.status.value if result.status else 'unknown'}, has_messages: {bool(result.messages)}")
             return result
 
         except Exception as e:
+            self.logger.error(f"Task execution failed - task_id: {task_request.task_id}, error: {str(e)}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
