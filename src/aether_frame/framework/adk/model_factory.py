@@ -56,6 +56,17 @@ class AdkModelFactory:
                 # LiteLLM not available, fallback to string
                 return model_identifier
         
+        # Handle OpenAI models
+        if any(model in model_lower for model in [
+            "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
+        ]):
+            try:
+                from google.adk.models.lite_llm import LiteLlm
+                return LiteLlm(model=model_identifier)
+            except ImportError:
+                # LiteLLM not available, fallback to string
+                return model_identifier
+        
         # For Gemini and other ADK-native models, return as-is
         if any(prefix in model_lower for prefix in ["gemini", "projects/", "model-optimizer"]):
             return model_identifier
@@ -75,7 +86,12 @@ class AdkModelFactory:
             True if model needs custom wrapper
         """
         model_lower = model_identifier.lower()
-        return "deepseek" in model_lower
+        return (
+            "deepseek" in model_lower or 
+            any(model in model_lower for model in [
+                "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
+            ])
+        )
     
     @staticmethod
     def supports_streaming(model_identifier: str) -> bool:
@@ -91,6 +107,11 @@ class AdkModelFactory:
         model_lower = model_identifier.lower()
         # DeepSeek supports streaming through our custom wrapper
         if "deepseek" in model_lower:
+            return True
+        # OpenAI supports streaming natively through LiteLLM
+        if any(model in model_lower for model in [
+            "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
+        ]):
             return True
         # Gemini supports streaming natively through ADK
         if "gemini" in model_lower:

@@ -10,6 +10,7 @@ import sys
 import os
 import json
 import warnings
+import argparse
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -33,13 +34,50 @@ from aether_frame.contracts import TaskRequest, UniversalMessage, TaskStatus
 class CompleteE2ETestSuite:
     """
     Complete End-to-End test suite with detailed request/response logging.
+    Supports multiple AI models: DeepSeek, GPT-4o, GPT-4.1
     """
 
-    def __init__(self, test_name: str = "complete_e2e_test"):
-        """Initialize complete E2E test suite."""
+    def __init__(self, test_name: str = "complete_e2e_test", models: List[str] = None, run_all_models: bool = False):
+        """Initialize complete E2E test suite.
+        
+        Args:
+            test_name: Name of the test suite
+            models: List of specific models to test
+            run_all_models: Whether to run tests on all supported models
+        """
         self.test_name = test_name
         self.start_time = datetime.now()
         self.test_results: List[Dict[str, Any]] = []
+        
+        # Model configuration
+        self.supported_models = {
+            "deepseek-chat": {
+                "provider": "deepseek",
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "base_url": "https://api.deepseek.com/v1"
+            },
+            "gpt-4o": {
+                "provider": "openai",
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1"
+            },
+            "gpt-4.1": {
+                "provider": "openai", 
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1"
+            }
+        }
+        
+        # Determine which models to test
+        if run_all_models:
+            self.test_models = list(self.supported_models.keys())
+        elif models:
+            self.test_models = [m for m in models if m in self.supported_models]
+            if not self.test_models:
+                raise ValueError(f"No valid models specified. Supported: {list(self.supported_models.keys())}")
+        else:
+            # Default to DeepSeek if no specific models requested
+            self.test_models = ["deepseek-chat"]
         
         # Setup logging
         self.setup_logging()
@@ -56,6 +94,8 @@ class CompleteE2ETestSuite:
             "tool_calls_detected": 0,
             "total_execution_time": 0.0,
             "average_response_time": 0.0,
+            "models_tested": [],
+            "model_results": {},
         }
 
     def setup_logging(self):
@@ -107,9 +147,15 @@ class CompleteE2ETestSuite:
         self.logger.info(f"Test started at: {self.start_time.isoformat()}")
         self.logger.info(f"Log file: {self.log_file}")
         
-        # Environment check
-        deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
-        self.logger.info(f"DeepSeek API Key configured: {'Yes' if deepseek_key and deepseek_key != 'your-deepseek-api-key-here' else 'No'}")
+        # Environment check for all models
+        self.logger.info(f"Testing models: {', '.join(self.test_models)}")
+        
+        for model in self.test_models:
+            model_config = self.supported_models[model]
+            api_key = os.getenv(model_config["api_key_env"], "")
+            status = "Yes" if api_key and api_key not in ['your-api-key-here', 'your-deepseek-api-key-here', 'your-openai-api-key-here'] else "No"
+            self.logger.info(f"{model} API Key configured: {status}")
+        
         self.logger.info(f"Python version: {sys.version}")
         
         try:
@@ -155,12 +201,15 @@ class CompleteE2ETestSuite:
             self.logger.error(f"❌ Setup failed: {str(e)}")
             return False
 
-    def log_request_details(self, task_request: TaskRequest, test_case: str):
+    def log_request_details(self, task_request: TaskRequest, test_case: str, model: str = None):
         """Log detailed request information."""
-        self.logger.info(f"📤 REQUEST [{test_case}] - Starting")
+        model_info = f" - Model: {model}" if model else ""
+        self.logger.info(f"📤 REQUEST [{test_case}]{model_info} - Starting")
         self.logger.debug(f"Task ID: {task_request.task_id}")
         self.logger.debug(f"Task Type: {task_request.task_type}")
         self.logger.debug(f"Description: {task_request.description}")
+        if model:
+            self.logger.debug(f"Target Model: {model}")
         
         if task_request.messages:
             self.logger.debug(f"Messages Count: {len(task_request.messages)}")
@@ -172,9 +221,10 @@ class CompleteE2ETestSuite:
         if task_request.metadata:
             self.logger.debug(f"Request metadata: {task_request.metadata}")
 
-    def log_response_details(self, result, test_case: str, execution_time: float):
+    def log_response_details(self, result, test_case: str, execution_time: float, model: str = None):
         """Log detailed response information."""
-        self.logger.info(f"📥 RESPONSE [{test_case}] - Completed in {execution_time:.3f}s")
+        model_info = f" - Model: {model}" if model else ""
+        self.logger.info(f"📥 RESPONSE [{test_case}]{model_info} - Completed in {execution_time:.3f}s")
         self.logger.debug(f"Task ID: {result.task_id}")
         self.logger.debug(f"Status: {result.status.value if result.status else 'unknown'}")
         
@@ -196,11 +246,16 @@ class CompleteE2ETestSuite:
         if result.result_data:
             self.logger.debug(f"Result data: {result.result_data}")
 
-    async def test_simple_conversation(self):
-        """Test simple conversation with detailed logging."""
+    async def test_simple_conversation(self, model: str = None):
+        """Test simple conversation with detailed logging.
+        
+        Args:
+            model: Specific model to test (if None, uses default from settings)
+        """
         test_case = "simple_conversation"
-        self.logger.info(f"🧪 TEST CASE: {test_case}")
-        self.logger.info("├── FLOW: User Request → AI Assistant → ADK Adapter → DeepSeek Model → Response")
+        model_name = model or self.settings.default_model
+        self.logger.info(f"🧪 TEST CASE: {test_case} - Model: {model_name}")
+        self.logger.info(f"├── FLOW: User Request → AI Assistant → ADK Adapter → {model_name} → Response")
         
         start_time = datetime.now()
         
@@ -220,14 +275,14 @@ class CompleteE2ETestSuite:
                 "framework_type": "adk",                # ADK框架类型
                 "test_suite": "complete_e2e",          # 测试套件名称
                 "test_case": test_case,
-                "preferred_model": "deepseek-chat",
+                "preferred_model": model_name,
                 "timestamp": start_time.isoformat(),
             }
         )
         
         # Log request details
         self.logger.info("└── 📤 STEP 1: Preparing request...")
-        self.log_request_details(task_request, test_case)
+        self.log_request_details(task_request, test_case, model_name)
         
         try:
             self.logger.info("└── 🔄 STEP 2: Sending to AI Assistant...")
@@ -236,7 +291,7 @@ class CompleteE2ETestSuite:
             
             self.logger.info("└── 📥 STEP 3: Processing response...")
             # Log response details
-            self.log_response_details(result, test_case, execution_time)
+            self.log_response_details(result, test_case, execution_time, model_name)
             
             # Update performance metrics
             self.performance_metrics["total_requests"] += 1
@@ -251,6 +306,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "success",
                     "execution_time": execution_time,
                     "response_length": len(result.messages[0].content) if result.messages else 0,
@@ -271,6 +327,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "failed",
                     "execution_time": execution_time,
                     "error_message": result.error_message,
@@ -292,6 +349,7 @@ class CompleteE2ETestSuite:
             test_result = {
                 "test_case": test_case,
                 "task_id": task_request.task_id,
+                "model": model_name,
                 "status": "exception",
                 "execution_time": execution_time,
                 "error_message": str(e),
@@ -301,10 +359,15 @@ class CompleteE2ETestSuite:
             self.test_results.append(test_result)
             return False
 
-    async def test_tool_usage_request(self):
-        """Test tool usage with detailed logging."""
+    async def test_tool_usage_request(self, model: str = None):
+        """Test tool usage with detailed logging.
+        
+        Args:
+            model: Specific model to test (if None, uses default from settings)
+        """
         test_case = "tool_usage_request"
-        self.logger.info(f"\n🧪 TEST CASE: {test_case}")
+        model_name = model or self.settings.default_model
+        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
         
         start_time = datetime.now()
         
@@ -324,21 +387,21 @@ class CompleteE2ETestSuite:
                 "framework_type": "adk", 
                 "test_suite": "complete_e2e",
                 "test_case": test_case,
-                "preferred_model": "deepseek-chat",
+                "preferred_model": model_name,
                 "timestamp": start_time.isoformat(),
                 "expects_tool_usage": True,
             }
         )
         
         # Log request details
-        self.log_request_details(task_request, test_case)
+        self.log_request_details(task_request, test_case, model_name)
         
         try:
             result = await self.assistant.process_request(task_request)
             execution_time = (datetime.now() - start_time).total_seconds()
             
             # Log response details
-            self.log_response_details(result, test_case, execution_time)
+            self.log_response_details(result, test_case, execution_time, model_name)
             
             # Update performance metrics
             self.performance_metrics["total_requests"] += 1
@@ -360,6 +423,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "success",
                     "execution_time": execution_time,
                     "response_length": len(result.messages[0].content) if result.messages else 0,
@@ -384,6 +448,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "failed",
                     "execution_time": execution_time,
                     "error_message": result.error_message,
@@ -405,6 +470,7 @@ class CompleteE2ETestSuite:
             test_result = {
                 "test_case": test_case,
                 "task_id": task_request.task_id,
+                "model": model_name,
                 "status": "exception",
                 "execution_time": execution_time,
                 "error_message": str(e),
@@ -414,10 +480,15 @@ class CompleteE2ETestSuite:
             self.test_results.append(test_result)
             return False
 
-    async def test_complex_conversation(self):
-        """Test complex multi-turn conversation with detailed logging."""
+    async def test_complex_conversation(self, model: str = None):
+        """Test complex multi-turn conversation with detailed logging.
+        
+        Args:
+            model: Specific model to test (if None, uses default from settings)
+        """
         test_case = "complex_conversation"
-        self.logger.info(f"\n🧪 TEST CASE: {test_case}")
+        model_name = model or self.settings.default_model
+        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
         
         start_time = datetime.now()
         
@@ -437,7 +508,7 @@ class CompleteE2ETestSuite:
                 "framework_type": "adk",
                 "test_suite": "complete_e2e", 
                 "test_case": test_case,
-                "preferred_model": "deepseek-chat",
+                "preferred_model": model_name,
                 "timestamp": start_time.isoformat(),
                 "complexity_level": "high",
                 "expected_topics": ["async", "await", "python", "examples"],
@@ -445,14 +516,14 @@ class CompleteE2ETestSuite:
         )
         
         # Log request details
-        self.log_request_details(task_request, test_case)
+        self.log_request_details(task_request, test_case, model_name)
         
         try:
             result = await self.assistant.process_request(task_request)
             execution_time = (datetime.now() - start_time).total_seconds()
             
             # Log response details
-            self.log_response_details(result, test_case, execution_time)
+            self.log_response_details(result, test_case, execution_time, model_name)
             
             # Update performance metrics
             self.performance_metrics["total_requests"] += 1
@@ -472,6 +543,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "success",
                     "execution_time": execution_time,
                     "response_length": len(result.messages[0].content) if result.messages else 0,
@@ -497,6 +569,7 @@ class CompleteE2ETestSuite:
                 test_result = {
                     "test_case": test_case,
                     "task_id": task_request.task_id,
+                    "model": model_name,
                     "status": "failed",
                     "execution_time": execution_time,
                     "error_message": result.error_message,
@@ -518,6 +591,7 @@ class CompleteE2ETestSuite:
             test_result = {
                 "test_case": test_case,
                 "task_id": task_request.task_id,
+                "model": model_name,
                 "status": "exception",
                 "execution_time": execution_time,
                 "error_message": str(e),
@@ -583,17 +657,19 @@ class CompleteE2ETestSuite:
         return report, report_file
 
     async def run_all_tests(self):
-        """Run all tests in sequence with detailed logging."""
-        self.logger.info("🚀 STARTING COMPLETE E2E TEST SUITE")
+        """Run all tests in sequence with detailed logging and multi-model support."""
+        self.logger.info("🚀 STARTING COMPLETE E2E TEST SUITE WITH MULTI-MODEL SUPPORT")
         self.logger.info("=" * 80)
         self.logger.info("EXECUTION FLOW:")
         self.logger.info("1. System Bootstrap & Initialization")
         self.logger.info("2. AI Assistant Creation")
         self.logger.info("3. System Health Check")
-        self.logger.info("4. Sequential Test Execution:")
-        self.logger.info("   └── Test 1: Simple Conversation")
-        self.logger.info("   └── Test 2: Tool Usage Request")
-        self.logger.info("   └── Test 3: Complex Conversation")
+        self.logger.info("4. Multi-Model Test Execution:")
+        for model in self.test_models:
+            self.logger.info(f"   └── Model: {model}")
+            self.logger.info("       ├── Test 1: Simple Conversation")
+            self.logger.info("       ├── Test 2: Tool Usage Request")
+            self.logger.info("       └── Test 3: Complex Conversation")
         self.logger.info("5. Report Generation & Summary")
         self.logger.info("=" * 80)
         
@@ -604,75 +680,113 @@ class CompleteE2ETestSuite:
                 self.logger.error("❌ Setup failed, aborting tests")
                 return False
             
-            self.logger.info("✅ Setup completed, starting sequential test execution...")
-            test_results = []
+            self.logger.info("✅ Setup completed, starting multi-model test execution...")
             
-            # Test 1: Simple conversation - 等待完成
-            self.logger.info("\n" + "="*50)
-            self.logger.info("🔧 PHASE 2: TEST 1 - SIMPLE CONVERSATION")
-            self.logger.info("="*50)
-            self.logger.info("📋 Starting Test 1: Simple Conversation...")
-            result1 = await self.test_simple_conversation()
-            test_results.append(("simple_conversation", result1))
+            # Run tests for each model
+            all_model_results = []
+            overall_success = True
             
-            # 等待完成后记录结果
-            if result1:
-                self.logger.info("✅ Test 1 COMPLETED: Simple Conversation - SUCCESS")
-            else:
-                self.logger.error("❌ Test 1 COMPLETED: Simple Conversation - FAILED")
+            for i, model in enumerate(self.test_models, 1):
+                self.logger.info(f"\n" + "="*60)
+                self.logger.info(f"🔧 PHASE {i+1}: TESTING MODEL '{model}' ({i}/{len(self.test_models)})")
+                self.logger.info("="*60)
+                
+                # Update settings for current model
+                self.settings.default_model = model
+                
+                # Track model-specific results
+                model_start_time = datetime.now()
+                model_results = []
+                
+                # Test 1: Simple conversation
+                self.logger.info(f"\n📋 [{model}] Starting Test 1: Simple Conversation...")
+                result1 = await self.test_simple_conversation(model)
+                model_results.append(("simple_conversation", result1))
+                
+                if result1:
+                    self.logger.info(f"✅ [{model}] Test 1 COMPLETED: Simple Conversation - SUCCESS")
+                else:
+                    self.logger.error(f"❌ [{model}] Test 1 COMPLETED: Simple Conversation - FAILED")
+                
+                # Test 2: Tool usage
+                self.logger.info(f"\n📋 [{model}] Starting Test 2: Tool Usage...")
+                result2 = await self.test_tool_usage_request(model)
+                model_results.append(("tool_usage_request", result2))
+                
+                if result2:
+                    self.logger.info(f"✅ [{model}] Test 2 COMPLETED: Tool Usage - SUCCESS")
+                else:
+                    self.logger.error(f"❌ [{model}] Test 2 COMPLETED: Tool Usage - FAILED")
+                
+                # Test 3: Complex conversation
+                self.logger.info(f"\n📋 [{model}] Starting Test 3: Complex Conversation...")
+                result3 = await self.test_complex_conversation(model)
+                model_results.append(("complex_conversation", result3))
+                
+                if result3:
+                    self.logger.info(f"✅ [{model}] Test 3 COMPLETED: Complex Conversation - SUCCESS")
+                else:
+                    self.logger.error(f"❌ [{model}] Test 3 COMPLETED: Complex Conversation - FAILED")
+                
+                # Calculate model success rate
+                model_success_count = sum(1 for _, success in model_results if success)
+                model_success_rate = (model_success_count / len(model_results)) * 100
+                model_duration = (datetime.now() - model_start_time).total_seconds()
+                
+                self.logger.info(f"\n📊 [{model}] Model Summary:")
+                self.logger.info(f"   Tests Passed: {model_success_count}/{len(model_results)}")
+                self.logger.info(f"   Success Rate: {model_success_rate:.1f}%")
+                self.logger.info(f"   Duration: {model_duration:.2f}s")
+                
+                # Store model results
+                self.performance_metrics["models_tested"].append(model)
+                self.performance_metrics["model_results"][model] = {
+                    "tests_passed": model_success_count,
+                    "total_tests": len(model_results),
+                    "success_rate": model_success_rate,
+                    "duration": model_duration,
+                    "results": model_results
+                }
+                
+                all_model_results.extend([(f"{model}_{test}", result) for test, result in model_results])
+                
+                if model_success_count < len(model_results):
+                    overall_success = False
             
-            # Test 2: Tool usage - 等待前一个完成
-            self.logger.info("\n" + "="*50)
-            self.logger.info("🔧 PHASE 3: TEST 2 - TOOL USAGE")
-            self.logger.info("="*50)
-            self.logger.info("📋 Starting Test 2: Tool Usage...")
-            result2 = await self.test_tool_usage_request()
-            test_results.append(("tool_usage_request", result2))
-            
-            # 等待完成后记录结果
-            if result2:
-                self.logger.info("✅ Test 2 COMPLETED: Tool Usage - SUCCESS")
-            else:
-                self.logger.error("❌ Test 2 COMPLETED: Tool Usage - FAILED")
-            
-            # Test 3: Complex conversation - 等待前一个完成
-            self.logger.info("\n" + "="*50)
-            self.logger.info("🔧 PHASE 4: TEST 3 - COMPLEX CONVERSATION")
-            self.logger.info("="*50)
-            self.logger.info("📋 Starting Test 3: Complex Conversation...")
-            result3 = await self.test_complex_conversation()
-            test_results.append(("complex_conversation", result3))
-            
-            # 等待完成后记录结果
-            if result3:
-                self.logger.info("✅ Test 3 COMPLETED: Complex Conversation - SUCCESS")
-            else:
-                self.logger.error("❌ Test 3 COMPLETED: Complex Conversation - FAILED")
-            
-            # Generate final report - 等待所有测试完成
-            self.logger.info("\n" + "="*50)
-            self.logger.info("🔧 PHASE 5: REPORT GENERATION")
-            self.logger.info("="*50)
-            self.logger.info("🎉 All tests completed, generating final report...")
+            # Generate final report
+            self.logger.info(f"\n" + "="*60)
+            self.logger.info(f"🔧 PHASE {len(self.test_models)+2}: REPORT GENERATION")
+            self.logger.info("="*60)
+            self.logger.info("🎉 All model tests completed, generating final report...")
             report, report_file = self.generate_final_report()
             
-            # Summary
+            # Multi-model summary
             self.logger.info("\n" + "=" * 80)
-            self.logger.info("COMPLETE E2E TEST SUMMARY")
+            self.logger.info("COMPLETE E2E MULTI-MODEL TEST SUMMARY")
             self.logger.info("=" * 80)
             
-            passed_tests = 0
-            for test_name, success in test_results:
-                status = "✅ PASSED" if success else "❌ FAILED"
-                self.logger.info(f"{status} - {test_name}")
-                if success:
-                    passed_tests += 1
+            total_passed = 0
+            total_tests = 0
             
-            self.logger.info(f"\n📊 Final Results:")
-            self.logger.info(f"   Total Tests: {len(test_results)}")
-            self.logger.info(f"   Passed: {passed_tests}")
-            self.logger.info(f"   Failed: {len(test_results) - passed_tests}")
-            self.logger.info(f"   Success Rate: {(passed_tests/len(test_results)*100):.1f}%")
+            for model in self.test_models:
+                model_data = self.performance_metrics["model_results"][model]
+                passed = model_data["tests_passed"]
+                total = model_data["total_tests"]
+                rate = model_data["success_rate"]
+                
+                self.logger.info(f"🤖 {model}:")
+                self.logger.info(f"   Passed: {passed}/{total} ({rate:.1f}%)")
+                
+                total_passed += passed
+                total_tests += total
+            
+            overall_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+            
+            self.logger.info(f"\n📊 Overall Results:")
+            self.logger.info(f"   Models Tested: {len(self.test_models)}")
+            self.logger.info(f"   Total Tests: {total_tests}")
+            self.logger.info(f"   Total Passed: {total_passed}")
+            self.logger.info(f"   Overall Success Rate: {overall_rate:.1f}%")
             self.logger.info(f"   Total Duration: {report['total_duration']:.2f}s")
             self.logger.info(f"   Average Response Time: {self.performance_metrics['average_response_time']:.2f}s")
             self.logger.info(f"   Tool Calls Detected: {self.performance_metrics['tool_calls_detected']}")
@@ -680,11 +794,11 @@ class CompleteE2ETestSuite:
             self.logger.info(f"\n📋 Detailed log: {self.log_file}")
             self.logger.info(f"📋 Report file: {report_file}")
             
-            if passed_tests == len(test_results):
-                self.logger.info("\n🎉 ALL TESTS PASSED!")
+            if overall_success:
+                self.logger.info("\n🎉 ALL TESTS PASSED ACROSS ALL MODELS!")
                 return True
             else:
-                self.logger.warning(f"\n⚠️ {len(test_results) - passed_tests} tests failed")
+                self.logger.warning(f"\n⚠️ Some tests failed across models")
                 return False
             
         except Exception as e:
@@ -692,21 +806,78 @@ class CompleteE2ETestSuite:
             return False
 
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Complete End-to-End Test Suite with Multi-Model Support",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python test_complete_e2e.py                          # Test with default model (deepseek-chat)
+  python test_complete_e2e.py --models deepseek-chat   # Test with specific model
+  python test_complete_e2e.py --models gpt-4o gpt-4.1  # Test with multiple models
+  python test_complete_e2e.py --all-models             # Test with all supported models
+  python test_complete_e2e.py --list-models            # List supported models
+        """
+    )
+    
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--models", 
+        nargs="+", 
+        help="Specific models to test (deepseek-chat, gpt-4o, gpt-4.1)"
+    )
+    group.add_argument(
+        "--all-models", 
+        action="store_true", 
+        help="Test all supported models"
+    )
+    group.add_argument(
+        "--list-models", 
+        action="store_true", 
+        help="List all supported models and exit"
+    )
+    
+    return parser.parse_args()
+
+
 async def main():
-    """Main test execution function."""
-    print("🚀 Complete End-to-End Test Suite with Detailed Logging")
+    """Main test execution function with multi-model support."""
+    args = parse_arguments()
+    
+    supported_models = ["deepseek-chat", "gpt-4o", "gpt-4.1"]
+    
+    if args.list_models:
+        print("🤖 Supported AI Models:")
+        print("=" * 50)
+        for model in supported_models:
+            provider = "DeepSeek" if "deepseek" in model else "OpenAI"
+            print(f"  • {model} ({provider})")
+        print("\nUsage:")
+        print("  python test_complete_e2e.py --models deepseek-chat")
+        print("  python test_complete_e2e.py --all-models")
+        return
+    
+    print("🚀 Complete End-to-End Test Suite with Multi-Model Support")
     print("=" * 70)
     print("Features:")
-    print("- Detailed request/response logging")
+    print("- Multi-model testing (DeepSeek, GPT-4o, GPT-4.1)")
+    print("- Detailed request/response logging") 
     print("- Complete execution flow tracking")
     print("- Performance metrics collection")
     print("- Comprehensive test reporting")
-    print("- Real DeepSeek integration testing")
+    print("- Real AI model integration testing")
     print()
     
-    test_suite = CompleteE2ETestSuite()
-    
     try:
+        test_suite = CompleteE2ETestSuite(
+            models=args.models,
+            run_all_models=args.all_models
+        )
+        
+        print(f"🎯 Target Models: {', '.join(test_suite.test_models)}")
+        print()
+        
         success = await test_suite.run_all_tests()
         
         if success:

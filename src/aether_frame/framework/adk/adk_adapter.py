@@ -838,13 +838,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # FIXME: need to align with our model
         # Default model based on task type
         task_type_models = {
-            "coding": "gemini-1.5-pro",
-            "analysis": "gemini-1.5-pro",
-            "creative": "gemini-1.5-flash",
-            "chat": "gemini-1.5-flash",
+            "coding": "gpt-4o",
+            "analysis": "gpt-4o",
+            "creative": "gpt-4.1",
+            "chat": "gpt-4.1",
         }
 
-        return task_type_models.get(task_request.task_type, "gemini-1.5-flash")
+        return task_type_models.get(task_request.task_type, "gpt-4o")
 
     def _build_system_prompt_from_task(self, task_request: TaskRequest) -> str:
         """Build system prompt from task request context."""
