@@ -45,11 +45,33 @@ class Settings(BaseSettings):
     deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
     deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
 
+    # LiteLLM configuration
+    litellm_log: str = Field(default="ERROR", env="LITELLM_LOG")
+    deepseek_api_base: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_API_BASE")
+
     # Google AI/Vertex AI configuration
     google_ai_api_key: Optional[str] = Field(default=None, env="GOOGLE_AI_API_KEY")
     vertex_ai_project_id: Optional[str] = Field(default=None, env="VERTEX_AI_PROJECT_ID")
     vertex_ai_location: str = Field(default="us-central1", env="VERTEX_AI_LOCATION")
     vertex_ai_model: str = Field(default="gemini-pro", env="VERTEX_AI_MODEL")
+
+    # ADK configuration
+    adk_project_id: Optional[str] = Field(default=None, env="ADK_PROJECT_ID")
+    adk_location: str = Field(default="us-central1", env="ADK_LOCATION")
+    adk_credentials_path: Optional[str] = Field(default=None, env="ADK_CREDENTIALS_PATH")
+
+    # AutoGen configuration
+    autogen_model_name: str = Field(default="gpt-4", env="AUTOGEN_MODEL_NAME")
+    autogen_max_tokens: int = Field(default=4096, env="AUTOGEN_MAX_TOKENS")
+
+    # LangGraph configuration
+    langgraph_memory_type: str = Field(default="postgres", env="LANGGRAPH_MEMORY_TYPE")
+    langgraph_checkpoint_backend: str = Field(default="postgres", env="LANGGRAPH_CHECKPOINT_BACKEND")
+
+    # PostgreSQL configuration
+    postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
+    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
+    postgres_user: str = Field(default="postgres", env="POSTGRES_USER")
 
     # Default model configuration
     default_model_provider: str = Field(default="deepseek", env="DEFAULT_MODEL_PROVIDER")
