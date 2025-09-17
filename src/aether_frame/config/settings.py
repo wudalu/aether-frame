@@ -72,6 +72,27 @@ class Settings(BaseSettings):
     postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
     postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
     postgres_user: str = Field(default="postgres", env="POSTGRES_USER")
+    postgres_password: Optional[str] = Field(default=None, env="POSTGRES_PASSWORD")
+    postgres_database: str = Field(default="aether_frame", env="POSTGRES_DATABASE")
+
+    # Search engine configuration
+    search_engine: str = Field(default="google", env="SEARCH_ENGINE")
+    google_search_api_key: Optional[str] = Field(default=None, env="GOOGLE_SEARCH_API_KEY")
+    google_search_cx: Optional[str] = Field(default=None, env="GOOGLE_SEARCH_CX")
+
+    # Observability and monitoring
+    jaeger_endpoint: str = Field(default="http://localhost:14268/api/traces", env="JAEGER_ENDPOINT")
+
+    # Security configuration
+    secret_key: str = Field(default="your-secret-key-here", env="SECRET_KEY")
+    api_key_header: str = Field(default="X-API-Key", env="API_KEY_HEADER")
+
+    # CORS configuration
+    cors_origins: str = Field(default='["http://localhost:3000"]', env="CORS_ORIGINS")
+
+    # Development settings
+    reload_on_change: bool = Field(default=True, env="RELOAD_ON_CHANGE")
+    profiling_enabled: bool = Field(default=False, env="PROFILING_ENABLED")
 
     # Default model configuration
     default_model_provider: str = Field(default="deepseek", env="DEFAULT_MODEL_PROVIDER")
