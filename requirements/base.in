@@ -28,6 +28,9 @@ jsonschema>=4.19.0
 # openai>=1.0.0
 # anthropic>=0.8.0
 
+# LiteLLM for unified LLM API access (required for DeepSeek integration)
+litellm>=1.0.0
+
 # Framework dependencies
 google-adk>=1.13.0                    # ADK - Agent Development Kit
 # google-cloud-aiplatform>=1.35.0    # ADK (if needed separately)
