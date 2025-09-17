@@ -219,3 +219,4 @@ refactor.md
 outsider/
 .env.test
 archive/
+.mcp.json
