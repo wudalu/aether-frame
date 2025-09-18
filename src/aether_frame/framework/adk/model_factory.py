@@ -67,6 +67,20 @@ class AdkModelFactory:
                 # LiteLLM not available, fallback to string
                 return model_identifier
         
+        # Handle Azure OpenAI models
+        if model_lower.startswith("azure/") or "azure-" in model_lower:
+            try:
+                from google.adk.models.lite_llm import LiteLlm
+                # Convert azure-gpt-4 to azure/gpt-4 format if needed
+                if "azure-" in model_lower and not model_lower.startswith("azure/"):
+                    azure_model = model_identifier.replace("azure-", "azure/")
+                else:
+                    azure_model = model_identifier
+                return LiteLlm(model=azure_model)
+            except ImportError:
+                # LiteLLM not available, fallback to string
+                return model_identifier
+        
         # For Gemini and other ADK-native models, return as-is
         if any(prefix in model_lower for prefix in ["gemini", "projects/", "model-optimizer"]):
             return model_identifier
@@ -90,7 +104,8 @@ class AdkModelFactory:
             "deepseek" in model_lower or 
             any(model in model_lower for model in [
                 "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
-            ])
+            ]) or
+            model_lower.startswith("azure/") or "azure-" in model_lower
         )
     
     @staticmethod
@@ -112,6 +127,9 @@ class AdkModelFactory:
         if any(model in model_lower for model in [
             "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
         ]):
+            return True
+        # Azure OpenAI supports streaming through LiteLLM
+        if model_lower.startswith("azure/") or "azure-" in model_lower:
             return True
         # Gemini supports streaming natively through ADK
         if "gemini" in model_lower:
