@@ -65,6 +65,24 @@ class CompleteE2ETestSuite:
                 "provider": "openai", 
                 "api_key_env": "OPENAI_API_KEY",
                 "base_url": "https://api.openai.com/v1"
+            },
+            "azure/gpt-4": {
+                "provider": "azure_openai",
+                "api_key_env": "AZURE_OPENAI_API_KEY",
+                "base_url": "AZURE_OPENAI_ENDPOINT",
+                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
+            },
+            "azure/gpt-4o": {
+                "provider": "azure_openai",
+                "api_key_env": "AZURE_OPENAI_API_KEY",
+                "base_url": "AZURE_OPENAI_ENDPOINT",
+                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
+            },
+            "azure-gpt-4": {
+                "provider": "azure_openai",
+                "api_key_env": "AZURE_OPENAI_API_KEY",
+                "base_url": "AZURE_OPENAI_ENDPOINT",
+                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
             }
         }
         
@@ -153,8 +171,20 @@ class CompleteE2ETestSuite:
         for model in self.test_models:
             model_config = self.supported_models[model]
             api_key = os.getenv(model_config["api_key_env"], "")
-            status = "Yes" if api_key and api_key not in ['your-api-key-here', 'your-deepseek-api-key-here', 'your-openai-api-key-here'] else "No"
-            self.logger.info(f"{model} API Key configured: {status}")
+            
+            # Special handling for Azure models
+            if model_config["provider"] == "azure_openai":
+                endpoint = os.getenv(model_config["base_url"], "")
+                deployment = os.getenv(model_config.get("deployment_name", ""), "")
+                status = "Yes" if (api_key and api_key not in ['your-api-key-here', 'your-azure-openai-api-key-here'] 
+                                  and endpoint and deployment) else "No"
+                self.logger.info(f"{model} Azure API configured: {status}")
+                if status == "Yes":
+                    self.logger.debug(f"  Endpoint: {endpoint}")
+                    self.logger.debug(f"  Deployment: {deployment}")
+            else:
+                status = "Yes" if api_key and api_key not in ['your-api-key-here', 'your-deepseek-api-key-here', 'your-openai-api-key-here'] else "No"
+                self.logger.info(f"{model} API Key configured: {status}")
         
         self.logger.info(f"Python version: {sys.version}")
         
@@ -621,6 +651,9 @@ class CompleteE2ETestSuite:
             "aether_frame_available": True,
             "deepseek_model": "deepseek-chat",
             "deepseek_api_configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()),
+            "openai_api_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+            "azure_openai_api_configured": bool(os.getenv("AZURE_OPENAI_API_KEY", "").strip()),
+            "azure_openai_endpoint_configured": bool(os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()),
             "test_environment": "complete_e2e",
             "config_file": ".env.test"
         }
@@ -815,7 +848,8 @@ def parse_arguments():
 Examples:
   python test_complete_e2e.py                          # Test with default model (deepseek-chat)
   python test_complete_e2e.py --models deepseek-chat   # Test with specific model
-  python test_complete_e2e.py --models gpt-4o gpt-4.1  # Test with multiple models
+  python test_complete_e2e.py --models gpt-4o gpt-4.1  # Test with multiple OpenAI models
+  python test_complete_e2e.py --models azure/gpt-4     # Test with Azure OpenAI
   python test_complete_e2e.py --all-models             # Test with all supported models
   python test_complete_e2e.py --list-models            # List supported models
         """
@@ -825,7 +859,7 @@ Examples:
     group.add_argument(
         "--models", 
         nargs="+", 
-        help="Specific models to test (deepseek-chat, gpt-4o, gpt-4.1)"
+        help="Specific models to test (deepseek-chat, gpt-4o, gpt-4.1, azure/gpt-4, azure/gpt-4o, azure-gpt-4)"
     )
     group.add_argument(
         "--all-models", 
@@ -845,23 +879,29 @@ async def main():
     """Main test execution function with multi-model support."""
     args = parse_arguments()
     
-    supported_models = ["deepseek-chat", "gpt-4o", "gpt-4.1"]
+    supported_models = ["deepseek-chat", "gpt-4o", "gpt-4.1", "azure/gpt-4", "azure/gpt-4o", "azure-gpt-4"]
     
     if args.list_models:
         print("🤖 Supported AI Models:")
         print("=" * 50)
         for model in supported_models:
-            provider = "DeepSeek" if "deepseek" in model else "OpenAI"
+            if "deepseek" in model:
+                provider = "DeepSeek"
+            elif model.startswith("azure/") or model.startswith("azure-"):
+                provider = "Azure OpenAI"
+            else:
+                provider = "OpenAI"
             print(f"  • {model} ({provider})")
         print("\nUsage:")
         print("  python test_complete_e2e.py --models deepseek-chat")
+        print("  python test_complete_e2e.py --models azure/gpt-4")
         print("  python test_complete_e2e.py --all-models")
         return
     
     print("🚀 Complete End-to-End Test Suite with Multi-Model Support")
     print("=" * 70)
     print("Features:")
-    print("- Multi-model testing (DeepSeek, GPT-4o, GPT-4.1)")
+    print("- Multi-model testing (DeepSeek, OpenAI, Azure OpenAI)")
     print("- Detailed request/response logging") 
     print("- Complete execution flow tracking")
     print("- Performance metrics collection")
