@@ -324,6 +324,97 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 - **Pattern**: Session/User/Global three-layer state management
 - **Note**: Initial implementation will be pure in-memory, migration path TBD based on requirements
 
+## System Implementation Status
+
+### Current System State
+
+```mermaid
+graph TB
+    subgraph "Implemented Core Foundation"
+        AI[AI Assistant<br/>Request processing<br/>Validation logic<br/>Live session support]
+        EE[Execution Engine<br/>Task routing<br/>Framework delegation<br/>Live execution]
+        TR[Task Router<br/>Strategy selection<br/>Framework mapping]
+        FR[Framework Registry<br/>Adapter management<br/>Auto-loading<br/>Initialization]
+    end
+    
+    subgraph "Partial ADK Integration"
+        ADK[ADK Adapter<br/>Basic structure<br/>Live execution<br/>Session management WIP<br/>Tool integration WIP]
+        AM[Agent Manager<br/>Session lifecycle<br/>Factory pattern WIP]
+        TOOLS[Tool Service<br/>Basic tools<br/>Registry system WIP]
+    end
+    
+    subgraph "Missing Components"
+        SESS[Session Manager<br/>Multi-agent coordination<br/>State persistence<br/>TTL management]
+        MON[Monitoring<br/>Metrics collection<br/>Health checks<br/>Performance tracking]
+        SEC[Security Framework<br/>Tool sandboxing<br/>Permission system<br/>Access control]
+    end
+    
+    AI --> EE
+    EE --> TR
+    EE --> FR
+    FR --> ADK
+    ADK --> AM
+    AM --> TOOLS
+    
+    classDef implemented fill:#d4edda,stroke:#155724,stroke-width:2
+    classDef partial fill:#fff3cd,stroke:#856404,stroke-width:2
+    classDef missing fill:#f8d7da,stroke:#721c24,stroke-width:2
+    
+    class AI,EE,TR,FR implemented
+    class ADK,AM,TOOLS partial
+    class SESS,MON,SEC missing
+```
+
+### Business Requirements vs Current Capabilities
+
+| Business Requirement | Current Status | Primary Gap |
+|----------------------|----------------|-------------|
+| Super User Agent Creation | Partial | Dynamic tool/prompt injection missing |
+| Multi-Agent Conversations | Partial | Multi-agent coordination missing |
+| Real-time Streaming | Implemented | ADK live execution working |
+| Tool Integration | Partial | Registry and security missing |
+| Session Persistence | Missing | No persistent state management |
+| User Management | Missing | No user/permission system |
+
+### Next Phase Focus
+
+The system has a solid foundation with working ADK integration and streaming capabilities. The primary focus should be completing the ADK-based multi-agent system before expanding to other frameworks.
+
+**Critical Path**: Complete ADK session management → Tool registry → Multi-agent coordination → Security framework
+
+## Detailed Module Breakdown
+
+### 1. Execution Engine Module
+**Status**: Implemented  
+**Next Steps**: Configuration enhancement and advanced routing
+
+### 2. Framework Abstraction Layer
+**Status**: ADK adapter partially implemented  
+**Next Steps**: Complete session management, add tool integration
+
+### 3. Agent Layer
+**Status**: Session lifecycle basic implementation  
+**Next Steps**: Factory pattern completion, multi-agent coordination
+
+### 4. Tool Service Layer
+**Status**: Basic tools exist  
+**Next Steps**: Registry system, security sandbox
+
+### 5. Infrastructure Services
+**Status**: Missing core components  
+**Next Steps**: Session manager, monitoring, security framework
+
+## Key Architecture Decisions
+
+### Multi-Session Strategy
+Given business requirement for users to interact with multiple agents simultaneously, the system uses session isolation with independent ADK runners. This provides clean separation but requires careful resource management.
+
+### Framework-First Approach
+ADK serves as the primary framework with abstraction layer designed for future multi-framework support. Core business logic remains framework-agnostic.
+
+### Live Execution Design
+Real-time bidirectional communication implemented through framework adapters, enabling interactive workflows with tool approval and user intervention.
+
 ## Technical Decisions
 
 ### 1. Communication Pattern
@@ -368,6 +459,97 @@ The Execution Engine provides a simplified, direct approach to framework-based t
 - TBD: Performance monitoring setup
 - TBD: Error tracking and alerting systems
 - TBD: System health monitoring
+
+## Core Technical Challenges and Solutions
+
+### Implementation Roadmap Overview
+
+| Problem Domain | Technical Challenge | Short-term Solution | Specific Implementation | Complexity | Risk |
+|---|---|---|---|---|---|
+| **ADK Runner/Runtime管理** | 单用户需要多个ADK Runner实例，每个Agent一个Runner | 构建ADKRuntimeManager统一管理Runner池 | `ADKRuntimeManager`类 + `RunnerPool`组件 + Runner生命周期管理 | Medium | **HIGH** |
+| **Session协调与切换** | UI需要在多个Agent对话间切换，保持上下文 | 实现UserSessionCoordinator管理用户的多个Session | `UserSessionCoordinator`类 + Session状态缓存 + 切换API | Medium | Medium |
+| **ADK Session状态管理** | ADK Session重启后状态丢失，需要持久化 | SessionStateManager提供状态快照和恢复 | `SessionStateManager`类 + 内存缓存 + 定期快照机制 | Low | Medium |
+| **资源控制与监控** | 多Runner可能消耗过多系统资源 | ResourceGovernor实现配额管理和监控 | `ResourceGovernor`类 + 用户配额 + 资源监控组件 | Low | Low |
+| **工具注册与安全执行** | 动态工具需要安全隔离执行环境 | ToolRegistry + 子进程隔离执行 | `SecureToolRegistry`类 + `ToolExecutor`组件 + 权限验证 | Medium | **HIGH** |
+| **非Streaming请求处理** | 当前系统主要支持streaming，需要同步请求模式 | 在ADK Adapter中添加同步执行模式 | `execute_task_sync()`方法 + 结果等待机制 | Low | Low |
+
+### Critical Path Dependencies
+
+**Phase 1 (优先级顺序)**:
+1. **ADK Runner/Runtime管理** - 基础设施，必须先完成
+2. **非Streaming请求支持** - 简化MVP实现
+3. **Session协调与切换** - 核心用户体验
+4. **工具注册与安全** - 安全基础
+
+**Phase 2 (生产就绪)**:
+5. **资源控制与监控** - 生产环境必需
+6. **Session状态持久化** - 可靠性保障
+7. **Streaming支持** - 用户体验增强
+
+### Specific Implementation Modules
+
+#### 1. ADK Runtime Manager (最高优先级)
+```python
+# 位置: src/aether_frame/framework/adk/runtime_manager.py
+class ADKRuntimeManager:
+    """统一管理ADK Runner实例的生命周期"""
+    
+class RunnerPool:
+    """Runner实例池，支持复用和预热"""
+    
+class RunnerLifecycleController:
+    """Runner创建、初始化、清理的生命周期控制"""
+```
+
+#### 2. User Session Coordinator  
+```python
+# 位置: src/aether_frame/agents/user_session_coordinator.py
+class UserSessionCoordinator:
+    """管理单用户的多Agent Session协调"""
+    
+class SessionSwitcher:
+    """处理Session间的切换逻辑"""
+```
+
+#### 3. Session State Manager
+```python  
+# 位置: src/aether_frame/infrastructure/session_state_manager.py
+class SessionStateManager:
+    """ADK Session状态的持久化和恢复"""
+    
+class StateSnapshotScheduler:
+    """定期状态快照调度器"""
+```
+
+#### 4. Resource Governance
+```python
+# 位置: src/aether_frame/infrastructure/resource_governor.py 
+class ResourceGovernor:
+    """资源配额管理和监控"""
+    
+class UserQuotaManager:
+    """用户级别的资源配额管理"""
+```
+
+#### 5. Tool Registry & Security
+```python
+# 位置: src/aether_frame/tools/secure_tool_registry.py
+class SecureToolRegistry:
+    """工具注册和安全执行管理"""
+    
+class ToolExecutor:
+    """工具的隔离执行环境"""
+```
+
+### Risk Mitigation Strategy
+
+**高风险项目**:
+- **ADK Runner管理**: Week 1前3天构建原型，验证多Runner资源消耗
+- **工具安全执行**: 优先使用subprocess隔离，避免复杂容器化方案
+
+**中等风险项目**:
+- **Session状态管理**: 先用内存缓存，后续迁移到持久存储
+- **Session协调**: 先支持基本切换，后续优化性能
 
 ## Performance Targets
 
