@@ -71,6 +71,17 @@ class AdkModelFactory:
         if model_lower.startswith("azure/") or "azure-" in model_lower:
             try:
                 from google.adk.models.lite_llm import LiteLlm
+                import os
+                
+                # Set Azure environment variables if settings provided
+                if settings:
+                    if hasattr(settings, 'azure_api_key') and settings.azure_api_key:
+                        os.environ["AZURE_API_KEY"] = settings.azure_api_key
+                    if hasattr(settings, 'azure_api_base') and settings.azure_api_base:
+                        os.environ["AZURE_API_BASE"] = settings.azure_api_base
+                    if hasattr(settings, 'azure_api_version') and settings.azure_api_version:
+                        os.environ["AZURE_API_VERSION"] = settings.azure_api_version
+                
                 # Convert azure-gpt-4 to azure/gpt-4 format if needed
                 if "azure-" in model_lower and not model_lower.startswith("azure/"):
                     azure_model = model_identifier.replace("azure-", "azure/")

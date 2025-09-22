@@ -45,11 +45,10 @@ class Settings(BaseSettings):
     deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
     deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
 
-    # Azure OpenAI configuration
-    azure_openai_api_key: Optional[str] = Field(default=None, env="AZURE_OPENAI_API_KEY")
-    azure_openai_endpoint: str = Field(default="", env="AZURE_OPENAI_ENDPOINT")
-    azure_openai_api_version: str = Field(default="2023-07-01-preview", env="AZURE_OPENAI_API_VERSION")
-    azure_openai_deployment_name: str = Field(default="gpt-4", env="AZURE_OPENAI_DEPLOYMENT_NAME")
+    # Azure OpenAI configuration - Using LiteLLM standard environment variable names
+    azure_api_key: Optional[str] = Field(default=None, env="AZURE_API_KEY")
+    azure_api_base: str = Field(default="", env="AZURE_API_BASE")
+    azure_api_version: str = Field(default="2023-07-01-preview", env="AZURE_API_VERSION")
 
     # LiteLLM configuration
     litellm_log: str = Field(default="ERROR", env="LITELLM_LOG")

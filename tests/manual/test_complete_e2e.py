@@ -68,21 +68,18 @@ class CompleteE2ETestSuite:
             },
             "azure/gpt-4": {
                 "provider": "azure_openai",
-                "api_key_env": "AZURE_OPENAI_API_KEY",
-                "base_url": "AZURE_OPENAI_ENDPOINT",
-                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
+                "api_key_env": "AZURE_API_KEY",
+                "base_url": "AZURE_API_BASE"
             },
             "azure/gpt-4o": {
                 "provider": "azure_openai",
-                "api_key_env": "AZURE_OPENAI_API_KEY",
-                "base_url": "AZURE_OPENAI_ENDPOINT",
-                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
+                "api_key_env": "AZURE_API_KEY",
+                "base_url": "AZURE_API_BASE"
             },
             "azure-gpt-4": {
                 "provider": "azure_openai",
-                "api_key_env": "AZURE_OPENAI_API_KEY",
-                "base_url": "AZURE_OPENAI_ENDPOINT",
-                "deployment_name": "AZURE_OPENAI_DEPLOYMENT_NAME"
+                "api_key_env": "AZURE_API_KEY",
+                "base_url": "AZURE_API_BASE"
             }
         }
         
@@ -176,7 +173,7 @@ class CompleteE2ETestSuite:
             if model_config["provider"] == "azure_openai":
                 endpoint = os.getenv(model_config["base_url"], "")
                 deployment = os.getenv(model_config.get("deployment_name", ""), "")
-                status = "Yes" if (api_key and api_key not in ['your-api-key-here', 'your-azure-openai-api-key-here'] 
+                status = "Yes" if (api_key and api_key not in ['your-api-key-here', 'your-azure-openai-api-key'] 
                                   and endpoint and deployment) else "No"
                 self.logger.info(f"{model} Azure API configured: {status}")
                 if status == "Yes":
@@ -652,8 +649,8 @@ class CompleteE2ETestSuite:
             "deepseek_model": "deepseek-chat",
             "deepseek_api_configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()),
             "openai_api_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
-            "azure_openai_api_configured": bool(os.getenv("AZURE_OPENAI_API_KEY", "").strip()),
-            "azure_openai_endpoint_configured": bool(os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()),
+            "azure_openai_api_configured": bool(os.getenv("AZURE_API_KEY", "").strip()),
+            "azure_openai_endpoint_configured": bool(os.getenv("AZURE_API_BASE", "").strip()),
             "test_environment": "complete_e2e",
             "config_file": ".env.test"
         }
