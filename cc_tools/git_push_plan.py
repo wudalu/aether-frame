@@ -1,49 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Git Two-Phase Commit Script for feat_e2e_test Branch
-==================================================
+Git Batch Commit Script for Unpushed Changes
+============================================
 
-This script commits all changes in two phases with execution chain logging improvements.
+Simple script to split unpushed changes into 2 commits under 2000 lines each.
 
 🚀 USAGE:
 ---------
-# Interactive Mode (Recommended)
+# Interactive Mode
 python git_push_plan.py
 
-# Execute Phase 1 (Documentation and Logging Infrastructure)
+# Execute Commit 1
 python git_push_plan.py 1
 
-# Execute Phase 2 (Execution Chain Implementation)
+# Execute Commit 2  
 python git_push_plan.py 2
 
-# Execute Both Phases
+# Execute Both Commits
 python git_push_plan.py all
 
 # Copy files to external directory
 python git_push_plan.py copy <target_directory>
-
-📋 PHASES:
------------
-Phase 1: Documentation and Logging Infrastructure
-- docs/framework_abstraction.md contract updates
-- src/aether_frame/common/unified_logging.py execution chain logging
-- README.md E2E test command addition
-
-Phase 2: Execution Chain Implementation  
-- src/aether_frame/framework/adk/adk_adapter.py logging integration
-- src/aether_frame/agents/adk/adk_domain_agent.py execution chain tracking
-- src/aether_frame/tools/service.py tool execution logging
-
-⚡ FEATURES:
------------
-✅ Automatic code quality checks (lint + type-check)  
-✅ Interactive confirmation before each commit
-✅ Colored output for better readability
-✅ File existence validation
-✅ Safe rollback on failures
-✅ Copy mode for external directory commits
-✅ Cross-platform compatibility (Windows PowerShell/Linux/macOS)
 
 """
 
@@ -56,27 +34,46 @@ import argparse
 from pathlib import Path
 
 
-class GitTwoPhaseCommit:
-    """Git two-phase commit execution manager"""
+class GitBatchCommit:
+    """Simple git batch commit manager"""
     
     def __init__(self):
-        self.phases = {
+        # Hardcoded list of unpushed files - split into 2 batches
+        self.commits = {
             1: {
-                "name": "Documentation and Logging Infrastructure",
-                "description": "docs: update contract documentation and add execution chain logging infrastructure",
+                "name": "Batch 1",
+                "description": "feat: first batch of unpushed changes",
                 "files": [
-                    "docs/framework_abstraction.md",
-                    "src/aether_frame/common/unified_logging.py", 
-                    "README.md"
+                    ".env.example.custom",
+                    ".gitignore", 
+                    "docs/adk_performance_testing_summary.md",
+                    "docs/architecture.md",
+                    "docs/dev_plan.md",
+                    "src/aether_frame/agents/adk/adk_domain_agent.py",
+                    "src/aether_frame/bootstrap.py",
+                    "src/aether_frame/common/interaction_logger.py",
+                    "src/aether_frame/common/unified_logging.py",
+                    "src/aether_frame/config/settings.py",
+                    "src/aether_frame/contracts/configs.py",
+                    "src/aether_frame/contracts/contexts.py"
                 ]
             },
             2: {
-                "name": "Execution Chain Implementation",
-                "description": "feat: implement execution chain logging across TaskRequest → AgentRequest → ToolRequest flow",
+                "name": "Batch 2", 
+                "description": "feat: second batch of unpushed changes",
                 "files": [
+                    "src/aether_frame/contracts/requests.py",
+                    "src/aether_frame/contracts/responses.py",
                     "src/aether_frame/framework/adk/adk_adapter.py",
-                    "src/aether_frame/agents/adk/adk_domain_agent.py",
-                    "src/aether_frame/tools/service.py"
+                    "src/aether_frame/framework/adk/runner_manager.py",
+                    "tests/e2e/test_complete_aiassistant_flow.py",
+                    "tests/e2e/test_real_validation.py",
+                    "tests/e2e/test_runner_manager_e2e.py",
+                    "tests/e2e/test_session_id_propagation_e2e.py",
+                    "tests/integration/test_components.py",
+                    "tests/integration/test_end_to_end.py",
+                    "tests/manual/test_complete_e2e.py",
+                    "tests/unit/test_contracts.py"
                 ]
             }
         }
@@ -212,60 +209,40 @@ class GitTwoPhaseCommit:
         self.print_colored("=== COPY MODE ===", "magenta")
         self.print_colored(f"Target directory: {target_dir}", "cyan")
         
-        # Copy all files from both phases
+        # Copy all files from both commits
         all_files = []
-        for phase in self.phases.values():
-            all_files.extend(phase["files"])
+        for commit in self.commits.values():
+            all_files.extend(commit["files"])
+        
+        if not all_files:
+            self.print_colored("No files to copy.", "yellow")
+            return False
         
         return self.copy_files(target_dir, all_files)
     
-    def execute_phase(self, phase_num: int) -> bool:
-        """Execute a specific phase"""
-        if phase_num not in self.phases:
-            self.print_colored(f"Invalid phase number: {phase_num}", "red")
+    def execute_commit(self, commit_num: int) -> bool:
+        """Execute a specific commit"""
+        if commit_num not in self.commits:
+            self.print_colored(f"Invalid commit number: {commit_num}", "red")
             return False
         
-        phase = self.phases[phase_num]
+        commit = self.commits[commit_num]
         
         self.print_colored("=" * 60, "magenta")
-        self.print_colored(f"Phase {phase_num}: {phase['name']}", "magenta")
+        self.print_colored(f"Commit {commit_num}: {commit['name']}", "magenta")
         self.print_colored("=" * 60, "magenta")
         
         self.check_status()
         
-        # Add files for this phase
-        self.add_files(phase["files"])
+        # Add files for this commit
+        self.add_files(commit["files"])
         
         self.show_commit_preview()
         
-        # Check line count before commit confirmation
-        success, diff_output = self.run_command(["git", "diff", "--cached", "--stat"], capture_output=True)
-        if success and diff_output:
-            lines = diff_output.split()
-            insertions = 0
-            deletions = 0
-            
-            # Extract insertion/deletion counts from git diff --stat output
-            for i, word in enumerate(lines):
-                if "insertion" in word and i > 0:
-                    try:
-                        insertions = int(lines[i-1])
-                    except (ValueError, IndexError):
-                        pass
-                elif "deletion" in word and i > 0:
-                    try:
-                        deletions = int(lines[i-1])
-                    except (ValueError, IndexError):
-                        pass
-            
-            total_lines = insertions + deletions
-            if total_lines > 0:
-                self.print_colored(f"Estimated lines in this commit: {total_lines} (~{insertions} insertions, ~{deletions} deletions)", "cyan")
-        
         # Confirm commit
-        confirm = input(f"Proceed with Phase {phase_num} commit? (y/n): ").strip().lower()
+        confirm = input(f"Proceed with Commit {commit_num}? (y/n): ").strip().lower()
         if confirm not in ['y', 'yes']:
-            self.print_colored(f"Phase {phase_num} cancelled.", "yellow")
+            self.print_colored(f"Commit {commit_num} cancelled.", "yellow")
             self.run_command(["git", "reset"])
             return False
         
@@ -274,41 +251,14 @@ class GitTwoPhaseCommit:
             self.run_command(["git", "reset"])
             return False
         
-        # Create detailed commit message
-        if phase_num == 1:
-            commit_message = f"""{phase['description']}
+        # Create commit message
+        file_list = "\n".join([f"- {f}" for f in commit["files"]])
+        commit_message = f"""{commit['description']}
 
 This commit includes:
-- Contract alignment between docs/framework_abstraction.md and implementation
-- Unified logging infrastructure with execution chain support  
-- README.md update with E2E test command
+{file_list}
 
-Key changes:
-- Updated TaskResult, AgentRequest, AgentResponse, ToolRequest, ToolResult definitions in documentation
-- Added log_execution_chain() method to unified_logging.py
-- Added E2E test command to README.md for execution chain verification
-
-Phase {phase_num}/2 of execution chain logging implementation
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>"""
-        else:  # phase_num == 2
-            commit_message = f"""{phase['description']}
-
-This commit includes:
-- Complete execution chain logging: TaskRequest → AgentRequest → ToolRequest → ToolResponse → AgentResponse → TaskResult
-- Integration with unified logging infrastructure
-- Real-time execution flow tracking for debugging
-
-Key improvements:
-- ADK adapter execution chain logging in adk_adapter.py
-- Agent domain execution tracking in adk_domain_agent.py  
-- Tool service execution logging in service.py
-- Full request-response chain visibility for debugging
-- Performance tracking and metrics collection
-
-Phase {phase_num}/2 of execution chain logging implementation
+Commit {commit_num}/2
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
 
@@ -317,37 +267,43 @@ Co-Authored-By: Claude <noreply@anthropic.com>"""
         success, output = self.run_command(["git", "commit", "-m", commit_message])
         
         if success:
-            self.print_colored(f"Phase {phase_num} committed successfully!", "green")
+            self.print_colored(f"Commit {commit_num} committed successfully!", "green")
             return True
         else:
-            self.print_colored(f"Phase {phase_num} commit failed: {output}", "red")
+            self.print_colored(f"Commit {commit_num} commit failed: {output}", "red")
             return False
     
-    def execute_all_phases(self) -> None:
-        """Execute all phases sequentially"""
-        self.print_colored("Executing both phases sequentially...", "cyan")
+    def execute_all_commits(self) -> None:
+        """Execute all commits sequentially"""
+        if not self.commits:
+            self.print_colored("No commits to execute.", "yellow")
+            return
         
-        for phase_num in [1, 2]:
-            success = self.execute_phase(phase_num)
-            if not success:
-                self.print_colored(f"Stopping at phase {phase_num} due to failure.", "red")
-                return
-            print()
+        self.print_colored("Executing both commits sequentially...", "cyan")
+        
+        for commit_num in [1, 2]:
+            if commit_num in self.commits:
+                success = self.execute_commit(commit_num)
+                if not success:
+                    self.print_colored(f"Stopping at commit {commit_num} due to failure.", "red")
+                    return
+                print()
         
         # Final message
-        self.print_colored("Both phases completed! Execution chain logging implementation finished.", "green")
-        self.print_colored("Ready to push with: git push origin feat_e2e_test", "cyan")
+        self.print_colored("Both commits completed! All unpushed changes have been committed.", "green")
+        self.print_colored("Ready to push with: git push origin <branch_name>", "cyan")
     
     def show_menu(self) -> str:
         """Show interactive menu and get user choice"""
-        self.print_colored("Git Two-Phase Commit - Interactive Mode", "cyan")
+        self.print_colored("Git Batch Commit - Interactive Mode", "cyan")
         self.print_colored("=" * 40, "cyan")
-        print("Available phases:")
-        for num, phase in self.phases.items():
-            print(f"{num} - {phase['name']}")
+        print("Available commits:")
+        for num, commit in self.commits.items():
+            file_count = len(commit["files"])
+            print(f"{num} - {commit['name']} ({file_count} files)")
         print()
         print("Special commands:")
-        print("all - Execute both phases sequentially")
+        print("all - Execute both commits sequentially")
         print("copy <target_dir> - Copy files to external directory")
         print()
         
@@ -357,8 +313,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>"""
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="Git Two-Phase Commit Script")
-    parser.add_argument("command", nargs="?", help="Phase number (1-2), 'all', or 'copy'")
+    parser = argparse.ArgumentParser(description="Git Batch Commit Script")
+    parser.add_argument("command", nargs="?", help="Commit number (1-2), 'all', or 'copy'")
     parser.add_argument("target_dir", nargs="?", help="Target directory for copy mode")
     args = parser.parse_args()
     
@@ -366,7 +322,7 @@ def main():
     script_dir = Path(__file__).parent.parent
     os.chdir(script_dir)
     
-    git_commit = GitTwoPhaseCommit()
+    git_commit = GitBatchCommit()
     
     # Handle copy mode
     if args.command == "copy":
@@ -391,18 +347,18 @@ def main():
         success = git_commit.execute_copy_mode(target_dir)
         return 0 if success else 1
     
-    # Handle phase execution
+    # Handle commit execution
     if command == "all":
-        git_commit.execute_all_phases()
+        git_commit.execute_all_commits()
     elif command in ["1", "2"]:
-        phase_num = int(command)
-        git_commit.execute_phase(phase_num)
+        commit_num = int(command)
+        git_commit.execute_commit(commit_num)
     else:
         git_commit.print_colored("Invalid choice. Use 1, 2, 'all', or 'copy <target_dir>'.", "red")
         return 1
     
     print()
-    git_commit.print_colored("Git two-phase commit execution completed.", "green")
+    git_commit.print_colored("Git batch commit execution completed.", "green")
     return 0
 
 
