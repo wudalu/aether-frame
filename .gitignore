@@ -220,3 +220,6 @@ outsider/
 .env.test
 archive/
 .mcp.json
+review.*
+*.diff
+temp.*

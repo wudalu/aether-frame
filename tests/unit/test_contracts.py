@@ -69,12 +69,6 @@ class TestDataStructureCreation:
         assert message.content == "Hello, world!"
         assert message.metadata == {"test": "value"}
 
-        # Test ADK conversion
-        adk_format = message.to_adk_format()
-        assert adk_format["author"] == "user"
-        assert adk_format["content"] == "Hello, world!"
-        assert adk_format["metadata"] == {"test": "value"}
-
     def test_tool_call_and_content_part(self):
         """Test ToolCall and ContentPart creation."""
         tool_call = ToolCall(
@@ -106,27 +100,24 @@ class TestDataStructureCreation:
         assert tool.required_permissions == ["read"]
         assert tool.supports_streaming is True
 
-        # Test ADK conversion
-        adk_format = tool.to_adk_format()
-        assert adk_format["name"] == "test_tool"
-        assert adk_format["description"] == "A test tool"
-        assert adk_format["required_permissions"] == ["read"]
-
     def test_agent_config_creation(self):
         """Test AgentConfig creation."""
         config = AgentConfig(
             agent_type="conversational",
+            system_prompt="You are a helpful conversational agent.",
             framework_type=FrameworkType.ADK,
-            capabilities=["chat", "tool_use"],
-            max_iterations=10,
-            timeout=300,
+            available_tools=["chat", "tool_use"],
+            model_config={"model": "gpt-4", "temperature": 0.7},
+            framework_config={"max_iterations": 10, "timeout": 300},
         )
 
         assert config.agent_type == "conversational"
+        assert config.system_prompt == "You are a helpful conversational agent."
         assert config.framework_type == FrameworkType.ADK
-        assert config.capabilities == ["chat", "tool_use"]
-        assert config.max_iterations == 10
-        assert config.timeout == 300
+        assert config.available_tools == ["chat", "tool_use"]
+        assert config.model_config["model"] == "gpt-4"
+        assert config.framework_config["max_iterations"] == 10
+        assert config.framework_config["timeout"] == 300
 
     def test_execution_strategy_creation(self):
         """Test StrategyConfig creation."""
@@ -205,16 +196,13 @@ class TestADKCompatibility:
             available_knowledge=[knowledge],
         )
 
-        adk_format = task_request.to_adk_format()
-
-        assert adk_format["task_id"] == "test_001"
-        assert adk_format["task_type"] == "chat"
-        assert adk_format["description"] == "Test task"
-        assert adk_format["user_id"] == "test_user"
-        assert adk_format["session_id"] == "test_session"
-        assert len(adk_format["messages"]) == 1
-        assert len(adk_format["tools"]) == 1
-        assert len(adk_format["knowledge_sources"]) == 1
+        # Test basic task request properties
+        assert task_request.task_id == "test_001"
+        assert task_request.task_type == "chat"
+        assert task_request.description == "Test task"
+        assert len(task_request.messages) == 1
+        assert len(task_request.available_tools) == 1
+        assert len(task_request.available_knowledge) == 1
 
 
 class TestComplexMessages:
@@ -232,12 +220,12 @@ class TestComplexMessages:
             tool_calls=[tool_call],
         )
 
-        adk_format = message.to_adk_format()
-        assert adk_format["author"] == "assistant"
-        assert adk_format["content"] == "I'll search for that information."
-        assert len(adk_format["tool_calls"]) == 1
-        assert adk_format["tool_calls"][0]["name"] == "search"
-        assert adk_format["tool_calls"][0]["arguments"] == {"query": "test query"}
+        # Test message properties
+        assert message.role == "assistant"
+        assert message.content == "I'll search for that information."
+        assert len(message.tool_calls) == 1
+        assert message.tool_calls[0].tool_name == "search"
+        assert message.tool_calls[0].parameters == {"query": "test query"}
 
     def test_universal_message_with_content_parts(self):
         """Test UniversalMessage with multi-modal content."""
@@ -247,12 +235,13 @@ class TestComplexMessages:
 
         message = UniversalMessage(role="assistant", content=[text_part, function_part])
 
-        adk_format = message.to_adk_format()
-        assert adk_format["author"] == "assistant"
-        assert isinstance(adk_format["content"], list)
-        assert len(adk_format["content"]) == 2
-        assert adk_format["content"][0]["text"] == "Here is some text"
-        assert adk_format["content"][1]["function_call"]["name"] == "get_weather"
+        # Test multi-modal content
+        assert message.role == "assistant"
+        assert isinstance(message.content, list)
+        assert len(message.content) == 2
+        assert message.content[0].text == "Here is some text"
+        assert message.content[1].function_call.tool_name == "get_weather"
+        assert message.content[1].function_call.parameters == {"city": "NYC"}
 
 
 if __name__ == "__main__":

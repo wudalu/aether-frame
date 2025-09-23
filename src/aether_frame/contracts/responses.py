@@ -23,6 +23,9 @@ class TaskResult:
     execution_time: Optional[float] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Session management for multi-turn conversations
+    session_id: Optional[str] = None  # Session ID for follow-up requests
 
 
 @dataclass
@@ -37,6 +40,9 @@ class AgentResponse:
     error_details: Optional[str] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Session management for agent response
+    session_id: Optional[str] = None  # Session context for response tracking
 
 
 @dataclass
@@ -51,3 +57,6 @@ class ToolResult:
     execution_time: Optional[float] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Session management for tool result (optional)
+    session_id: Optional[str] = None  # Session context if tool produces session-level state

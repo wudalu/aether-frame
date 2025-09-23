@@ -214,12 +214,11 @@ def test_data_contracts():
         )
 
         # Test conversions
-        adk_format = task.to_adk_format()
         user_id = user_ctx.get_adk_user_id()
         session_id = session_ctx.get_adk_session_id()
 
         print(f"✅ Data contracts: ADK user_id={user_id}, session_id={session_id}")
-        print(f"✅ Task conversion: {len(adk_format)} fields converted")
+        print(f"✅ Task creation: task_id={task.task_id}, type={task.task_type}")
 
         return True
 

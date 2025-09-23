@@ -105,38 +105,6 @@ class UniversalMessage:
     tool_calls: Optional[List[ToolCall]] = None  # Tool invocation requests
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_adk_format(self) -> Dict[str, Any]:
-        """Convert to ADK native format."""
-        adk_content = self.content
-        if isinstance(self.content, list):
-            # Convert ContentPart list to ADK parts format
-            adk_parts = []
-            for part in self.content:
-                if part.text:
-                    adk_parts.append({"text": part.text})
-                elif part.function_call:
-                    adk_parts.append(
-                        {
-                            "function_call": {
-                                "name": part.function_call.tool_name,
-                                "arguments": part.function_call.parameters,
-                            }
-                        }
-                    )
-            adk_content = adk_parts if adk_parts else str(self.content)
-
-        result = {"author": self.author or self.role, "content": adk_content}
-
-        if self.tool_calls:
-            result["tool_calls"] = [
-                {"name": call.tool_name, "arguments": call.parameters}
-                for call in self.tool_calls
-            ]
-
-        if self.metadata:
-            result["metadata"] = self.metadata
-
-        return result
 
 
 @dataclass
@@ -181,15 +149,6 @@ class UniversalTool:
     supports_streaming: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_adk_format(self) -> Dict[str, Any]:
-        """Convert to ADK tool definition format."""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters_schema,
-            "required_permissions": self.required_permissions,
-            "metadata": self.metadata,
-        }
 
 
 @dataclass
@@ -203,13 +162,3 @@ class KnowledgeSource:
     access_config: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_adk_format(self) -> Dict[str, Any]:
-        """Convert to ADK knowledge source format."""
-        return {
-            "name": self.name,
-            "type": self.source_type,
-            "location": self.location,
-            "description": self.description,
-            "config": self.access_config,
-            "metadata": self.metadata,
-        }

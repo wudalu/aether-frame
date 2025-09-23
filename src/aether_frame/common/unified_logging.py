@@ -292,8 +292,8 @@ def create_execution_context(execution_id: str) -> ExecutionContext:
     return config.create_execution_context(execution_id)
 
 
-def setup_simple_logger(name: str, level: str = "INFO") -> logging.Logger:
-    """Setup simple logger for basic needs."""
+def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
+    """Setup logger for basic needs."""
     config = get_unified_logging_config()
     
     logger = logging.getLogger(name)

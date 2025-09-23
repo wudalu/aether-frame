@@ -153,11 +153,12 @@ class AdkDomainAgent(DomainAgent):
                     tool_namespace="builtin",
                     parameters={
                         "content": content,
-                        "session_id": None,
+                        "session_id": self.runtime_context.get("session_id"),  # Use current session_id
                         "format": "json",
                         "append": True,
                         "filename": None,
-                    }
+                    },
+                    session_id=self.runtime_context.get("session_id")  # Also set at request level
                 )
                 
                 # Log tool request in execution chain
@@ -453,7 +454,12 @@ class AdkDomainAgent(DomainAgent):
         # Get runtime components provided by adapter
         runner = self.runtime_context.get("runner")
         user_id = self.runtime_context.get("user_id", "anonymous")
-        session_id = self.runtime_context.get("session_id")
+        
+        # Use session_id from AgentRequest if available, fallback to runtime context
+        session_id = agent_request.session_id or self.runtime_context.get("session_id")
+        print(f"[ADK Domain Agent] session_id from AgentRequest: {agent_request.session_id}")
+        print(f"[ADK Domain Agent] session_id from runtime_context: {self.runtime_context.get('session_id')}")
+        print(f"[ADK Domain Agent] Final session_id: {session_id}")
 
         if not runner or not session_id:
             return TaskResult(
@@ -495,6 +501,7 @@ class AdkDomainAgent(DomainAgent):
 
             # Create ADK content
             content = types.Content(role="user", parts=[types.Part(text=adk_content)])
+            print(f"[ADK Domain Agent] About to call runner.run_async with user_id: {user_id}, session_id: {session_id}")
 
             # Run through ADK Runner using async method
             events = runner.run_async(

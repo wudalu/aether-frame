@@ -9,32 +9,44 @@ from .enums import ExecutionMode, FrameworkType, TaskComplexity
 
 @dataclass
 class AgentConfig:
-    """Configuration for agent initialization and behavior."""
+    """Configuration for agent initialization and behavior - Simplified Core Fields."""
 
-    agent_type: str
-    framework_type: FrameworkType = FrameworkType.ADK
+    """
+    ADK AgentConfig example:
+    adk_agent = AgentConfig(
+      agent_type="coding_assistant",
+      system_prompt="你是一个编程专家...",
+      model_config={"model": "gpt-4", "temperature": 0.3},
+      available_tools=["code_executor", "web_search"],
+      framework_config={
+          # ADK特定配置
+          "include_contents": "default",  # ADK对话历史控制
+          "output_schema": {"type": "object", "properties": {"code": {"type": "string"}}},
+          "memory_settings": {"max_context_length": 4096},
+          "adk_agent_id": "coding_agent_v1",
+          "vertex_ai_config": {
+              "project_id": "my-project",
+              "location": "us-central1"
+          }
+      }
+  )
+    """
 
-    # Core Agent Identity (ADK Requirements)
-    name: Optional[str] = None  # ADK Agent unique identifier
-    description: Optional[str] = None  # ADK Agent description for multi-agent scenarios
-
-    # Agent Behavior
-    capabilities: List[str] = field(default_factory=list)
-    max_iterations: int = 10
-    timeout: Optional[int] = None
-    model_config: Dict[str, Any] = field(default_factory=dict)
-    system_prompt: Optional[str] = None
-    behavior_settings: Dict[str, Any] = field(default_factory=dict)
-    memory_config: Dict[str, Any] = field(default_factory=dict)
-    tool_permissions: List[str] = field(default_factory=list)
-
-    # ADK-Specific Configuration
-    include_contents: str = (
-        "default"  # ADK conversation history control: 'default', 'none'
-    )
-    output_schema: Optional[Any] = None  # ADK structured output schema
-    input_schema: Optional[Any] = None  # ADK structured input schema
-    output_key: Optional[str] = None  # ADK state key for storing output
+    # === Core Required Fields ===
+    agent_type: str  # Agent type identifier (e.g., "coding_assistant", "writing_helper") - REQUIRED
+    system_prompt: str  # Agent's system prompt/persona - REQUIRED for meaningful behavior
+    
+    # === Core Optional Fields (with defaults) ===
+    framework_type: FrameworkType = FrameworkType.ADK  # Target framework
+    model_config: Dict[str, Any] = field(default_factory=dict)  # LLM model settings
+    available_tools: List[str] = field(default_factory=list)  # Tool names this agent can use
+    
+    # === Optional Identity Fields ===
+    name: Optional[str] = None  # Human-readable agent name (can auto-generate from agent_type)
+    description: Optional[str] = None  # Agent description for users (can auto-generate from system_prompt)
+    
+    # === Framework-Specific Configuration ===
+    framework_config: Dict[str, Any] = field(default_factory=dict)  # Framework-specific settings
 
 
 @dataclass

@@ -28,7 +28,7 @@ load_dotenv(".env.test")
 
 from aether_frame.bootstrap import create_ai_assistant, health_check_system, create_system_components
 from aether_frame.config.settings import Settings
-from aether_frame.contracts import TaskRequest, UniversalMessage, TaskStatus
+from aether_frame.contracts import TaskRequest, UniversalMessage, TaskStatus, AgentConfig
 
 
 class CompleteE2ETestSuite:
@@ -286,10 +286,11 @@ class CompleteE2ETestSuite:
         
         start_time = datetime.now()
         
-        task_request = TaskRequest(
-            task_id=f"e2e_simple_{int(start_time.timestamp())}",
+        # First create a session by sending a request with agent_config
+        session_request = TaskRequest(
+            task_id=f"e2e_session_setup_{int(start_time.timestamp())}",
             task_type="chat",
-            description="Simple conversation test with greeting",
+            description="Session setup for E2E test",
             messages=[
                 UniversalMessage(
                     role="user",
@@ -297,10 +298,22 @@ class CompleteE2ETestSuite:
                     metadata={"test_case": test_case, "expects_response": True}
                 )
             ],
+            agent_config=AgentConfig(
+                agent_type="conversational_assistant",
+                system_prompt="You are a helpful AI assistant.",
+                model_config={
+                    "model": model_name,
+                    "temperature": 0.7,
+                    "max_tokens": 1500
+                },
+                framework_config={
+                    "provider": "deepseek" if "deepseek" in model_name else "openai"
+                }
+            ),
             metadata={
-                "test_framework": "adk_complete_e2e",  # 明确标识基于ADK框架
-                "framework_type": "adk",                # ADK框架类型
-                "test_suite": "complete_e2e",          # 测试套件名称
+                "test_framework": "adk_complete_e2e",
+                "framework_type": "adk",
+                "test_suite": "complete_e2e",
                 "test_case": test_case,
                 "preferred_model": model_name,
                 "timestamp": start_time.isoformat(),
@@ -309,11 +322,11 @@ class CompleteE2ETestSuite:
         
         # Log request details
         self.logger.info("└── 📤 STEP 1: Preparing request...")
-        self.log_request_details(task_request, test_case, model_name)
+        self.log_request_details(session_request, test_case, model_name)
         
         try:
             self.logger.info("└── 🔄 STEP 2: Sending to AI Assistant...")
-            result = await self.assistant.process_request(task_request)
+            result = await self.assistant.process_request(session_request)
             execution_time = (datetime.now() - start_time).total_seconds()
             
             self.logger.info("└── 📥 STEP 3: Processing response...")
@@ -332,7 +345,7 @@ class CompleteE2ETestSuite:
                 
                 test_result = {
                     "test_case": test_case,
-                    "task_id": task_request.task_id,
+                    "task_id": session_request.task_id,
                     "model": model_name,
                     "status": "success",
                     "execution_time": execution_time,
@@ -342,6 +355,7 @@ class CompleteE2ETestSuite:
                     "metadata": result.metadata,
                     "timestamp": datetime.now().isoformat(),
                     "response_preview": result.messages[0].content[:200] + "..." if result.messages and len(result.messages[0].content) > 200 else result.messages[0].content if result.messages else "",
+                    "session_id": result.session_id,  # Store session ID for potential reuse
                 }
                 
                 self.test_results.append(test_result)
@@ -353,7 +367,7 @@ class CompleteE2ETestSuite:
                 
                 test_result = {
                     "test_case": test_case,
-                    "task_id": task_request.task_id,
+                    "task_id": session_request.task_id,
                     "model": model_name,
                     "status": "failed",
                     "execution_time": execution_time,
@@ -375,7 +389,7 @@ class CompleteE2ETestSuite:
             
             test_result = {
                 "test_case": test_case,
-                "task_id": task_request.task_id,
+                "task_id": session_request.task_id,
                 "model": model_name,
                 "status": "exception",
                 "execution_time": execution_time,
@@ -409,6 +423,19 @@ class CompleteE2ETestSuite:
                     metadata={"test_case": test_case, "expects_tool_call": True}
                 )
             ],
+            agent_config=AgentConfig(
+                agent_type="tool_assistant",
+                system_prompt="You are a helpful AI assistant with access to tools.",
+                model_config={
+                    "model": model_name,
+                    "temperature": 0.3,
+                    "max_tokens": 1500
+                },
+                available_tools=["chat_log"],
+                framework_config={
+                    "provider": "deepseek" if "deepseek" in model_name else "openai"
+                }
+            ),
             metadata={
                 "test_framework": "adk_complete_e2e",
                 "framework_type": "adk", 
@@ -530,6 +557,18 @@ class CompleteE2ETestSuite:
                     metadata={"test_case": test_case, "complexity": "high"}
                 )
             ],
+            agent_config=AgentConfig(
+                agent_type="programming_assistant",
+                system_prompt="You are an expert Python programming assistant.",
+                model_config={
+                    "model": model_name,
+                    "temperature": 0.2,
+                    "max_tokens": 2000
+                },
+                framework_config={
+                    "provider": "deepseek" if "deepseek" in model_name else "openai"
+                }
+            ),
             metadata={
                 "test_framework": "adk_complete_e2e",
                 "framework_type": "adk",

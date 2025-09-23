@@ -260,19 +260,19 @@ class TestEndToEndFlow:
             execution_config=execution_config,
         )
 
-        # Test ADK conversion
-        adk_format = task_request.to_adk_format()
+        # Test task request properties
+        assert task_request.task_id == "integration_test_001"
+        assert task_request.task_type == "conversational"
+        assert task_request.user_context.user_id == "integration_test_user"
+        assert task_request.session_context.session_id == "integration_session"
+        assert len(task_request.session_context.conversation_history) == 1
+        assert len(task_request.messages) == 1
+        assert len(task_request.available_tools) == 1
+        assert len(task_request.available_knowledge) == 1
 
-        assert adk_format["user_id"] == "integration_test_user"
-        assert adk_format["session_id"] == "integration_session"
-        assert len(adk_format["conversation_history"]) == 1
-        assert len(adk_format["messages"]) == 1
-        assert len(adk_format["tools"]) == 1
-        assert len(adk_format["knowledge_sources"]) == 1
-
-        # Verify the converted data maintains structure
-        assert adk_format["tools"][0]["name"] == "search_tool"
-        assert adk_format["knowledge_sources"][0]["name"] == "docs"
+        # Verify the data structure maintains integrity
+        assert task_request.available_tools[0].name == "search_tool"
+        assert task_request.available_knowledge[0].name == "docs"
 
 
 if __name__ == "__main__":

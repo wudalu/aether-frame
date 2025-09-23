@@ -57,9 +57,10 @@ class TestComponentIntegration:
 
         agent_config = AgentConfig(
             agent_type="research_agent",
+            system_prompt="You are a research agent.",
             framework_type=FrameworkType.ADK,
-            capabilities=["search", "analysis"],
-            timeout=300,
+            available_tools=["search", "analysis"],
+            framework_config={"timeout": 300},
         )
 
         execution_config = ExecutionConfig(
@@ -80,17 +81,15 @@ class TestComponentIntegration:
             execution_config=execution_config,
         )
 
-        # Test ADK conversion
-        adk_format = task_request.to_adk_format()
+        # Test task request properties
+        assert task_request.user_context.get_adk_user_id() == "integration_test_user"
+        assert task_request.session_context.get_adk_session_id() == "integration_session"
+        assert len(task_request.session_context.conversation_history) == 1
+        assert len(task_request.messages) == 1
+        assert len(task_request.available_tools) == 1
 
-        assert adk_format["user_id"] == "integration_test_user"
-        assert adk_format["session_id"] == "integration_session"
-        assert len(adk_format["conversation_history"]) == 1
-        assert len(adk_format["messages"]) == 1
-        assert len(adk_format["tools"]) == 1
-
-        # Verify the converted data maintains structure
-        assert adk_format["tools"][0]["name"] == "search_tool"
+        # Verify the data structure maintains integrity
+        assert task_request.available_tools[0].name == "search_tool"
 
         print("✅ Data contracts integration successful")
         return True
