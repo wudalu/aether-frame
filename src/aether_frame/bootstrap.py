@@ -79,9 +79,9 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
         logger.info("Phase 3: Loading ADK framework adapter with tool integration...")
         try:
             adk_adapter = await framework_registry.get_adapter(FrameworkType.ADK)
-            # Initialize with tool service integration
+            # Initialize with tool service integration and settings
             if adk_adapter:
-                await adk_adapter.initialize(config=None, tool_service=tool_service)
+                await adk_adapter.initialize(config=None, tool_service=tool_service, settings=settings)
                 logger.info(f"ADK framework adapter loaded successfully - type: {type(adk_adapter).__name__}")
             else:
                 raise RuntimeError("Failed to load ADK framework adapter")

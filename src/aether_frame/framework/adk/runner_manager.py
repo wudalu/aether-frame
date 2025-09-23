@@ -8,6 +8,7 @@ import hashlib
 import json
 
 from ...contracts import AgentConfig
+from ...config.settings import Settings
 
 
 class RunnerManager:
@@ -21,9 +22,10 @@ class RunnerManager:
     4. Agent configs with same hash can share Runners
     """
 
-    def __init__(self):
+    def __init__(self, settings: Settings = None):
         """Initialize runner manager."""
         self.logger = logging.getLogger(__name__)
+        self.settings = settings or Settings()
         
         # Core storage
         self.runners = {}  # runner_id -> RunnerContext
@@ -41,10 +43,8 @@ class RunnerManager:
             from google.adk.sessions import InMemorySessionService
             self._adk_available = True
             self.logger.info("✅ ADK dependencies verified - RunnerManager ready")
-            print(f"[RunnerManager] ✅ ADK dependencies verified - RunnerManager ready")
         except ImportError as e:
             self.logger.warning(f"❌ ADK not available - RunnerManager in mock mode: {e}")
-            print(f"[RunnerManager] ❌ ADK not available - RunnerManager in mock mode: {e}")
             self._adk_available = False
 
     def _hash_config(self, agent_config: AgentConfig) -> str:
@@ -58,35 +58,31 @@ class RunnerManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:16]
 
-    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None) -> Tuple[str, str]:
+    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None) -> Tuple[str, str]:
         """
         Get existing Runner or create new one, then create Session.
         
         Args:
             agent_config: Agent configuration for Runner creation
             task_request: TaskRequest containing context information for Session creation
+            adk_agent: Optional pre-created ADK agent to use (if provided, skips agent creation)
             
         Returns:
             Tuple[runner_id, session_id]: IDs for created/existing runner and new session
         """
-        print(f"[RunnerManager] get_or_create_runner called - ADK available: {self._adk_available}")
         config_hash = self._hash_config(agent_config)
         
         # Check if Runner exists for this config
         if config_hash in self.config_to_runner:
             runner_id = self.config_to_runner[config_hash]
             self.logger.info(f"Reusing existing Runner {runner_id} for config hash {config_hash}")
-            print(f"[RunnerManager] Reusing existing Runner {runner_id}")
         else:
             # Create new Runner
-            runner_id = await self._create_new_runner(agent_config, config_hash)
+            runner_id = await self._create_new_runner(agent_config, config_hash, adk_agent)
             self.config_to_runner[config_hash] = runner_id
             self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
-            print(f"[RunnerManager] Created new Runner {runner_id}")
         
-        # Create Session in the Runner
         session_id = await self._create_session_in_runner(runner_id, agent_config, task_request)
-        print(f"[RunnerManager] Created session {session_id} in runner {runner_id}")
         
         # Record session-to-runner mapping
         self.session_to_runner[session_id] = runner_id
@@ -103,12 +99,8 @@ class RunnerManager:
         Returns:
             RunnerContext dict or None if not found
         """
-        print(f"[RunnerManager] Looking for session {session_id}")
-        print(f"[RunnerManager] Available sessions: {list(self.session_to_runner.keys())}")
-        
         if session_id not in self.session_to_runner:
             self.logger.warning(f"Session {session_id} not found in mapping")
-            print(f"[RunnerManager] ❌ Session {session_id} not found in mapping")
             return None
             
         runner_id = self.session_to_runner[session_id]
@@ -116,24 +108,22 @@ class RunnerManager:
         
         if not runner_context:
             self.logger.error(f"Runner {runner_id} not found for session {session_id}")
-            print(f"[RunnerManager] ❌ Runner {runner_id} not found for session {session_id}")
             return None
-            
-        print(f"[RunnerManager] ✅ Found runner {runner_id} for session {session_id}")
         return runner_context
 
-    async def _create_new_runner(self, agent_config: AgentConfig, config_hash: str) -> str:
+    async def _create_new_runner(self, agent_config: AgentConfig, config_hash: str, adk_agent = None) -> str:
         """
         Create new ADK Runner with bound SessionService.
         
         Args:
             agent_config: Agent configuration
             config_hash: Configuration hash for tracking
+            adk_agent: Optional pre-created ADK agent to use (if None, creates internal agent)
             
         Returns:
             runner_id: Unique identifier for the created Runner
         """
-        runner_id = f"runner_{uuid4().hex[:8]}"
+        runner_id = f"{self.settings.runner_id_prefix}_{uuid4().hex[:8]}"
         
         if not self._adk_available:
             # Mock mode for testing without ADK
@@ -155,13 +145,15 @@ class RunnerManager:
             # Create dedicated SessionService for this Runner
             session_service = InMemorySessionService()
             
-            # Build ADK Agent (simplified for now)
-            adk_agent = await self._build_adk_agent(agent_config)
+            # Use provided ADK Agent or build internal one as fallback
+            if adk_agent is None:
+                adk_agent = await self._build_adk_agent(agent_config)
+            # External agent provided, use it directly
             
             # Create Runner bound to SessionService with consistent app_name
             runner = Runner(
                 agent=adk_agent,
-                app_name="aether_frame",  # Use consistent app_name for both Runner and sessions
+                app_name=self.settings.default_app_name,  # Use configurable app_name for both Runner and sessions
                 session_service=session_service  # Key: binding relationship
             )
             
@@ -173,7 +165,7 @@ class RunnerManager:
                 "config_hash": config_hash,
                 "sessions": {},  # session_id -> adk_session
                 "created_at": "datetime_now",  # TODO: actual datetime
-                "user_id": "anonymous",  # Default user_id, will be updated when creating sessions
+                "user_id": self.settings.default_user_id,  # Default user_id, will be updated when creating sessions
             }
             
             self.logger.info(f"Created ADK Runner {runner_id} with dedicated SessionService")
@@ -199,7 +191,7 @@ class RunnerManager:
         if not runner_context:
             raise ValueError(f"Runner {runner_id} not found")
         
-        session_id = f"session_{uuid4().hex[:8]}"
+        session_id = f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
         
         if not self._adk_available:
             # Mock session
@@ -210,16 +202,17 @@ class RunnerManager:
         try:
             session_service = runner_context["session_service"]
             
-            # Extract user context from task_request
-            user_id = "anonymous"  # Default
-            app_name = "aether_frame"  # Use consistent app_name that matches Runner
+            # Extract user context from task_request - MUST come from request, not defaults
+            user_id = None
+            app_name = self.settings.default_app_name  # App name can use config default
             
             if task_request and task_request.user_context:
-                # Extract user_id from user context
-                if hasattr(task_request.user_context, 'user_id'):
-                    user_id = task_request.user_context.user_id
-                elif hasattr(task_request.user_context, 'get_adk_user_id'):
-                    user_id = task_request.user_context.get_adk_user_id()
+                # Use UserContext's method which handles fallbacks properly
+                user_id = task_request.user_context.get_adk_user_id()
+            
+            # Only use config default as absolute fallback if no user context provided
+            if not user_id:
+                user_id = self.settings.default_user_id
             
             # Create ADK Session in the Runner's SessionService with context
             adk_session = await session_service.create_session(
@@ -228,14 +221,6 @@ class RunnerManager:
                 session_id=session_id
             )
             
-            # Debug: Check what ADK session actually created
-            print(f"[RunnerManager] ADK Session created: {adk_session}")
-            print(f"[RunnerManager] ADK Session type: {type(adk_session)}")
-            if hasattr(adk_session, 'session_id'):
-                print(f"[RunnerManager] ADK Session ID: {adk_session.session_id}")
-            if hasattr(adk_session, 'user_id'):
-                print(f"[RunnerManager] ADK Session user_id: {adk_session.user_id}")
-            
             # Store session reference
             runner_context["sessions"][session_id] = adk_session
             
@@ -243,7 +228,6 @@ class RunnerManager:
             runner_context["user_id"] = user_id
             
             self.logger.info(f"Created ADK Session {session_id} in Runner {runner_id}")
-            print(f"[RunnerManager] Created ADK Session {session_id} with user_id: {user_id} in Runner {runner_id}")
             return session_id
             
         except Exception as e:
@@ -266,13 +250,10 @@ class RunnerManager:
             
             # Extract model from agent config
             model_config = getattr(agent_config, 'model_config', {})
-            model_name = model_config.get('model', 'gemini-1.5-flash')
-            
-            print(f"[RunnerManager] Creating ADK Agent with model: {model_name}")
+            model_name = model_config.get('model', self.settings.default_adk_model)
             
             # Use AdkModelFactory to create the appropriate model
             adk_model = AdkModelFactory.create_model(model_name, settings=None, enable_streaming=False)
-            print(f"[RunnerManager] Created model via factory: {type(adk_model).__name__} - {adk_model}")
             
             # Create the real ADK agent with proper parameters
             adk_agent = Agent(
@@ -284,12 +265,10 @@ class RunnerManager:
             )
             
             self.logger.info(f"Created real ADK Agent with model {model_name} via AdkModelFactory")
-            print(f"[RunnerManager] Created real ADK Agent with model {model_name} via AdkModelFactory")
             return adk_agent
             
         except Exception as e:
             self.logger.error(f"Failed to build real ADK Agent: {str(e)}")
-            print(f"[RunnerManager] Failed to build real ADK Agent: {str(e)}")
             
             # Fallback to mock agent
             class MockAdkAgent:
@@ -297,7 +276,6 @@ class RunnerManager:
                     self.config = config
                     
             self.logger.warning("Using MockAdkAgent as fallback")
-            print(f"[RunnerManager] Using MockAdkAgent as fallback")
             return MockAdkAgent(agent_config)
 
     async def cleanup_runner(self, runner_id: str) -> bool:

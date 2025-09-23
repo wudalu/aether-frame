@@ -132,6 +132,22 @@ class Settings(BaseSettings):
     preferred_frameworks: List[str] = Field(default=["adk"], env="PREFERRED_FRAMEWORKS")
     framework_timeout: int = Field(default=30, env="FRAMEWORK_TIMEOUT")
 
+    # Runtime ID configuration
+    default_user_id: str = Field(default="anonymous", env="DEFAULT_USER_ID")
+    default_app_name: str = Field(default="aether_frame", env="DEFAULT_APP_NAME")
+    default_agent_type: str = Field(default="adk_domain_agent", env="DEFAULT_AGENT_TYPE")
+    
+    # ID generation configuration
+    runner_id_prefix: str = Field(default="runner", env="RUNNER_ID_PREFIX")
+    session_id_prefix: str = Field(default="session", env="SESSION_ID_PREFIX")
+    agent_id_prefix: str = Field(default="agent", env="AGENT_ID_PREFIX")
+    domain_agent_id_prefix: str = Field(default="domain_agent", env="DOMAIN_AGENT_ID_PREFIX")
+    
+    # Default model fallbacks
+    default_adk_model: str = Field(default="gemini-1.5-flash", env="DEFAULT_ADK_MODEL")
+    default_autogen_model: str = Field(default="gpt-4", env="DEFAULT_AUTOGEN_MODEL")
+    default_langgraph_model: str = Field(default="gpt-4", env="DEFAULT_LANGGRAPH_MODEL")
+
     class Config:
         """Pydantic configuration."""
 

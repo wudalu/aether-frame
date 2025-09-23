@@ -63,10 +63,34 @@ class AdkFrameworkAdapter(FrameworkAdapter):
     def framework_type(self) -> FrameworkType:
         """Return ADK framework type."""
         return FrameworkType.ADK
+    
+    def _get_default_user_id(self) -> str:
+        """Get default user ID from settings or fallback."""
+        if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
+            return self.runner_manager.settings.default_user_id
+        return "anonymous"
+    
+    def _get_default_agent_type(self) -> str:
+        """Get default agent type from settings or fallback.""" 
+        if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
+            return self.runner_manager.settings.default_agent_type
+        return "adk_domain_agent"
+    
+    def _get_default_adk_model(self) -> str:
+        """Get default ADK model from settings or fallback."""
+        if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
+            return self.runner_manager.settings.default_adk_model
+        return "gemini-1.5-flash"
+    
+    def _get_domain_agent_prefix(self) -> str:
+        """Get domain agent ID prefix from settings or fallback."""
+        if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
+            return self.runner_manager.settings.domain_agent_id_prefix
+        return "temp_domain_agent"
 
     # === Core Interface Methods ===
 
-    async def initialize(self, config: Optional[Dict[str, Any]] = None, tool_service = None):
+    async def initialize(self, config: Optional[Dict[str, Any]] = None, tool_service = None, settings = None):
         """
         Initialize ADK framework adapter with strong dependency checking.
 
@@ -76,6 +100,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Args:
             config: ADK-specific configuration including project, location, etc.
             tool_service: Tool service instance for tool integration
+            settings: Application settings for configuration
 
         Raises:
             RuntimeError: If ADK dependencies are not available or initialization fails
@@ -83,6 +108,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.logger.info(f"ADK adapter initialization started - config_provided: {config is not None}")
         self._config = config or {}
         self._tool_service = tool_service
+        
+        # Re-initialize RunnerManager with settings if provided
+        if settings:
+            from .runner_manager import RunnerManager
+            self.runner_manager = RunnerManager(settings)
 
         # Strong dependency check - ADK must be available
         try:
@@ -134,7 +164,6 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             if task_request.session_id:
                 # Existing session - find Runner by session_id
                 self.logger.info(f"Using existing session: {task_request.session_id}")
-                print(f"[ADK Adapter] Looking for existing session: {task_request.session_id}")
                 runner_context = await self.runner_manager.get_runner_by_session(task_request.session_id)
                 
                 if not runner_context:
@@ -164,18 +193,29 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     )
                 
                 self.logger.info(f"Creating new session for agent_type: {task_request.agent_config.agent_type}")
-                print(f"[ADK Adapter] Creating new session for agent_type: {task_request.agent_config.agent_type}")
-                runner_id, session_id = await self.runner_manager.get_or_create_runner(task_request.agent_config, task_request)
-                print(f"[ADK Adapter] Got runner_id: {runner_id}, session_id: {session_id}")
+                
+                # Create domain agent first to get its ADK agent
+                domain_agent = await self._create_domain_agent_for_config(task_request.agent_config, task_request)
+                
+                # Get the ADK agent from domain agent
+                await domain_agent._create_adk_agent()
+                adk_agent = domain_agent.adk_agent
+                
+                # Pass domain agent's ADK agent to RunnerManager
+                runner_id, session_id = await self.runner_manager.get_or_create_runner(task_request.agent_config, task_request, adk_agent)
                 
                 runner_context = self.runner_manager.runners[runner_id]
                 adk_session = runner_context["sessions"][session_id]
                 
+                # Store domain agent for this session
+                if not hasattr(self, '_session_agents'):
+                    self._session_agents = {}
+                self._session_agents[session_id] = domain_agent
+                
                 self.logger.info(f"Created session {session_id} in runner {runner_id}")
-                print(f"[ADK Adapter] Created session {session_id} in runner {runner_id}")
 
-            # Execute task through ADK Runner directly instead of domain agent
-            result = await self._execute_with_adk_runner_directly(task_request, session_id, runner_context)
+            # Execute task through domain agent (correct architectural flow)
+            result = await self._execute_with_domain_agent(task_request, session_id, runner_context)
             
             # Ensure session_id is included in result
             result.session_id = session_id
@@ -194,137 +234,6 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 session_id=task_request.session_id,  # Keep original session_id if any
             )
 
-    async def _execute_with_adk_runner_directly(
-        self, task_request: TaskRequest, session_id: str, runner_context: Dict[str, Any]
-    ) -> TaskResult:
-        """
-        Execute task directly using ADK Runner from RunnerManager.
-        
-        This bypasses the domain agent layer and uses the Runner created by RunnerManager directly,
-        avoiding the session management conflicts.
-        
-        Args:
-            task_request: Original task request
-            session_id: Session ID for this execution
-            runner_context: Runner context from RunnerManager
-            
-        Returns:
-            TaskResult: Result from direct ADK Runner execution
-        """
-        try:
-            # Get the ADK Runner and session from RunnerManager
-            runner = runner_context.get("runner")
-            adk_session = runner_context.get("sessions", {}).get(session_id)
-            
-            # Extract the user_id that was used to create this session
-            user_id = runner_context.get("user_id", "anonymous")
-            
-            if not runner:
-                return TaskResult(
-                    task_id=task_request.task_id,
-                    status=TaskStatus.ERROR,
-                    error_message="ADK Runner not available in runner context",
-                    session_id=session_id
-                )
-            
-            if not adk_session:
-                return TaskResult(
-                    task_id=task_request.task_id,
-                    status=TaskStatus.ERROR,
-                    error_message=f"ADK Session {session_id} not found in runner context",
-                    session_id=session_id
-                )
-            
-            # Get the actual ADK session ID (might be different from our session_id)
-            actual_adk_session_id = getattr(adk_session, 'id', session_id)
-            
-            print(f"[ADK Adapter] Executing directly with ADK Runner, session_id: {session_id}, adk_session_id: {actual_adk_session_id}, user_id: {user_id}")
-            
-            # Convert messages to ADK format
-            if task_request.messages:
-                # Use the first message for now
-                user_message = task_request.messages[0].content
-            else:
-                user_message = task_request.description or "Hello"
-            
-            # Import ADK types for content creation
-            from google.genai import types
-            
-            # Create ADK content
-            content = types.Content(role="user", parts=[types.Part(text=user_message)])
-            
-            # Execute through ADK Runner directly using the actual ADK session ID
-            print(f"[ADK Adapter] Calling runner.run_async with user_id: {user_id}, session_id: {actual_adk_session_id}")
-            events = runner.run_async(
-                user_id=user_id,  # Use the same user_id that was used to create the session
-                session_id=actual_adk_session_id,  # Use the actual ADK session ID
-                new_message=content
-            )
-            
-            # Process events to get response
-            all_responses = []
-            async for event in events:
-                if event.content:
-                    # Extract text from parts
-                    if hasattr(event.content, 'parts') and event.content.parts:
-                        for part in event.content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                text = part.text.strip()
-                                if text and len(text) > 10:
-                                    all_responses.append({
-                                        'text': text,
-                                        'is_final': event.is_final_response(),
-                                        'length': len(text)
-                                    })
-                    
-                    # Extract text directly from content
-                    if hasattr(event.content, 'text') and event.content.text:
-                        text = event.content.text.strip()
-                        if text and len(text) > 10:
-                            all_responses.append({
-                                'text': text,
-                                'is_final': event.is_final_response(),
-                                'length': len(text)
-                            })
-            
-            # Select best response
-            if all_responses:
-                # Sort by length and prefer final responses
-                best_response = max(all_responses, key=lambda r: (r['is_final'], r['length']))
-                response_text = best_response['text']
-                
-                # Create response message
-                from ...contracts import UniversalMessage
-                response_message = UniversalMessage(
-                    role="assistant",
-                    content=response_text,
-                    metadata={"framework": "adk", "session_id": session_id}
-                )
-                
-                return TaskResult(
-                    task_id=task_request.task_id,
-                    status=TaskStatus.SUCCESS,
-                    messages=[response_message],
-                    session_id=session_id,
-                    metadata={"framework": "adk", "execution_method": "direct_runner"}
-                )
-            else:
-                return TaskResult(
-                    task_id=task_request.task_id,
-                    status=TaskStatus.ERROR,
-                    error_message="No response received from ADK Runner",
-                    session_id=session_id
-                )
-                
-        except Exception as e:
-            self.logger.error(f"Direct ADK Runner execution failed - session_id: {session_id}, error: {str(e)}")
-            print(f"[ADK Adapter] Direct execution failed: {str(e)}")
-            return TaskResult(
-                task_id=task_request.task_id,
-                status=TaskStatus.ERROR,
-                error_message=f"ADK Runner execution failed: {str(e)}",
-                session_id=session_id
-            )
 
     async def _execute_with_domain_agent(
         self, task_request: TaskRequest, session_id: str, runner_context: Dict[str, Any]
@@ -347,20 +256,35 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             # Import contracts
             from ...contracts import AgentRequest, FrameworkType
             
+            # Create comprehensive runtime context for domain agent
+            runtime_context = {
+                # RunnerManager context
+                "runner": runner_context.get("runner"),
+                "session_service": runner_context.get("session_service"),
+                "adk_session": runner_context.get("sessions", {}).get(session_id),
+                "user_id": runner_context.get("user_id", self._get_default_user_id()),
+                
+                # Session and framework context
+                "session_id": session_id,
+                "framework_type": FrameworkType.ADK,
+                "tool_service": getattr(self, '_tool_service', None),
+                
+                # Additional context from runner
+                "agent_config": runner_context.get("agent_config"),
+                "runner_context": runner_context
+            }
+            
             # Create AgentRequest with session_id for domain agent
             agent_request = AgentRequest(
-                agent_type="adk_domain_agent",
+                agent_type=self._get_default_agent_type(),
                 framework_type=FrameworkType.ADK,
                 task_request=task_request,
                 session_id=session_id,  # Ensure session_id propagates to domain agent
-                runtime_options={
-                    "runner_context": runner_context,
-                    "session_id": session_id
-                }
+                runtime_options=runtime_context
             )
             
             # Get or create domain agent for this session
-            domain_agent = await self._get_domain_agent_for_session(session_id, runner_context)
+            domain_agent = await self._get_domain_agent_for_session(session_id, runner_context, runtime_context)
             
             # Execute through domain agent
             result = await domain_agent.execute(agent_request)
@@ -377,7 +301,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             )
 
     async def _get_domain_agent_for_session(
-        self, session_id: str, runner_context: Dict[str, Any]
+        self, session_id: str, runner_context: Dict[str, Any], runtime_context: Dict[str, Any] = None
     ) -> "AdkDomainAgent":
         """
         Get or create domain agent for session with proper runtime context.
@@ -385,21 +309,32 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Args:
             session_id: Session identifier
             runner_context: Runtime context from RunnerManager
+            runtime_context: Additional runtime context for domain agent
             
         Returns:
             AdkDomainAgent: Domain agent for this session
         """
+        # Initialize session agents cache if not exists
+        if not hasattr(self, '_session_agents'):
+            self._session_agents = {}
+        
         # Check if we already have a domain agent for this session
         if session_id in self._session_agents:
             # Update runtime context with latest runner context
             existing_agent = self._session_agents[session_id]
-            existing_agent.runtime_context.update({
+            
+            # Update with provided runtime context or create new one
+            updated_context = runtime_context or {
                 "runner": runner_context.get("runner"),
                 "session_service": runner_context.get("session_service"),
                 "session_id": session_id,
-                "user_id": runner_context.get("user_id", "anonymous"),
-                "adk_session": runner_context.get("sessions", {}).get(session_id)
-            })
+                "user_id": runner_context.get("user_id", self._get_default_user_id()),
+                "adk_session": runner_context.get("sessions", {}).get(session_id),
+                "framework_type": FrameworkType.ADK,
+                "tool_service": getattr(self, '_tool_service', None)
+            }
+            
+            existing_agent.runtime_context.update(updated_context)
             return existing_agent
         
         # Create new domain agent with runtime context
@@ -411,24 +346,24 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             config_dict = {
                 "agent_type": agent_config.agent_type,
                 "system_prompt": getattr(agent_config, 'system_prompt', "You are a helpful AI assistant."),
-                "model": getattr(agent_config, 'model_config', {}).get('model', 'gemini-1.5-flash')
+                "model": getattr(agent_config, 'model_config', {}).get('model', self._get_default_adk_model())
             }
         else:
             # Fallback configuration
             config_dict = {
-                "agent_type": "adk_domain_agent",
+                "agent_type": self._get_default_agent_type(),
                 "system_prompt": "You are a helpful AI assistant.",
-                "model": "gemini-1.5-flash"
+                "model": self._get_default_adk_model()
             }
         
-        # Create runtime context with session data from RunnerManager
-        runtime_context = {
+        # Use provided runtime context or create new one
+        final_runtime_context = runtime_context or {
             "framework_type": FrameworkType.ADK,
             "session_id": session_id,
             "runner": runner_context.get("runner"),
             "session_service": runner_context.get("session_service"),
             "adk_session": runner_context.get("sessions", {}).get(session_id),
-            "user_id": runner_context.get("user_id", "anonymous"),
+            "user_id": runner_context.get("user_id", self._get_default_user_id()),
             "tool_service": getattr(self, '_tool_service', None)
         }
         
@@ -436,7 +371,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         domain_agent = AdkDomainAgent(
             agent_id=f"adk_agent_{session_id}",
             config=config_dict,
-            runtime_context=runtime_context
+            runtime_context=final_runtime_context
         )
         
         # Initialize domain agent
@@ -444,6 +379,51 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         
         # Store for future use
         self._session_agents[session_id] = domain_agent
+        
+        return domain_agent
+
+    async def _create_domain_agent_for_config(
+        self, agent_config: AgentConfig, task_request: TaskRequest = None
+    ) -> "AdkDomainAgent":
+        """
+        Create a new domain agent for given configuration without session binding.
+        
+        This is used during the new session creation flow to create the domain agent first,
+        get its ADK agent, and then pass that to RunnerManager.
+        
+        Args:
+            agent_config: Agent configuration
+            task_request: Optional task request for additional context
+            
+        Returns:
+            AdkDomainAgent: Newly created domain agent
+        """
+        from ...agents.adk.adk_domain_agent import AdkDomainAgent
+        
+        # Build config dict from agent_config
+        config_dict = {
+            "agent_type": agent_config.agent_type,
+            "system_prompt": getattr(agent_config, 'system_prompt', "You are a helpful AI assistant."),
+            "model": getattr(agent_config, 'model_config', {}).get('model', self._get_default_adk_model())
+        }
+        
+        # Create basic runtime context
+        runtime_context = {
+            "framework_type": FrameworkType.ADK,
+            "tool_service": getattr(self, '_tool_service', None),
+            "agent_config": agent_config,
+            "task_request": task_request
+        }
+        
+        # Create domain agent with configurable ID prefix
+        domain_agent = AdkDomainAgent(
+            agent_id=f"{self._get_domain_agent_prefix()}_{task_request.task_id if task_request else 'unknown'}",
+            config=config_dict,
+            runtime_context=runtime_context
+        )
+        
+        # Initialize domain agent
+        await domain_agent.initialize()
         
         return domain_agent
 
@@ -572,10 +552,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Returns:
             str: User-isolated, descriptive session ID
         """
-        # Extract user_id (required for isolation)
-        user_id = "anonymous"
-        if task_request.user_context and hasattr(task_request.user_context, "user_id"):
-            user_id = task_request.user_context.user_id
+        # Extract user_id (required for isolation) - MUST come from request
+        user_id = None
+        if task_request.user_context:
+            user_id = task_request.user_context.get_adk_user_id()
+        
+        # Only use fallback if no user context provided
+        if not user_id:
+            user_id = self._get_default_user_id()
 
         # Try to build descriptive session_id from metadata first
         base_session_id = None
@@ -717,10 +701,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 {f"meta_{k}": v for k, v in task_request.metadata.items()}
             )
 
-        # Extract core session parameters with proper user isolation
-        user_id = "anonymous"
+        # Extract core session parameters with proper user isolation - MUST come from request
+        user_id = None
         if task_request.user_context:
             user_id = task_request.user_context.get_adk_user_id()
+        
+        # Only use fallback if no user context provided
+        if not user_id:
+            user_id = self._get_default_user_id()
 
         # Use our extracted session_id (already includes user isolation)
         isolated_session_id = self._extract_session_id(task_request)
@@ -809,7 +797,3 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         }
 
         return task_type_models.get(task_request.task_type, "gpt-4o")
-
-    # === Context and Configuration Helpers ===
-    # NOTE: Agent config building methods removed as TaskRequest now provides 
-    # agent_config directly. Context handling migrated to RunnerManager.

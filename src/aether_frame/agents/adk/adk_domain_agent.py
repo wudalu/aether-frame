@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """ADK Domain Agent Implementation."""
 
+import logging
 from datetime import datetime
 from typing import Any, Dict
 
@@ -32,6 +33,7 @@ class AdkDomainAgent(DomainAgent):
     ):
         """Initialize ADK domain agent with optional runtime context."""
         super().__init__(agent_id, config, runtime_context)
+        self.logger = logging.getLogger(__name__)
         self.adk_agent = None
         self.hooks = AdkAgentHooks(self)
         self.event_converter = AdkEventConverter()
@@ -67,7 +69,7 @@ class AdkDomainAgent(DomainAgent):
             raise RuntimeError(f"Failed to initialize ADK agent: {str(e)}")
     
     async def _create_adk_agent(self):
-        """Create ADK agent instance for session execution."""
+        """Create ADK agent instance for session execution within domain agent scope."""
         try:
             from google.adk import Agent
             
@@ -90,11 +92,15 @@ class AdkDomainAgent(DomainAgent):
                 tools=tools,
             )
             
+            self.logger.info(f"Created ADK agent: {self.adk_agent.name}")
+            
         except ImportError as e:
             # ADK not available - set to None
+            self.logger.warning(f"ADK not available: {str(e)}")
             self.adk_agent = None
         except Exception as e:
             # Log error but don't fail initialization
+            self.logger.error(f"Failed to create ADK agent: {str(e)}")
             self.adk_agent = None
 
     def _get_model_configuration(self) -> str:
@@ -245,7 +251,7 @@ class AdkDomainAgent(DomainAgent):
             
         except Exception as e:
             # Log error but don't fail - return empty tools
-            print(f"Warning: Failed to configure ADK tools: {str(e)}")
+            self.logger.warning(f"Failed to configure ADK tools: {str(e)}")
             return []
 
     async def execute(self, agent_request: AgentRequest) -> TaskResult:
@@ -441,7 +447,10 @@ class AdkDomainAgent(DomainAgent):
 
     async def _execute_with_adk_runner(self, agent_request: AgentRequest) -> TaskResult:
         """
-        Execute task using ADK Runner from runtime context.
+        Execute task using ADK Runner from runtime context with proper ADK agent creation.
+        
+        This method creates and manages ADK agent instances within the domain agent scope,
+        ensuring proper hook integration and lifecycle management.
 
         Args:
             agent_request: The agent request containing task details
@@ -457,9 +466,6 @@ class AdkDomainAgent(DomainAgent):
         
         # Use session_id from AgentRequest if available, fallback to runtime context
         session_id = agent_request.session_id or self.runtime_context.get("session_id")
-        print(f"[ADK Domain Agent] session_id from AgentRequest: {agent_request.session_id}")
-        print(f"[ADK Domain Agent] session_id from runtime_context: {self.runtime_context.get('session_id')}")
-        print(f"[ADK Domain Agent] Final session_id: {session_id}")
 
         if not runner or not session_id:
             return TaskResult(
@@ -473,8 +479,8 @@ class AdkDomainAgent(DomainAgent):
             # Convert our message format to ADK format
             adk_content = self._convert_messages_to_adk_content(task_request.messages)
 
-            # Execute using ADK Runner from runtime context
-            adk_response = await self._run_adk_with_runner(
+            # Execute using ADK Runner with proper ADK agent creation
+            adk_response = await self._run_adk_with_runner_and_agent(
                 runner, user_id, session_id, adk_content
             )
 
@@ -491,24 +497,44 @@ class AdkDomainAgent(DomainAgent):
                 metadata={"framework": "adk", "agent_id": self.agent_id},
             )
 
-    async def _run_adk_with_runner(
+    async def _run_adk_with_runner_and_agent(
         self, runner, user_id: str, session_id: str, adk_content
     ):
-        """Execute task through ADK Runner."""
+        """
+        Execute task through ADK Runner with proper ADK agent creation within domain scope.
+        
+        This method ensures that ADK agent creation happens within the domain agent,
+        enabling proper hook integration and lifecycle management.
+        """
         try:
             # Import ADK types for content creation
             from google.genai import types
 
             # Create ADK content
             content = types.Content(role="user", parts=[types.Part(text=adk_content)])
-            print(f"[ADK Domain Agent] About to call runner.run_async with user_id: {user_id}, session_id: {session_id}")
+            self.logger.debug(f"About to call runner.run_async with user_id: {user_id}, session_id: {session_id}")
 
-            # Run through ADK Runner using async method
+            # Get the actual ADK session from runtime context
+            adk_session = self.runtime_context.get("adk_session")
+            if adk_session:
+                # Use the actual ADK session ID if available
+                actual_adk_session_id = getattr(adk_session, 'id', session_id)
+            else:
+                actual_adk_session_id = session_id
+
+            # Check if we have an ADK agent created, if not create one
+            if not self.adk_agent:
+                self.logger.warning("No ADK agent found, creating one within domain scope")
+                await self._create_adk_agent()
+            
+            # Execute through ADK Runner using the created agent context
             events = runner.run_async(
-                user_id=user_id, session_id=session_id, new_message=content
+                user_id=user_id, 
+                session_id=actual_adk_session_id, 
+                new_message=content
             )
 
-            # Process events to get final response
+            # Process events to get final response with enhanced selection logic
             all_responses = []
             
             async for event in events:
