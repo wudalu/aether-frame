@@ -66,7 +66,9 @@ class TestCompleteAIAssistantFlow:
             assert result1 is not None
             assert result1.task_id == "bootstrap_test_new_session"
             session_id = result1.session_id
+            agent_id = result1.agent_id
             assert session_id is not None
+            assert agent_id is not None
             print(f"✅ Session created: {session_id}")
             
             # Test 2: Continue session
@@ -77,6 +79,7 @@ class TestCompleteAIAssistantFlow:
                 task_type="chat",
                 description="Continue existing session",
                 messages=[UniversalMessage(role="user", content="Can you help me debug this Python function?")],
+                agent_id=agent_id,  # Use existing agent
                 session_id=session_id  # Use existing session
             )
             
@@ -84,6 +87,7 @@ class TestCompleteAIAssistantFlow:
             
             # Verify session continuation
             assert result2.session_id == session_id
+            assert result2.agent_id == agent_id
             assert result2.task_id == "bootstrap_test_continue" 
             print(f"✅ Session continued: {result2.session_id}")
             
@@ -114,8 +118,11 @@ class TestCompleteAIAssistantFlow:
             
             # Verify parallel session
             assert result3.session_id != session_id  # Different session
+            assert result3.agent_id != agent_id  # Different agent
             assert result3.session_id is not None
+            assert result3.agent_id is not None
             parallel_session_id = result3.session_id
+            parallel_agent_id = result3.agent_id
             print(f"✅ Parallel session: {parallel_session_id}")
             
             # Test 4: Interleave sessions
@@ -127,11 +134,13 @@ class TestCompleteAIAssistantFlow:
                 task_type="chat", 
                 description="Back to original session",
                 messages=[UniversalMessage(role="user", content="Let's continue with the programming help")],
+                agent_id=agent_id,
                 session_id=session_id
             )
             
             result4 = await ai_assistant.process_request(back_to_original)
             assert result4.session_id == session_id
+            assert result4.agent_id == agent_id
             
             # Continue parallel session
             continue_parallel = TaskRequest(
@@ -139,11 +148,13 @@ class TestCompleteAIAssistantFlow:
                 task_type="analysis",
                 description="Continue parallel session", 
                 messages=[UniversalMessage(role="user", content="Show me the analysis results")],
+                agent_id=parallel_agent_id,
                 session_id=parallel_session_id
             )
             
             result5 = await ai_assistant.process_request(continue_parallel)
             assert result5.session_id == parallel_session_id
+            assert result5.agent_id == parallel_agent_id
             
             print(f"✅ Interleaved sessions working correctly")
             print(f"   Original: {session_id}")
@@ -152,26 +163,27 @@ class TestCompleteAIAssistantFlow:
             # Test 5: Error handling
             print("📝 Test 5: Testing error handling...")
             
-            # Invalid session ID
+            # Invalid agent_id + session_id combination
             invalid_session_request = TaskRequest(
                 task_id="bootstrap_test_invalid",
                 task_type="chat",
-                description="Invalid session test",
+                description="Invalid agent/session test",
                 messages=[UniversalMessage(role="user", content="This should fail")],
+                agent_id="invalid_agent_nonexistent",
                 session_id="invalid_session_nonexistent"
             )
             
             result6 = await ai_assistant.process_request(invalid_session_request)
             assert result6.status == TaskStatus.ERROR
-            print(f"✅ Invalid session error handled: {result6.error_message}")
+            print(f"✅ Invalid agent/session error handled: {result6.error_message}")
             
-            # Missing both session_id and agent_config
+            # Missing both agent_id/session_id and agent_config
             incomplete_request = TaskRequest(
                 task_id="bootstrap_test_incomplete",
                 task_type="chat",
                 description="Incomplete request test",
                 messages=[UniversalMessage(role="user", content="This should also fail")]
-                # No session_id, no agent_config
+                # No agent_id, no session_id, no agent_config
             )
             
             result7 = await ai_assistant.process_request(incomplete_request)
@@ -206,7 +218,7 @@ class TestCompleteAIAssistantFlow:
         
         deepseek_test_cases = [
             {
-                "name": "deepseek-chat-standard",
+                "name": "deepseek_chat_standard",
                 "config": {
                     "model": "deepseek-chat",
                     "temperature": 0.7,
@@ -218,7 +230,7 @@ class TestCompleteAIAssistantFlow:
                 }
             },
             {
-                "name": "deepseek-coder-precise",
+                "name": "deepseek_coder_precise",
                 "config": {
                     "model": "deepseek-coder", 
                     "temperature": 0.1,
@@ -232,7 +244,7 @@ class TestCompleteAIAssistantFlow:
                 }
             },
             {
-                "name": "deepseek-chat-creative",
+                "name": "deepseek_chat_creative",
                 "config": {
                     "model": "deepseek-chat",
                     "temperature": 0.9,
@@ -249,6 +261,7 @@ class TestCompleteAIAssistantFlow:
         
         try:
             session_results = {}
+            session_agent_mapping = {}
             
             for test_case in deepseek_test_cases:
                 print(f"📝 Testing {test_case['name']}...")
@@ -269,7 +282,9 @@ class TestCompleteAIAssistantFlow:
                 result = await ai_assistant.process_request(request)
                 
                 assert result.session_id is not None
+                assert result.agent_id is not None
                 session_results[test_case['name']] = result.session_id
+                session_agent_mapping[test_case['name']] = result.agent_id
                 print(f"✅ {test_case['name']} session: {result.session_id}")
             
             # Verify all sessions are unique
@@ -277,18 +292,23 @@ class TestCompleteAIAssistantFlow:
             assert len(set(session_ids)) == len(session_ids)
             print(f"✅ All {len(session_ids)} DeepSeek sessions are unique")
             
-            # Test continuing each session
+            # Test continuing each session using agent_id + session_id
             for name, session_id in session_results.items():
+                # Find the corresponding agent_id from the test results
+                agent_id = session_agent_mapping[name]
+                
                 continue_request = TaskRequest(
                     task_id=f"continue_{name}",
                     task_type="chat",
                     description=f"Continue {name} session",
                     messages=[UniversalMessage(role="user", content="Continue our conversation")],
+                    agent_id=agent_id,
                     session_id=session_id
                 )
                 
                 continue_result = await ai_assistant.process_request(continue_request)
                 assert continue_result.session_id == session_id
+                assert continue_result.agent_id == agent_id
                 print(f"✅ {name} session continued successfully")
             
             print("🎉 All DeepSeek configurations tested successfully!")

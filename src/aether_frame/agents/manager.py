@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Agent Manager Implementation - Session and Lifecycle Management."""
+"""Agent Manager Implementation - Agent Lifecycle Management."""
 
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from ..contracts import AgentConfig, FrameworkType
 from .base.domain_agent import DomainAgent
@@ -10,11 +11,11 @@ from .base.domain_agent import DomainAgent
 
 class AgentManager:
     """
-    Simplified Agent Manager focused on session-based lifecycle management.
+    Agent Manager focused on agent lifecycle management.
 
-    Refactored to focus solely on:
-    - Session-based agent lifecycle management
-    - Long-lived agent instances for persistent sessions
+    Responsibilities:
+    - Agent lifecycle management (create, store, cleanup)
+    - Agent ID generation and mapping
     - Agent resource tracking and cleanup
     - Health monitoring of managed agents
 
@@ -22,52 +23,56 @@ class AgentManager:
     - Direct task execution (moved to FrameworkAdapters)
     - Framework-specific agent creation (moved to FrameworkAdapters)
     - Request routing (moved to ExecutionEngine)
+    - Session management (moved to FrameworkAdapters)
     """
 
     def __init__(self):
-        """Initialize simplified agent manager."""
-        self._session_agents: Dict[str, DomainAgent] = {}  # session_id -> agent
-        self._agent_configs: Dict[str, AgentConfig] = {}  # session_id -> config
-        self._session_metadata: Dict[str, Dict[str, Any]] = {}  # session_id -> metadata
+        """Initialize agent manager."""
+        self._agents: Dict[str, DomainAgent] = {}  # agent_id -> agent
+        self._agent_configs: Dict[str, AgentConfig] = {}  # agent_id -> config
+        self._agent_metadata: Dict[str, Dict[str, Any]] = {}  # agent_id -> metadata
         self._agent_factories: Dict[FrameworkType, Callable] = (
             {}
         )  # framework -> factory
 
-    # Session-based Agent Lifecycle Management
+    # Agent Lifecycle Management
 
-    async def get_or_create_session_agent(
+    def generate_agent_id(self, prefix: str = "agent") -> str:
+        """Generate unique agent ID."""
+        return f"{prefix}_{uuid4().hex[:12]}"
+
+    async def create_agent(
         self,
-        session_id: str,
         agent_factory: Callable[[], DomainAgent],
         agent_config: Optional[AgentConfig] = None,
-    ) -> DomainAgent:
+        agent_id: Optional[str] = None,
+    ) -> str:
         """
-        Get existing session agent or create new one using provided factory.
-
-        This is the primary interface for session-based agent management.
+        Create new agent using provided factory.
 
         Args:
-            session_id: Unique session identifier
-            agent_factory: Factory function to create agent if needed
-            agent_config: Optional configuration for new agent
+            agent_factory: Factory function to create agent
+            agent_config: Configuration for new agent
+            agent_id: Optional specific agent ID to use
 
         Returns:
-            DomainAgent: Existing or newly created agent for the session
+            str: Agent ID for the created agent
         """
-        if session_id in self._session_agents:
-            # Update last activity time
-            self._session_metadata[session_id]["last_activity"] = datetime.now()
-            return self._session_agents[session_id]
+        if agent_id is None:
+            agent_id = self.generate_agent_id()
+        
+        if agent_id in self._agents:
+            raise ValueError(f"Agent ID {agent_id} already exists")
 
-        # Create new session agent using factory
+        # Create agent using factory
         agent = await agent_factory()
 
         # Store agent and metadata
-        self._session_agents[session_id] = agent
+        self._agents[agent_id] = agent
         if agent_config:
-            self._agent_configs[session_id] = agent_config
+            self._agent_configs[agent_id] = agent_config
 
-        self._session_metadata[session_id] = {
+        self._agent_metadata[agent_id] = {
             "created_at": datetime.now(),
             "last_activity": datetime.now(),
             "agent_type": (
@@ -80,254 +85,188 @@ class AgentManager:
             ),
         }
 
-        return agent
+        return agent_id
 
-    async def get_session_agent(self, session_id: str) -> Optional[DomainAgent]:
+    async def get_agent(self, agent_id: str) -> Optional[DomainAgent]:
         """
-        Get existing session agent without creating new one.
+        Get agent by ID.
 
         Args:
-            session_id: Session identifier
+            agent_id: Agent identifier
 
         Returns:
-            DomainAgent if exists, None otherwise
+            DomainAgent: Agent instance or None if not found
         """
-        if session_id in self._session_agents:
+        if agent_id in self._agents:
             # Update last activity time
-            self._session_metadata[session_id]["last_activity"] = datetime.now()
-            return self._session_agents[session_id]
+            self._agent_metadata[agent_id]["last_activity"] = datetime.now()
+            return self._agents[agent_id]
         return None
 
-    async def cleanup_session(self, session_id: str) -> bool:
+    async def cleanup_agent(self, agent_id: str) -> bool:
         """
-        Cleanup all resources for a session.
+        Cleanup all resources for an agent.
 
         Args:
-            session_id: Session identifier to cleanup
+            agent_id: Agent identifier to cleanup
 
         Returns:
             bool: True if cleanup successful, False otherwise
         """
-        if session_id not in self._session_agents:
+        if agent_id not in self._agents:
             return False
 
         try:
             # Cleanup agent resources
-            agent = self._session_agents[session_id]
+            agent = self._agents[agent_id]
             await agent.cleanup()
 
             # Remove from tracking
-            del self._session_agents[session_id]
-            if session_id in self._agent_configs:
-                del self._agent_configs[session_id]
-            if session_id in self._session_metadata:
-                del self._session_metadata[session_id]
+            del self._agents[agent_id]
+            if agent_id in self._agent_configs:
+                del self._agent_configs[agent_id]
+            if agent_id in self._agent_metadata:
+                del self._agent_metadata[agent_id]
 
             return True
         except Exception as e:
             # Log but don't fail
-            print(f"Warning: Failed to cleanup session {session_id}: {str(e)}")
+            print(f"Warning: Failed to cleanup agent {agent_id}: {str(e)}")
             return False
 
-    async def cleanup_expired_sessions(
+    async def cleanup_expired_agents(
         self, max_idle_time: timedelta = None
     ) -> List[str]:
         """
-        Cleanup sessions that have been idle for too long.
+        Cleanup agents that have been idle for too long.
 
         Args:
             max_idle_time: Maximum idle time before cleanup (default: 1 hour)
 
         Returns:
-            List of session IDs that were cleaned up
+            List of agent IDs that were cleaned up
         """
         if max_idle_time is None:
             max_idle_time = timedelta(hours=1)
 
         now = datetime.now()
-        expired_sessions = []
+        expired_agents = []
 
-        for session_id, metadata in self._session_metadata.items():
+        for agent_id, metadata in self._agent_metadata.items():
             last_activity = metadata.get(
                 "last_activity", metadata.get("created_at", now)
             )
             if now - last_activity > max_idle_time:
-                expired_sessions.append(session_id)
+                expired_agents.append(agent_id)
 
-        # Cleanup expired sessions
-        cleaned_sessions = []
-        for session_id in expired_sessions:
-            if await self.cleanup_session(session_id):
-                cleaned_sessions.append(session_id)
+        # Cleanup expired agents
+        cleaned_agents = []
+        for agent_id in expired_agents:
+            if await self.cleanup_agent(agent_id):
+                cleaned_agents.append(agent_id)
 
-        return cleaned_sessions
+        return cleaned_agents
 
     # Health and Monitoring
 
-    async def get_session_status(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get_agent_status(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get status information for a session.
+        Get status information for an agent.
 
         Args:
-            session_id: Session identifier
+            agent_id: Agent identifier
 
         Returns:
-            Dict with session status or None if not found
+            Dict with agent status or None if not found
         """
-        if session_id not in self._session_agents:
+        if agent_id not in self._agents:
             return None
 
-        agent = self._session_agents[session_id]
-        metadata = self._session_metadata.get(session_id, {})
-        config = self._agent_configs.get(session_id)
-
+        metadata = self._agent_metadata[agent_id]
+        agent = self._agents[agent_id]
+        
         return {
-            "session_id": session_id,
-            "agent_type": metadata.get("agent_type"),
-            "framework_type": metadata.get("framework_type"),
+            "agent_id": agent_id,
+            "agent_type": metadata.get("agent_type", "unknown"),
+            "framework_type": metadata.get("framework_type", "unknown"),
             "created_at": metadata.get("created_at"),
             "last_activity": metadata.get("last_activity"),
-            "is_initialized": getattr(agent, "is_initialized", True),
-            "config": config.__dict__ if config else None,
+            "is_healthy": await agent.health_check() if hasattr(agent, "health_check") else True,
         }
 
-    async def list_active_sessions(self) -> List[str]:
+    def get_active_agent_ids(self) -> List[str]:
+        """Get list of all active agent IDs."""
+        return list(self._agents.keys())
+
+    async def get_stats(self) -> Dict[str, Any]:
         """
-        List all active session identifiers.
+        Get manager statistics.
 
         Returns:
-            List of active session IDs
+            Dict with current statistics
         """
-        return list(self._session_agents.keys())
+        total_agents = len(self._agents)
+        
+        # Count by agent type
+        agent_types = {}
+        for metadata in self._agent_metadata.values():
+            agent_type = metadata.get("agent_type", "unknown")
+            agent_types[agent_type] = agent_types.get(agent_type, 0) + 1
 
-    async def get_health_status(self) -> Dict[str, Any]:
-        """
-        Get overall health status of the agent manager.
-
-        Returns:
-            Dict containing health information
-        """
-        now = datetime.now()
-        total_sessions = len(self._session_agents)
-
-        # Calculate session age statistics
-        if self._session_metadata:
-            ages = [
-                (now - meta.get("created_at", now)).total_seconds()
-                for meta in self._session_metadata.values()
-            ]
-            avg_age = sum(ages) / len(ages) if ages else 0
-            max_age = max(ages) if ages else 0
-        else:
-            avg_age = max_age = 0
-
-        # Group by framework type
-        framework_counts = {}
-        for metadata in self._session_metadata.values():
-            fw_type = metadata.get("framework_type")
-            if fw_type:
-                framework_counts[fw_type.value] = (
-                    framework_counts.get(fw_type.value, 0) + 1
-                )
+        # Count by framework type  
+        framework_types = {}
+        for metadata in self._agent_metadata.values():
+            framework_type = metadata.get("framework_type", "unknown")
+            framework_types[str(framework_type)] = framework_types.get(str(framework_type), 0) + 1
 
         return {
-            "status": "healthy",
-            "total_sessions": total_sessions,
-            "framework_distribution": framework_counts,
-            "avg_session_age_seconds": avg_age,
-            "max_session_age_seconds": max_age,
+            "total_agents": total_agents,
+            "agent_types": agent_types,
+            "framework_types": framework_types,
             "registered_factories": len(self._agent_factories),
         }
 
-    # Factory Management (Future Enhancement)
+    # Framework Factory Management
 
     def register_agent_factory(
-        self,
-        framework_type: FrameworkType,
-        factory: Callable[[AgentConfig], DomainAgent],
+        self, framework_type: FrameworkType, factory: Callable
     ):
-        """
-        Register agent factory for a framework type.
-
-        This enables the AgentManager to create agents for different frameworks
-        when session-based management is needed.
-
-        Args:
-            framework_type: Framework type to register factory for
-            factory: Factory function to create agents
-        """
+        """Register an agent factory for a framework type."""
         self._agent_factories[framework_type] = factory
 
-    async def create_agent_for_session(
-        self, session_id: str, agent_config: AgentConfig
-    ) -> Optional[DomainAgent]:
-        """
-        Create agent for session using registered factory.
+    def get_agent_factory(self, framework_type: FrameworkType) -> Optional[Callable]:
+        """Get agent factory for a framework type."""
+        return self._agent_factories.get(framework_type)
 
-        Args:
-            session_id: Session identifier
-            agent_config: Agent configuration
+    # Lifecycle Management
+
+    async def health_check(self) -> bool:
+        """
+        Check health of all managed agents.
 
         Returns:
-            DomainAgent if factory available, None otherwise
+            bool: True if all agents are healthy
         """
-        framework_type = agent_config.framework_type
+        try:
+            for agent_id, agent in self._agents.items():
+                if hasattr(agent, "health_check"):
+                    is_healthy = await agent.health_check()
+                    if not is_healthy:
+                        print(f"Agent {agent_id} failed health check")
+                        return False
+            return True
+        except Exception as e:
+            print(f"Health check failed: {str(e)}")
+            return False
 
-        if framework_type not in self._agent_factories:
-            print(f"Warning: No factory registered for framework {framework_type}")
-            return None
-
-        factory = self._agent_factories[framework_type]
-        agent = await factory(agent_config)
-
-        # Store in session management
-        self._session_agents[session_id] = agent
-        self._agent_configs[session_id] = agent_config
-        self._session_metadata[session_id] = {
-            "created_at": datetime.now(),
-            "last_activity": datetime.now(),
-            "agent_type": agent_config.agent_type,
-            "framework_type": framework_type,
-        }
-
-        return agent
-
-    # Legacy Methods (Deprecated - For Compatibility)
-
-    async def create_agent(self, agent_config: AgentConfig) -> str:
-        """
-        DEPRECATED: Use get_or_create_session_agent() instead.
-
-        Legacy method for backward compatibility. Creates a temporary session.
-        """
-        import uuid
-
-        session_id = f"legacy_{uuid.uuid4().hex[:8]}"
-
-        if agent_config.framework_type in self._agent_factories:
-            factory = self._agent_factories[agent_config.framework_type]
-            await self.get_or_create_session_agent(
-                session_id, lambda: factory(agent_config), agent_config
-            )
-            return session_id
-        else:
-            raise NotImplementedError(
-                f"No factory registered for {agent_config.framework_type}. "
-                f"Use FrameworkAdapter direct creation instead."
-            )
-
-    async def destroy_agent(self, agent_id: str):
-        """
-        DEPRECATED: Use cleanup_session() instead.
-
-        Legacy method for backward compatibility.
-        """
-        await self.cleanup_session(agent_id)
-
-    async def list_agents(self) -> List[str]:
-        """
-        DEPRECATED: Use list_active_sessions() instead.
-
-        Legacy method for backward compatibility.
-        """
-        return await self.list_active_sessions()
+    async def shutdown(self):
+        """Shutdown all agents and cleanup resources."""
+        try:
+            agent_ids = list(self._agents.keys())
+            for agent_id in agent_ids:
+                await self.cleanup_agent(agent_id)
+            
+            self._agent_factories.clear()
+            print(f"Successfully shutdown {len(agent_ids)} agents")
+        except Exception as e:
+            print(f"Warning: Shutdown encountered errors: {str(e)}")
