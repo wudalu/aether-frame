@@ -184,7 +184,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     )
                     
             else:
-                # New session - create Runner if needed
+                # New session - Framework generates session_id
                 if not task_request.agent_config:
                     return TaskResult(
                         task_id=task_request.task_id,
@@ -192,7 +192,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                         error_message="No session_id or agent_config provided for new session",
                     )
                 
-                self.logger.info(f"Creating new session for agent_type: {task_request.agent_config.agent_type}")
+                # H5: Generate session_id at Framework layer (where it's truly needed)
+                import uuid
+                session_id = f"adk_session_{uuid.uuid4().hex[:12]}"
+                self.logger.info(f"Generated new session_id: {session_id} for agent_type: {task_request.agent_config.agent_type}")
                 
                 # Create domain agent first to get its ADK agent
                 domain_agent = await self._create_domain_agent_for_config(task_request.agent_config, task_request)
@@ -201,8 +204,15 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 await domain_agent._create_adk_agent()
                 adk_agent = domain_agent.adk_agent
                 
-                # Pass domain agent's ADK agent to RunnerManager
-                runner_id, session_id = await self.runner_manager.get_or_create_runner(task_request.agent_config, task_request, adk_agent)
+                # Pass Framework-generated session_id to RunnerManager
+                runner_id, returned_session_id = await self.runner_manager.get_or_create_runner(
+                    task_request.agent_config, task_request, adk_agent, engine_session_id=session_id
+                )
+                
+                # H5: Validate that RunnerManager used our session_id
+                if returned_session_id != session_id:
+                    self.logger.warning(f"RunnerManager returned different session_id: {session_id} -> {returned_session_id}")
+                    session_id = returned_session_id  # Use RunnerManager's session_id for consistency
                 
                 runner_context = self.runner_manager.runners[runner_id]
                 adk_session = runner_context["sessions"][session_id]

@@ -14,7 +14,6 @@ from .agents.manager import AgentManager
 from .config.settings import Settings
 from .contracts import AgentConfig, FrameworkType
 from .execution.execution_engine import ExecutionEngine
-from .execution.task_router import TaskRouter
 from .framework.framework_registry import FrameworkRegistry
 from .tools.service import ToolService
 
@@ -26,7 +25,6 @@ class SystemComponents(NamedTuple):
 
     framework_registry: FrameworkRegistry
     agent_manager: AgentManager
-    task_router: TaskRouter
     execution_engine: ExecutionEngine
     tool_service: Optional[ToolService] = None
 
@@ -102,7 +100,6 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
 
         # Phase 5: Execution components
         logger.info("Phase 5: Initializing Execution Components...")
-        task_router = TaskRouter(settings)
         execution_engine = ExecutionEngine(framework_registry, settings)
         logger.info("Execution components initialized - task_router, execution_engine created")
 
@@ -111,7 +108,6 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
         return SystemComponents(
             framework_registry=framework_registry,
             agent_manager=agent_manager,
-            task_router=task_router,
             execution_engine=execution_engine,
             tool_service=tool_service,
         )
@@ -119,20 +115,6 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
     except Exception as e:
         logger.error(f"System initialization failed: {str(e)}")
         raise RuntimeError(f"System initialization failed: {str(e)}")
-
-
-async def _register_adk_agent_factory(agent_manager: AgentManager):
-    """
-    Placeholder function for ADK agent factory registration.
-
-    This function is currently not used since AgentManager doesn't have
-    register_agent_factory method implemented yet. When the factory pattern
-    is implemented, this function can be used.
-    """
-    # TODO: Implement when AgentManager.register_agent_factory is available
-    logger.info("ADK agent factory registration skipped (not implemented yet)")
-    pass
-
 
 async def create_ai_assistant(settings: Optional[Settings] = None):
     """

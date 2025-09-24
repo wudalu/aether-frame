@@ -58,17 +58,20 @@ class RunnerManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:16]
 
-    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None) -> Tuple[str, str]:
+    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None, engine_session_id: str = None) -> Tuple[str, str]:
         """
-        Get existing Runner or create new one, then create Session.
+        Get existing Runner or create new one, then create Session using Engine-provided session_id.
+        
+        H5 SESSION ID UNIFICATION: Use Engine-provided session_id instead of generating our own.
         
         Args:
             agent_config: Agent configuration for Runner creation
             task_request: TaskRequest containing context information for Session creation
             adk_agent: Optional pre-created ADK agent to use (if provided, skips agent creation)
+            engine_session_id: Session ID provided by Engine (H5)
             
         Returns:
-            Tuple[runner_id, session_id]: IDs for created/existing runner and new session
+            Tuple[runner_id, session_id]: IDs for created/existing runner and session
         """
         config_hash = self._hash_config(agent_config)
         
@@ -82,7 +85,9 @@ class RunnerManager:
             self.config_to_runner[config_hash] = runner_id
             self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
         
-        session_id = await self._create_session_in_runner(runner_id, agent_config, task_request)
+        # H5: Use Engine-provided session_id instead of generating our own
+        session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
+        await self._create_session_in_runner(runner_id, agent_config, task_request, external_session_id=session_id)
         
         # Record session-to-runner mapping
         self.session_to_runner[session_id] = runner_id
@@ -175,23 +180,27 @@ class RunnerManager:
             self.logger.error(f"Failed to create Runner {runner_id}: {str(e)}")
             raise RuntimeError(f"Runner creation failed: {str(e)}")
 
-    async def _create_session_in_runner(self, runner_id: str, agent_config: AgentConfig, task_request = None) -> str:
+    async def _create_session_in_runner(self, runner_id: str, agent_config: AgentConfig, task_request = None, external_session_id: str = None) -> str:
         """
-        Create new Session within existing Runner.
+        Create new Session within existing Runner using provided session_id.
+        
+        H5 SESSION ID UNIFICATION: Accept external session_id from Framework layer.
         
         Args:
             runner_id: Target Runner ID
             agent_config: Agent configuration for session context
             task_request: TaskRequest containing context information for Session
+            external_session_id: Session ID provided by Framework (H5)
             
         Returns:
-            session_id: Unique identifier for the created Session
+            session_id: The session ID used (external_session_id if provided, or generated)
         """
         runner_context = self.runners.get(runner_id)
         if not runner_context:
             raise ValueError(f"Runner {runner_id} not found")
         
-        session_id = f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
+        # H5: Use external session_id if provided, otherwise generate
+        session_id = external_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
         
         if not self._adk_available:
             # Mock session
@@ -218,7 +227,7 @@ class RunnerManager:
             adk_session = await session_service.create_session(
                 app_name=app_name,  # Use consistent app_name that matches Runner
                 user_id=user_id,  # Use extracted user_id
-                session_id=session_id
+                session_id=session_id  # H5: Use provided/generated session_id
             )
             
             # Store session reference
