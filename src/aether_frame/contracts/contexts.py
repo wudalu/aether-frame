@@ -152,6 +152,67 @@ class UniversalTool:
 
 
 @dataclass
+class RuntimeContext:
+    """Runtime execution context for framework adapters.
+    
+    This context consolidates all runtime state needed during task execution,
+    including agent, session, and framework-specific information.
+    
+    TODO: This class has overlapping fields with ExecutionContext, 
+    SessionContext, and UserContext. After the execute_task refactor 
+    is complete, we should consolidate the Context architecture.
+    """
+    
+    # Core identifiers (required)
+    session_id: str
+    user_id: str  
+    framework_type: FrameworkType
+    
+    # Agent runtime state
+    agent_id: Optional[str] = None
+    agent_config: Optional["AgentConfig"] = None
+    
+    # Framework-specific runtime state
+    runner_id: Optional[str] = None
+    runner_context: Optional[Dict[str, Any]] = None
+    framework_session: Optional[Any] = None  # ADK Session, AutoGen Conversation, etc.
+    
+    # Services and tools
+    tool_service: Optional[Any] = None
+    
+    # Execution tracking (TODO: overlaps with ExecutionContext)
+    execution_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Timestamps (TODO: overlaps with SessionContext)
+    created_at: Optional[datetime] = None
+    last_activity: Optional[datetime] = None
+    
+    def update_activity(self) -> None:
+        """Update last activity timestamp."""
+        self.last_activity = datetime.now()
+    
+    def get_runtime_dict(self) -> Dict[str, Any]:
+        """Get runtime context as dictionary for backward compatibility."""
+        return {
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "framework_type": self.framework_type,
+            "agent_id": self.agent_id,
+            "agent_config": self.agent_config,
+            "runner": self.runner_context.get("runner") if self.runner_context else None,
+            "session_service": self.runner_context.get("session_service") if self.runner_context else None,
+            "adk_session": self.framework_session,
+            "tool_service": self.tool_service,
+            "runner_context": self.runner_context,
+            "execution_id": self.execution_id,
+            "trace_id": self.trace_id,
+            **self.metadata
+        }
+
+
+@dataclass
 class KnowledgeSource:
     """Knowledge source definition for agent access."""
 

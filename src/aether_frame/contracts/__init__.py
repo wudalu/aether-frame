@@ -24,6 +24,7 @@ from .contexts import (
     FileReference,
     ImageReference,
     KnowledgeSource,
+    RuntimeContext,
     SessionContext,
     ToolCall,
     UniversalMessage,
@@ -63,8 +64,9 @@ __all__ = [
     "ToolResult",
     # Context types
     "UserContext",
-    "SessionContext",
+    "SessionContext", 
     "ExecutionContext",
+    "RuntimeContext",
     "UserPermissions",
     "UserPreferences",
     "UniversalMessage",

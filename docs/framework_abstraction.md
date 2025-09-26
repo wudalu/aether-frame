@@ -2,170 +2,191 @@
 
 ## Overview
 
-The Framework Abstraction Layer provides a unified interface for multiple agent frameworks (ADK, AutoGen, LangGraph) while maintaining framework-agnostic execution capabilities. This design enables seamless framework switching without application logic changes through a strategy-based routing approach.
+The Framework Abstraction Layer provides a unified interface for multiple agent frameworks (ADK, AutoGen, LangGraph) while maintaining framework-agnostic execution capabilities. **Current implementation focuses on ADK as the primary framework** with an extensible architecture designed for future multi-framework support through a strategy-based routing approach.
 
-The design follows a **layered contract approach**, starting with ADK-compatible foundation and evolving toward universal framework support through progressive abstraction.
+The design follows a **layered contract approach**, starting with ADK-compatible foundation and designed for progressive evolution toward universal framework support.
+
+**Implementation Status:**
+- ✅ **ADK Integration Complete**: Full ADK support with session management and agent lifecycle
+- ✅ **Unified Data Contracts**: TaskRequest, TaskResult, AgentConfig with session management fields
+- ✅ **Framework Registry**: Auto-loading and capability-driven adapter management
+- 🚧 **Live Execution**: Basic framework implemented, interactive features in development
+- 📋 **Multi-Framework Support**: Architecture ready for AutoGen and LangGraph integration
 
 ## Design Goals
 
-- **Framework Agnostic**: Unified interfaces that work consistently across different frameworks
-- **ADK-First Compatibility**: Initial implementation optimized for ADK runtime with extensibility to other frameworks
-- **Progressive Abstraction**: Evolve from ADK-specific to universal data contracts without breaking changes
+- **ADK-First Implementation**: Complete ADK integration with extensibility for future frameworks
+- **Session-Based Architecture**: Support persistent multi-turn conversations with agent_id + session_id model
+- **Framework Agnostic Contracts**: Unified data structures that work consistently across different frameworks
+- **Progressive Abstraction**: Evolution from ADK-specific to universal data contracts without breaking changes
 - **Layered Architecture**: Clear separation following the established system architecture layers
 - **Contract-Driven Design**: Well-defined data contracts between architectural layers
 
 ## Architecture Overview
 
-### Layer-by-Layer Design Approach
+### Current Implementation Status
 
-Following the established architecture in `docs/architecture.md`, we design interfaces layer by layer:
+Following the established architecture in `docs/architecture.md`, the current implementation provides:
 
 ```
-1. Application Execution Layer → 2. Framework Abstraction Layer → 3. Core Agent Layer → 4. Tool Service Layer
+1. Application Execution Layer (✅ Complete) → 2. Framework Abstraction Layer (✅ ADK Complete) → 3. Core Agent Layer (✅ Complete) → 4. Tool Service Layer (🚧 Basic)
 ```
+
+**Current Execution Flow:**
+- **AIAssistant** → **ExecutionEngine** → **TaskRouter** → **FrameworkRegistry** → **AdkFrameworkAdapter**
+- **AdkFrameworkAdapter** → **AgentManager** + **RunnerManager** → **AdkDomainAgent** → **ADK Runtime**
 
 **Design Philosophy**: 
-- **Contract-First**: Define data contracts between layers before implementing interfaces
-- **ADK-Compatible Foundation**: Start with ADK-native data structures, progressively abstract
-- **Top-Down Design**: Begin with execution layer requirements, derive lower layer contracts
+- **ADK-First Implementation**: Start with ADK-native integration, maintain extensible architecture
+- **Session Management**: agent_id + session_id architecture for persistent conversations
+- **Contract-First**: Define data contracts between layers, implement with ADK optimization
 
-### Type System Overview
+### Type System Overview (Current Implementation)
 
-The framework abstraction uses a hierarchical type system with clear dependency relationships:
+The framework abstraction uses a hierarchical type system with ADK-optimized contracts and clear dependency relationships:
 
 ```
-Core Request/Response Flow:
-TaskRequest → ExecutionEngine → FrameworkAdapter → AgentRequest → ToolRequest
+Core Request/Response Flow (Current):
+TaskRequest → ExecutionEngine → AdkFrameworkAdapter → AgentRequest → ADK Runtime
     ↓              ↓                   ↓              ↓           ↓
-TaskResult  ← ExecutionMetadata ← AgentResponse ← ToolResult ← ToolError
+TaskResult  ← ExecutionStrategy ← AdkDomainAgent ← AgentResponse ← ADK Response
 
-Primary Data Types:
-├── TaskRequest
-│   ├── UserContext → UserPermissions, UserPreferences  
-│   ├── SessionContext → UniversalMessage
-│   ├── UniversalMessage → ContentPart → ToolCall, FileReference, ImageReference
-│   ├── KnowledgeSource
-│   ├── UniversalTool
-│   └── ExecutionConfig → FrameworkType, ExecutionMode
-│
-├── AgentRequest  
-│   ├── AgentConfig → AdkAgentConfig
-│   ├── RuntimeConfig
-│   └── KnowledgeSource, UniversalTool (inherited)
-│
-├── ToolRequest
-│   ├── ToolConfig → UserPermissions
-│   └── UserContext, SessionContext (inherited)
-│
-└── Framework Management
-    ├── FrameworkAdapter → AgentHandle  
-    ├── ExecutionContext
-    ├── StrategyConfig → TaskComplexity, FrameworkType
-    └── ToolDefinition
+Session Management Flow (Current):
+TaskRequest (agent_id/session_id/agent_config) → AdkFrameworkAdapter
+    ↓
+Three Execution Modes:
+├── agent_id + session_id → Continue existing session
+├── agent_id only → Create new session for existing agent  
+└── agent_config only → Create new agent and session
 
-Status and Metadata Types:
-├── TaskStatus, ToolStatus (enums)
-├── ExecutionMetadata → FrameworkType
-├── ToolUsage
-├── ContextUpdate
-├── ReasoningStep, AgentState
-└── ToolError
-
-Multi-modal Content:
-ContentPart → FileReference, ImageReference, ToolCall
+Primary Data Types (Implemented):
+├── TaskRequest ✅
+│   ├── Core fields: task_id, task_type, description
+│   ├── Session management: agent_id, session_id, agent_config
+│   ├── Message context: messages (UniversalMessage)
+│   ├── Execution context: user_context, session_context
+│   └── Tool integration: available_tools, available_knowledge
+│
+├── TaskResult ✅  
+│   ├── Core fields: task_id, status, messages
+│   ├── Session management: agent_id, session_id (for follow-up)
+│   ├── Execution data: result_data, execution_time
+│   └── Framework metadata: metadata with framework info
+│
+├── AgentConfig ✅
+│   ├── Agent definition: agent_id, agent_type
+│   ├── Model config: model, temperature, max_tokens
+│   ├── Framework binding: framework_type (ADK)
+│   └── System prompt: system_instruction
+│
+├── AgentRequest ✅ (Domain Agent Input)
+│   ├── Agent context: agent_type, framework_type
+│   ├── Task context: task_request
+│   ├── Session binding: session_id
+│   └── Runtime context: runtime_options
+│
+└── ExecutionStrategy ✅ (Router Output)
+    ├── Framework selection: framework_type (currently ADK)
+    ├── Complexity analysis: task_complexity
+    ├── Runtime options: execution_config, runtime_options
+    └── Execution mode: execution_mode
 ```
 
-## Data Contracts
+## Data Contracts (Current Implementation)
 
 ### Core Request/Response Contracts
 
-#### TaskRequest (Execution Layer Input)
+#### TaskRequest (Application Layer Input) - ✅ Implemented
 ```python
 @dataclass
 class TaskRequest:
     # Core identification
-    task_id: str  # Unique identifier for task tracking and monitoring
-    task_type: str  # Task category for strategy routing (e.g., "chat", "analysis", "search")
+    task_id: str  # Unique identifier for task tracking
+    task_type: str  # Task category for routing (e.g., "chat", "analysis") 
+    description: str  # Task description
     
-    # User and session management
-    user_context: UserContext  # User identification and permissions
-    session_context: SessionContext  # Session tracking across frameworks
+    # Session management (NEW: Three execution modes)
+    agent_id: Optional[str] = None  # Continue with existing agent
+    session_id: Optional[str] = None  # Continue existing session
+    agent_config: Optional[AgentConfig] = None  # Create new agent
     
-    # Execution content
-    messages: List[UniversalMessage]  # Conversation messages in universal format
-    available_tools: List[UniversalTool]  # Tools accessible during execution
-    available_knowledge: List[KnowledgeSource]  # Knowledge sources
-    execution_config: ExecutionConfig  # Runtime settings and framework selection
+    # Message and context
+    messages: List[UniversalMessage] = field(default_factory=list)
+    user_context: Optional[UserContext] = None
+    session_context: Optional[SessionContext] = None
+    execution_context: Optional[ExecutionContext] = None
+    
+    # Tool and knowledge integration
+    available_tools: List[UniversalTool] = field(default_factory=list)
+    available_knowledge: List[KnowledgeSource] = field(default_factory=list)
+    execution_config: Optional[ExecutionConfig] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 ```
 
-#### TaskResult (Execution Layer Output)
+#### TaskResult (Application Layer Output) - ✅ Implemented
 ```python
-@dataclass
+@dataclass 
 class TaskResult:
-    task_id: str  # Matching task identifier from request
-    status: TaskStatus  # Execution status: success, error, partial, timeout
-    result_data: Optional[Dict[str, Any]] = None  # Framework-specific result metadata
-    messages: List[UniversalMessage] = field(default_factory=list)  # Response messages
-    tool_results: List[ToolResult] = field(default_factory=list)  # Tool execution results
-    execution_context: Optional[ExecutionContext] = None  # Context information
-    error_message: Optional[str] = None  # Error details if failed
-    execution_time: Optional[float] = None  # Total execution time
-    created_at: Optional[datetime] = None  # Creation timestamp
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    # Core fields
+    task_id: str  # Matching task identifier
+    status: TaskStatus  # SUCCESS, ERROR, PARTIAL, TIMEOUT, CANCELLED
+    
+    # Response content
+    messages: List[UniversalMessage] = field(default_factory=list)
+    result_data: Optional[Dict[str, Any]] = None
+    tool_results: List[ToolResult] = field(default_factory=list)
+    
+    # Session management (NEW: For follow-up requests)
+    agent_id: Optional[str] = None  # Agent ID for continued conversation
+    session_id: Optional[str] = None  # Session ID for multi-turn chat
+    
+    # Execution metadata
+    execution_context: Optional[ExecutionContext] = None
+    execution_time: Optional[float] = None
+    created_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 ```
 
-#### AgentRequest (Agent Layer Input)
+#### AgentConfig (Agent Creation) - ✅ Implemented
 ```python
 @dataclass
-class AgentRequest:
-    agent_type: str = "general"  # Agent type for framework routing
-    framework_type: FrameworkType = FrameworkType.ADK  # Target framework
-    task_request: Optional[TaskRequest] = None  # Original task request
-    agent_config: Optional[AgentConfig] = None  # Agent-specific configuration
-    runtime_options: Dict[str, Any] = field(default_factory=dict)  # Runtime parameters
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+class AgentConfig:
+    # Agent identification
+    agent_id: str  # Unique agent identifier
+    agent_type: str  # Agent type (e.g., "adk_domain_agent")
+    framework_type: FrameworkType  # Target framework (currently ADK)
+    
+    # Agent configuration
+    name: str  # Human-readable agent name
+    model: str  # LLM model to use (e.g., "gemini-1.5-flash", "deepseek-chat")
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    system_instruction: Optional[str] = None  # System prompt
+    
+    # Tool integration
+    tools: List[UniversalTool] = field(default_factory=list)
+    
+    # Framework-specific configuration
+    adk_config: Optional[AdkAgentConfig] = None  # ADK-specific settings
 ```
 
-#### AgentResponse (Agent Layer Output)
+#### ExecutionStrategy (Router Output) - ✅ Implemented
 ```python
 @dataclass
-class AgentResponse:
-    agent_id: Optional[str] = None  # Agent identifier if available
-    agent_type: str = "general"  # Agent type that processed request
-    task_result: Optional[TaskResult] = None  # Processing result
-    agent_state: Dict[str, Any] = field(default_factory=dict)  # Agent internal state
-    performance_metrics: Dict[str, Any] = field(default_factory=dict)  # Performance data
-    error_details: Optional[str] = None  # Error information if failed
-    created_at: Optional[datetime] = None  # Response timestamp
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
-```
-
-#### ToolRequest (Tool Layer Input)
-```python
-@dataclass
-class ToolRequest:
-    tool_name: str  # Tool identifier for invocation
-    tool_namespace: Optional[str] = None  # Tool namespace for organization
-    parameters: Dict[str, Any] = field(default_factory=dict)  # Tool input parameters
-    user_context: Optional[UserContext] = None  # User identification and permissions
-    session_context: Optional[SessionContext] = None  # Session state for context
-    execution_context: Optional[ExecutionContext] = None  # Execution environment
-    timeout: Optional[int] = None  # Tool execution timeout
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
-```
-
-#### ToolResult (Tool Layer Output)
-```python
-@dataclass
-class ToolResult:
-    tool_name: str  # Matching tool identifier from request
-    status: ToolStatus  # Execution status: success, error, timeout, unauthorized
-    tool_namespace: Optional[str] = None  # Tool namespace for organization
-    result_data: Optional[Any] = None  # Tool output in appropriate format
-    error_message: Optional[str] = None  # Error details when status indicates failure
-    execution_time: Optional[float] = None  # Tool execution duration in seconds
-    created_at: Optional[datetime] = None  # Result creation timestamp
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional tool-specific data
+class ExecutionStrategy:
+    # Framework selection (currently always ADK)
+    framework_type: FrameworkType  # Selected framework
+    task_complexity: TaskComplexity  # SIMPLE, MODERATE, COMPLEX, ADVANCED
+    
+    # Execution configuration
+    execution_mode: str = "async"  # Execution mode
+    execution_config: Dict[str, Any]  # Framework-specific config
+    runtime_options: Dict[str, Any]  # Runtime parameters
+    
+    # Routing metadata
+    framework_score: float = 1.0  # Framework selection confidence
+    fallback_frameworks: List[FrameworkType] = field(default_factory=list)
 ```
 
 ### Supporting Data Structures
@@ -1192,36 +1213,105 @@ class BuiltinTool(Tool):
 - **Protocol Abstraction**: LiveCommunicator protocol enables framework-specific implementations
 - **Session Lifecycle**: Proper management of long-running interactive sessions with cleanup
 
-## Implementation Strategy
+## Implementation Strategy (Current Status)
 
-### Progressive Framework Support Strategy
+### Current Implementation: ADK-First Complete
 
-#### Phase 1: ADK-First Implementation
-- Implement all contracts with native ADK compatibility
-- Universal data structures optimized for ADK runtime
-- Minimal conversion overhead for ADK operations
+#### Phase 1: ADK Integration - ✅ Complete (September 2024)
+- ✅ All data contracts implemented with ADK compatibility  
+- ✅ TaskRequest/TaskResult with session management fields
+- ✅ AdkFrameworkAdapter with three execution modes
+- ✅ AgentManager + RunnerManager integration
+- ✅ Bootstrap system with 5-phase initialization
+- ✅ Complete agent lifecycle management
+- ✅ Multi-turn conversation support
 
-#### Phase 2: Additional Framework Support
-- TBD: Determine next framework to support (AutoGen, LangGraph, or others)
-- TBD: Extend universal data structures for chosen framework compatibility
-- TBD: Implement framework-specific adapter
-- TBD: Maintain backward compatibility with existing implementations
+#### Phase 2: Tool and Live Execution - 🚧 In Progress  
+- ✅ Basic ToolService with builtin tools
+- 🚧 MCP tool integration (framework ready)
+- 🚧 ADK native tool integration (planned)
+- 🚧 Live execution framework (basic implementation)
+- 📋 Interactive streaming features (future)
 
-#### Phase 3: Multi-Framework Integration
-- TBD: Add support for additional frameworks based on requirements
-- TBD: Optimize cross-framework interoperability
-- TBD: Unified interface supporting multiple frameworks simultaneously
+#### Phase 3: Multi-Framework Support - 📋 Future
+- 📋 AutoGen framework adapter (architecture ready)
+- 📋 LangGraph framework adapter (architecture ready)
+- 📋 Multi-framework strategy routing (current: ADK-first)
+- 📋 Framework-specific optimizations
 
-#### Phase 4: Framework-Agnostic Evolution
-- Optimize universal contracts based on multi-framework experience
-- Remove framework-specific fields where possible
-- Achieve true framework independence in application layer
+### Progressive Framework Support Strategy (Updated)
 
-## Implementation Notes
+#### Current: ADK-First Implementation ✅
+- **Complete ADK Integration**: Full session management, agent lifecycle, tool integration
+- **Session Architecture**: agent_id + session_id model for persistent conversations
+- **Extensible Contracts**: Data structures ready for multi-framework expansion
+- **Production Ready**: Stable ADK-based system with comprehensive testing
 
-- Layer contracts defined independently of framework specifics
-- Each layer focuses on its specific responsibilities
-- Framework adapters handle all framework-specific conversions
-- Universal data structures provide common foundation for all frameworks
-- Progressive enhancement strategy enables smooth evolution from ADK-only to multi-framework support
-- Tool Service Layer provides unified abstraction for all tool types with streaming support
+#### Next: Enhanced Tool Integration 🚧
+- **MCP Integration**: Model Context Protocol tool support
+- **ADK Native Tools**: Direct ADK tool system integration  
+- **External API Tools**: REST/GraphQL API tool wrappers
+- **Tool Security**: Permission system and sandboxing
+
+#### Future: Multi-Framework Expansion 📋
+- **AutoGen Integration**: Microsoft AutoGen framework support
+- **LangGraph Integration**: LangChain LangGraph framework support
+- **Intelligent Routing**: AI-driven framework selection based on task characteristics
+- **Cross-Framework Features**: Unified capabilities across all supported frameworks
+
+### Key Implementation Decisions
+
+#### 1. ADK-First Strategy ✅ 
+- Complete ADK implementation provides stable foundation
+- Extensible architecture ready for additional frameworks
+- Session management optimized for persistent conversations
+- Tool integration architecture supports multiple tool types
+
+#### 2. Session-Based Architecture ✅
+- **Three Execution Modes**: Support for different conversation patterns
+- **Agent Lifecycle**: Proper creation, management, and cleanup
+- **State Persistence**: ADK session state managed by RunnerManager
+- **Multi-turn Support**: Full conversation history and context
+
+#### 3. Contract-Driven Design ✅
+- **Stable Interfaces**: Well-defined data structures between layers
+- **Framework Agnostic**: Contracts work across different implementations
+- **Backward Compatibility**: Changes maintain existing functionality
+- **Progressive Enhancement**: Easy to add new features and frameworks
+
+#### 4. Bootstrap-Driven Initialization ✅  
+- **5-Phase Startup**: Proper component initialization order
+- **Dependency Management**: Clean dependency injection
+- **Health Monitoring**: Comprehensive system health checks
+- **Configuration**: Environment-based configuration management
+
+## Implementation Notes (Updated)
+
+### Current Architecture Status
+
+- ✅ **Layer contracts implemented** with ADK optimization and future-framework compatibility
+- ✅ **Each layer focused on specific responsibilities** with clear separation of concerns  
+- ✅ **Framework adapters handle framework-specific conversions** between universal and ADK formats
+- ✅ **Universal data structures provide foundation** for current ADK implementation and future frameworks
+- ✅ **Session management architecture** supports persistent multi-turn conversations
+- ✅ **Agent lifecycle management** with proper creation, tracking, and cleanup
+- ✅ **Bootstrap system coordinates** component initialization and dependency management
+
+### ADK-First Implementation Benefits
+
+- **Production Ready**: Stable, tested system with complete ADK integration
+- **Session Persistence**: Full support for multi-turn conversations and agent continuity  
+- **Extensible Design**: Architecture ready for AutoGen and LangGraph integration
+- **Tool Integration**: Unified tool service supporting multiple tool types
+- **Comprehensive Testing**: E2E tests covering all execution modes and scenarios
+- **Configuration Management**: Environment-based settings with capability management
+
+### Next Development Priorities
+
+1. **Enhanced Tool Integration**: Complete MCP and ADK native tool support
+2. **Live Execution Features**: Interactive streaming with user intervention  
+3. **Performance Optimization**: ADK session management and resource efficiency
+4. **Multi-Framework Preparation**: AutoGen and LangGraph adapter implementation
+5. **Security Enhancements**: Tool sandboxing and permission system
+
+The current implementation provides a solid foundation for multi-agent applications with complete ADK support and an architecture designed for seamless multi-framework expansion.
