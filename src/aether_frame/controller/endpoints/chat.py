@@ -31,7 +31,7 @@ class ChatRequest(BaseModel):
     """Chat request model for API endpoints."""
     message: str = Field(..., description="User message content")
     agent_id: str = Field(..., description="Agent ID from create-context")
-    session_id: str = Field(..., description="Session ID from create-context")
+    session_id: Optional[str] = Field(None, description="Session ID from create-context. If not provided, creates new session for the agent")
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Additional request metadata")
 
@@ -118,17 +118,18 @@ async def chat_endpoint(
     controller: ControllerService = Depends(get_controller_service)
 ) -> ChatResponse:
     """
-    Chat endpoint for continuing conversations with existing agent and session.
+    Chat endpoint for conversations with existing agents.
 
-    This endpoint requires pre-created agent and session from /create-context endpoint.
-    It maintains conversation context across multiple requests.
+    This endpoint supports two modes:
+    1. Continue existing session: Provide both agent_id and session_id
+    2. Create new session: Provide only agent_id (session_id will be auto-created)
 
     Args:
-        request: Chat request with message, agent_id, and session_id
+        request: Chat request with message, agent_id, and optional session_id
         controller: Controller service dependency
 
     Returns:
-        ChatResponse: AI response with metadata
+        ChatResponse: AI response with metadata including session_id
     """
     start_time = time.time()
 
@@ -136,7 +137,7 @@ async def chat_endpoint(
         # Generate task ID
         task_id = f"chat_{int(start_time * 1000)}"
 
-        # Build TaskRequest using existing agent and session
+        # Build TaskRequest - supports both existing session and new session creation
         task_request = TaskRequest(
             task_id=task_id,
             task_type="chat",
@@ -153,10 +154,11 @@ async def chat_endpoint(
                 )
             ],
             agent_id=request.agent_id,
-            session_id=request.session_id,
+            session_id=request.session_id,  # Can be None for new session creation
             metadata={
                 "api_endpoint": "chat",
-                "context_reuse": True,
+                "context_reuse": request.session_id is not None,
+                "new_session": request.session_id is None,
                 "timestamp": time.time(),
                 **(request.metadata or {})
             }
@@ -177,8 +179,8 @@ async def chat_endpoint(
             status=result.status.value,
             message=response_message,
             processing_time=processing_time,
-            agent_id=request.agent_id,
-            session_id=request.session_id,
+            agent_id=result.agent_id or request.agent_id,
+            session_id=result.session_id or request.session_id,  # Use result session_id for new sessions
             metadata=result.metadata
         )
 
