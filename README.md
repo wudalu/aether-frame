@@ -4,16 +4,25 @@ A multi-agent framework abstraction layer supporting ADK, AutoGen, and LangGraph
 
 ## Overview
 
-Aether Frame provides a unified abstraction layer for building multi-agent applications that can seamlessly switch between different agent frameworks. It supports flexible execution patterns through a strategy-based approach with intelligent framework routing.
+Aether Frame provides a unified abstraction layer for building multi-agent applications that can seamlessly switch between different agent frameworks. Currently implemented with ADK (Agent Development Kit) as the primary framework, with an extensible architecture designed for future multi-framework support.
+
+**Current Implementation Status:**
+- ✅ **ADK Framework Integration**: Full ADK support with agent lifecycle management
+- ✅ **Session Management**: Multi-turn conversations with persistent agent sessions  
+- ✅ **Agent Lifecycle**: Create, manage, and cleanup agent instances
+- ✅ **Tool Integration**: Builtin tools with extensible tool service architecture
+- 🚧 **Live Streaming**: Basic implementation (under development)
+- 📋 **Multi-Framework**: Designed for AutoGen and LangGraph (future implementation)
 
 ## Key Features
 
-- **Multi-Framework Support**: Unified interface for ADK, AutoGen, and LangGraph
-- **Framework Abstraction**: Clean separation between business logic and framework specifics
-- **Intelligent Routing**: AI Assistant automatically selects optimal framework and execution strategy
-- **Unified Data Contracts**: Consistent data structures across all framework integrations
-- **Tool Integration**: Extensible tool registry with MCP, ADK native, external API, and builtin tools
-- **Infrastructure Services**: Built-in session management, logging, monitoring, and storage
+- **ADK Framework Integration**: Complete ADK support with agent creation, session management, and tool integration
+- **Session-Based Architecture**: Support for persistent multi-turn conversations with agent_id + session_id model
+- **Agent Lifecycle Management**: Create, manage, and cleanup agent instances with proper resource handling
+- **Unified Data Contracts**: Consistent data structures across all framework integrations (TaskRequest, TaskResult, etc.)
+- **Tool Integration**: Extensible tool registry supporting builtin, MCP, ADK native, and external API tools
+- **Infrastructure Services**: Built-in session management, logging, monitoring, and bootstrap initialization
+- **Framework Abstraction**: Clean separation between business logic and framework specifics (ready for multi-framework expansion)
 
 ## Architecture
 
@@ -34,6 +43,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 - Python 3.9+
 - pip-tools for dependency management
+- ADK (Agent Development Kit) dependencies
 
 ### Installation
 
@@ -63,34 +73,68 @@ python dev.py dev-install
 3. Set up environment variables:
 ```bash
 cp .env.example .env
-# Edit .env with your configuration
+# Edit .env with your ADK configuration (project, location, API keys)
 ```
 
 ### Basic Usage
 
+#### Single Task Execution
 ```python
 from aether_frame import AIAssistant, TaskRequest
-from aether_frame.config.settings import Settings
+from aether_frame.contracts import AgentConfig, UniversalMessage
 
-# Initialize the framework
-settings = Settings()
-assistant = AIAssistant(settings)
+# Initialize AI Assistant (auto-initializes all components)
+assistant = await AIAssistant.create()
 
-# Create a task request using data contracts
+# Create a new agent and session
 task = TaskRequest(
-    task_id="example_001",
-    task_type="chat",
-    description="Analyze customer feedback and generate insights",
-    user_context={"user_id": "user_123"},
-    session_context={"session_id": "session_456"},
-    messages=[],
-    available_tools=[],
-    available_knowledge=[],
-    execution_config={}
+    task_id="chat_001",
+    task_type="chat", 
+    description="Help analyze customer feedback",
+    messages=[UniversalMessage(role="user", content="Hello, can you help me?")],
+    agent_config=AgentConfig(
+        agent_id="general_agent",
+        agent_type="adk_domain_agent",
+        model="gemini-1.5-flash"
+    )
 )
 
-# Execute the task (AI Assistant will choose optimal framework and strategy)
+# Execute task - creates new agent and session
 result = await assistant.process_request(task)
+print(f"Agent ID: {result.agent_id}")
+print(f"Session ID: {result.session_id}")
+print(f"Response: {result.messages[0].content}")
+```
+
+#### Multi-turn Conversation
+```python
+# Continue conversation using agent_id and session_id from previous result
+follow_up_task = TaskRequest(
+    task_id="chat_002", 
+    task_type="chat",
+    description="Continue conversation",
+    messages=[UniversalMessage(role="user", content="Can you elaborate on that?")],
+    agent_id=result.agent_id,        # Use existing agent
+    session_id=result.session_id     # Continue existing session
+)
+
+# Execute follow-up - reuses existing agent and session
+follow_up_result = await assistant.process_request(follow_up_task)
+```
+
+#### New Session with Existing Agent
+```python
+# Create new session for same agent (fresh conversation)
+new_session_task = TaskRequest(
+    task_id="chat_003",
+    task_type="chat", 
+    description="Start new conversation topic",
+    messages=[UniversalMessage(role="user", content="Let's discuss a different topic")],
+    agent_id=result.agent_id         # Use existing agent, no session_id
+)
+
+# Execute - creates new session for existing agent
+new_session_result = await assistant.process_request(new_session_task)
 ```
 
 ## Development

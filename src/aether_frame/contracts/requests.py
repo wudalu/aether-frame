@@ -35,6 +35,7 @@ class TaskRequest:
     # Session management for multi-turn conversations
     session_id: Optional[str] = None  # For continuing existing sessions
     agent_config: Optional[AgentConfig] = None  # For creating new sessions
+    agent_id: Optional[str] = None  # For continuing with existing agent
 
 
 

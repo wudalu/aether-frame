@@ -42,7 +42,20 @@ class ExecutionEngine:
         Returns:
             TaskResult: The result of task execution
         """
-        self.logger.info(f"Starting task execution - task_id: {task_request.task_id}, task_type: {task_request.task_type}")
+        self.logger.info(f"Starting task execution - task_id: {task_request.task_id}, task_type: {task_request.task_type}, agent_id: {task_request.agent_id}")
+            
+        # Validate task request has proper context
+        # Option 1: Continuing with existing agent (agent_id + session_id)
+        # Option 2: Continuing existing session (session_id only, backward compatibility)
+        # Option 3: Creating new agent/session (agent_config)
+        if not (task_request.agent_id or task_request.session_id or task_request.agent_config):
+            error_msg = "TaskRequest must have either agent_id (existing agent), session_id (existing session), or agent_config (new session)"
+            self.logger.error(f"Context missing - {error_msg}")
+            return TaskResult(
+                task_id=task_request.task_id,
+                status=TaskStatus.ERROR,
+                error_message=error_msg,
+            )
             
         try:
             # Route task to determine execution strategy
@@ -61,14 +74,16 @@ class ExecutionEngine:
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=error_msg,
+                    session_id=task_request.session_id,
+                    agent_id=task_request.agent_id,
                 )
             
             self.logger.info(f"Framework adapter retrieved - type: {type(framework_adapter).__name__}")
 
-            # Pass TaskRequest and Strategy to framework adapter
+            # Execute task through framework adapter
             result = await framework_adapter.execute_task(task_request, strategy)
             
-            self.logger.info(f"Task execution completed - status: {result.status.value if result.status else 'unknown'}, has_messages: {bool(result.messages)}")
+            self.logger.info(f"Task execution completed - status: {result.status.value if result.status else 'unknown'}, session_id: {result.session_id}, agent_id: {result.agent_id}")
             return result
 
         except Exception as e:
@@ -77,6 +92,8 @@ class ExecutionEngine:
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=f"Execution failed: {str(e)}",
+                session_id=task_request.session_id,
+                agent_id=task_request.agent_id,
             )
 
     async def execute_task_live(

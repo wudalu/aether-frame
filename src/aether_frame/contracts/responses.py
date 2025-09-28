@@ -26,6 +26,7 @@ class TaskResult:
     
     # Session management for multi-turn conversations
     session_id: Optional[str] = None  # Session ID for follow-up requests
+    agent_id: Optional[str] = None  # Agent ID for follow-up requests
 
 
 @dataclass
