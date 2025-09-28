@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 from ..config.settings import Settings
-from ..contracts import TaskRequest, TaskResult, TaskStatus
+from ..contracts import TaskRequest, TaskResult, TaskStatus, AgentConfig
 from ..bootstrap import create_system_components, SystemComponents
 
 
@@ -172,6 +172,93 @@ class ControllerService:
                 "timestamp": datetime.now().isoformat()
             }
     
+    async def create_runtime_context(
+        self, 
+        agent_config: "AgentConfig", 
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create RuntimeContext by pre-creating agent, runner, and session.
+        
+        This method creates a complete RuntimeContext that can be used for subsequent
+        task processing, allowing for faster response times by pre-initializing
+        all necessary components.
+        
+        Args:
+            agent_config: Agent configuration for creating the domain agent
+            user_id: Optional user ID for tracking
+            metadata: Optional additional metadata
+            
+        Returns:
+            Dict containing context information including agent_id, session_id, etc.
+        """
+        # Ensure service is initialized
+        if not self._initialized:
+            await self.initialize()
+        
+        start_time = datetime.now()
+        
+        self.logger.info(f"Creating RuntimeContext - agent_type: {agent_config.agent_type}")
+        
+        try:
+            from ..contracts import TaskRequest, FrameworkType
+            from uuid import uuid4
+            
+            # Create a dummy TaskRequest for context creation
+            dummy_task_id = f"context_create_{int(start_time.timestamp() * 1000)}"
+            dummy_task_request = TaskRequest(
+                task_id=dummy_task_id,
+                task_type="context_creation",
+                description="Creating RuntimeContext for pre-initialization",
+                messages=[],  # Empty messages for context creation
+                agent_config=agent_config,
+                metadata={
+                    "context_creation": True,
+                    "user_id": user_id,
+                    "timestamp": start_time.isoformat(),
+                    **(metadata or {})
+                }
+            )
+            
+            # Get ADK framework adapter directly
+            adk_adapter = await self._components.framework_registry.get_adapter(FrameworkType.ADK)
+            if not adk_adapter:
+                raise RuntimeError("ADK framework adapter not available")
+            
+            # Use the ADK adapter's _create_runtime_context_for_new_agent method
+            # This creates domain_agent, registers it, creates runner and session
+            runtime_context = await adk_adapter._create_runtime_context_for_new_agent(dummy_task_request)
+            
+            processing_time = (datetime.now() - start_time).total_seconds()
+            
+            # Extract information from RuntimeContext
+            context_info = {
+                "agent_id": runtime_context.agent_id,
+                "session_id": runtime_context.session_id,
+                "runner_id": runtime_context.runner_id,
+                "framework_type": runtime_context.framework_type.value,
+                "agent_type": agent_config.agent_type,
+                "model": agent_config.model_config.get("model", "deepseek-chat"),
+                "created_at": runtime_context.created_at.isoformat() if runtime_context.created_at else start_time.isoformat(),
+                "processing_time": processing_time,
+                "metadata": {
+                    "user_id": user_id,
+                    "execution_id": runtime_context.execution_id,
+                    "pattern": runtime_context.metadata.get("pattern"),
+                    "created_by": "ControllerService",
+                    **(metadata or {})
+                }
+            }
+            
+            self.logger.info(f"RuntimeContext created successfully - agent_id: {context_info['agent_id']}, session_id: {context_info['session_id']}, processing_time: {processing_time:.3f}s")
+            return context_info
+            
+        except Exception as e:
+            processing_time = (datetime.now() - start_time).total_seconds()
+            self.logger.error(f"RuntimeContext creation failed - error: {str(e)}, processing_time: {processing_time:.3f}s")
+            raise RuntimeError(f"Failed to create RuntimeContext: {str(e)}")
+
     async def shutdown(self) -> None:
         """Shutdown the controller service and cleanup resources."""
         try:

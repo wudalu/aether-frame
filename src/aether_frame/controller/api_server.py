@@ -54,6 +54,16 @@ async def lifespan(app: FastAPI):
         logger.info("Aether Frame Controller API shutdown complete")
 
 
+def create_app_factory() -> FastAPI:
+    """
+    Factory function for uvicorn reload mode.
+    
+    Returns:
+        FastAPI: Configured FastAPI application
+    """
+    return create_app()
+
+
 def create_app(settings: Settings = None) -> FastAPI:
     """
     Create and configure the FastAPI application.

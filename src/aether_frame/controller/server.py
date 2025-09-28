@@ -63,21 +63,38 @@ def run_server(
     logger.info(f"Reload: {reload}")
     logger.info(f"Log level: {log_level}")
     
-    # Create settings
-    settings = Settings()
-    
-    # Create FastAPI app
-    app = create_app(settings)
-    
-    # Run server
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        reload=reload,
-        log_level=log_level,
-        access_log=True
-    )
+    if reload:
+        # Development mode with reload - use import string
+        uvicorn.run(
+            "aether_frame.controller.api_server:create_app_factory",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level=log_level,
+            access_log=True,
+            factory=True,  # Indicate that create_app_factory is a factory function
+        )
+    else:
+        # Production mode - use app object with optimizations
+        settings = Settings()
+        app = create_app(settings)
+        
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            reload=False,
+            log_level=log_level,
+            access_log=True,
+            # Production optimizations
+            workers=4,  # Multi-process for production
+            loop="uvloop",  # Faster event loop
+            http="httptools",  # Faster HTTP parser
+            backlog=2048,  # Increase connection backlog
+            timeout_keep_alive=5,  # Keep-alive timeout
+            limit_concurrency=1000,  # Limit concurrent connections
+            limit_max_requests=10000,  # Restart workers after N requests
+        )
 
 
 async def run_server_async(
