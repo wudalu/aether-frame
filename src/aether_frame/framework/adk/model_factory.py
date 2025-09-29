@@ -64,12 +64,19 @@ class AdkModelFactory:
             try:
                 from google.adk.models.lite_llm import LiteLlm
                 import os
+                import logging
+                
+                logger = logging.getLogger(__name__)
                 
                 # Set OpenAI API key from settings if available
                 if settings:
                     openai_key = settings.get_openai_api_key()
                     if openai_key:
                         os.environ["OPENAI_API_KEY"] = openai_key
+                        if settings.is_debug_mode():
+                            logger.debug(f"Set OpenAI API key for model {model_identifier}")
+                    elif settings.is_debug_mode():
+                        logger.warning(f"No OpenAI API key available for model {model_identifier}")
                 
                 return LiteLlm(model=model_identifier)
             except ImportError:
@@ -81,6 +88,9 @@ class AdkModelFactory:
             try:
                 from google.adk.models.lite_llm import LiteLlm
                 import os
+                import logging
+                
+                logger = logging.getLogger(__name__)
                 
                 # Set Azure environment variables if settings provided
                 if settings:
@@ -88,18 +98,30 @@ class AdkModelFactory:
                     azure_key = settings.get_azure_api_key()
                     if azure_key:
                         os.environ["AZURE_API_KEY"] = azure_key
+                        if settings.is_debug_mode():
+                            logger.debug(f"Set Azure API key for model {model_identifier}")
+                    elif settings.is_debug_mode():
+                        logger.warning(f"No Azure API key available for model {model_identifier}")
                     
                     # Set other Azure configuration from settings
                     if hasattr(settings, 'azure_api_base') and settings.azure_api_base:
                         os.environ["AZURE_API_BASE"] = settings.azure_api_base
+                        if settings.is_debug_mode():
+                            logger.debug(f"Set Azure API base: {settings.azure_api_base}")
                     if hasattr(settings, 'azure_api_version') and settings.azure_api_version:
                         os.environ["AZURE_API_VERSION"] = settings.azure_api_version
+                        if settings.is_debug_mode():
+                            logger.debug(f"Set Azure API version: {settings.azure_api_version}")
                 
                 # Convert azure-gpt-4 to azure/gpt-4 format if needed
                 if "azure-" in model_lower and not model_lower.startswith("azure/"):
                     azure_model = model_identifier.replace("azure-", "azure/")
                 else:
                     azure_model = model_identifier
+                
+                if settings and settings.is_debug_mode():
+                    logger.debug(f"Creating LiteLLM model: {azure_model}")
+                
                 return LiteLlm(model=azure_model)
             except ImportError:
                 # LiteLLM not available, fallback to string

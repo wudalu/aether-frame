@@ -63,6 +63,11 @@ def run_server(
     logger.info(f"Reload: {reload}")
     logger.info(f"Log level: {log_level}")
 
+    # Set development mode when using reload
+    if reload:
+        os.environ["DEVELOPMENT_MODE"] = "true"
+        logger.info("Development mode enabled (reload=True)")
+
     if reload:
         # Development mode with reload - use import string
         uvicorn.run(

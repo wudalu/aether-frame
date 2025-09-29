@@ -113,8 +113,10 @@ class APIKeyManager:
                         result = await conn.fetchval(query)
                         if result:
                             self._api_keys[provider] = result
+                            # Only log the first few characters for security
+                            masked_key = result[:8] + "..." if len(result) > 8 else "***"
                             logger.debug(
-                                f"Updated API key for provider: {provider}")
+                                f"Updated API key for provider {provider}: {masked_key}")
                         else:
                             logger.warning(
                                 f"No API key found for provider: {provider}")

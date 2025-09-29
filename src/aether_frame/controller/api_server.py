@@ -37,6 +37,25 @@ async def lifespan(app: FastAPI):
     try:
         settings = Settings()
         
+        # Configure LiteLLM debug mode for development
+        if settings.is_debug_mode():
+            try:
+                import litellm
+                import os
+                
+                # Set LiteLLM debug mode using the recommended methods from documentation
+                os.environ["LITELLM_LOG"] = "DEBUG"
+                
+                # Enable verbose debugging using the official method
+                litellm._turn_on_debug()
+                
+                logger.info("LiteLLM debug mode enabled for development")
+                logger.info("LiteLLM will now show detailed logs including API calls and responses")
+            except ImportError:
+                logger.warning("LiteLLM not available for debug configuration")
+            except Exception as e:
+                logger.warning(f"Failed to enable LiteLLM debug mode: {e}")
+        
         # Initialize and start API key manager
         from ..services import initialize_api_key_manager
         api_key_manager = initialize_api_key_manager(settings)

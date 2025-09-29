@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     # API Key Management Configuration
     api_key_refresh_interval: int = Field(default=60, env="API_KEY_REFRESH_INTERVAL")
     enable_api_key_manager: bool = Field(default=True, env="ENABLE_API_KEY_MANAGER")
+    
+    # Development mode detection
+    is_development_mode: bool = Field(default=False, env="DEVELOPMENT_MODE")
 
     def get_openai_api_key(self) -> Optional[str]:
         """Get OpenAI API key from manager or fallback to env."""
@@ -182,6 +185,29 @@ class Settings(BaseSettings):
         # Fallback to environment variable
         import os
         return os.getenv("AZURE_API_KEY")
+    
+    def is_debug_mode(self) -> bool:
+        """Check if we're in debug/development mode."""
+        import os
+        # Check if explicitly set to development mode
+        if self.is_development_mode:
+            return True
+        # Check if running with reload (development mode indicator)
+        if os.getenv("DEVELOPMENT_MODE") == "true":
+            return True
+        # Check if debug is enabled
+        if self.debug:
+            return True
+        # Check environment
+        if self.environment.lower() in ["development", "dev"]:
+            return True
+        return False
+    
+    def get_litellm_log_level(self) -> str:
+        """Get the appropriate LiteLLM log level based on debug mode."""
+        if self.is_debug_mode():
+            return "DEBUG"
+        return self.litellm_log
 
     class Config:
         """Pydantic configuration."""
