@@ -106,7 +106,7 @@ def test_chat_endpoint():
     print("=" * 50)
 
     # 第一步：创建context
-    context_url = "http://localhost:8000/api/v1/create-context"
+    context_url = "http://localhost:8000/api/v1/create-agent"
     context_data = {
         "agent_type": "chat_assistant",
         "system_prompt": "你是一个友好的聊天助手",
@@ -225,7 +225,7 @@ def test_create_context_endpoint():
     print("测试创建RuntimeContext端点")
     print("=" * 50)
 
-    url = "http://localhost:8000/api/v1/create-context"
+    url = "http://localhost:8000/api/v1/create-agent"
 
     # 测试数据 - 使用 echarts 提示词配置
     test_data = {

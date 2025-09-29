@@ -40,3 +40,7 @@ google-adk>=1.13.0                    # ADK - Agent Development Kit
 
 # MCP (Model Context Protocol) support (future)
 # mcp>=1.0.0
+
+# Database support for API key management
+psycopg2-binary>=2.9.0
+asyncpg>=0.29.0

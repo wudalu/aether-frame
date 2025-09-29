@@ -4,10 +4,10 @@
 
 ### 1. 创建 RuntimeContext
 
-使用 `/api/v1/create-context` 接口预创建 RuntimeContext：
+使用 `/api/v1/create-agent` 接口预创建 RuntimeContext：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "analytical_assistant",
@@ -160,7 +160,7 @@ def handle_user_request(user_id, message):
 
 ```bash
 # 1. 创建专门的 ECharts 生成助手
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "echarts_generator",

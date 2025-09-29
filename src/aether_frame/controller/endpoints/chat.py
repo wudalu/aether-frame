@@ -30,8 +30,8 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request model for API endpoints."""
     message: str = Field(..., description="User message content")
-    agent_id: str = Field(..., description="Agent ID from create-context")
-    session_id: Optional[str] = Field(None, description="Session ID from create-context. If not provided, creates new session for the agent")
+    agent_id: str = Field(..., description="Agent ID from create-agent")
+    session_id: Optional[str] = Field(None, description="Session ID from create-agent. If not provided, creates new session for the agent")
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Additional request metadata")
 
@@ -293,13 +293,13 @@ async def process_endpoint(
         )
 
 
-@router.post("/create-context", response_model=CreateContextResponse)
-async def create_context_endpoint(
+@router.post("/create-agent", response_model=CreateContextResponse)
+async def create_agent_endpoint(
     request: CreateContextRequest,
     controller: ControllerService = Depends(get_controller_service)
 ) -> CreateContextResponse:
     """
-    Create RuntimeContext endpoint that pre-creates agent, runner, and session.
+    Create agent endpoint that pre-creates agent, runner, and session.
 
     This endpoint allows clients to pre-create a RuntimeContext with agent and session,
     which can then be used in subsequent process requests for faster response times.

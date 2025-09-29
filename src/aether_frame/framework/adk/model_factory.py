@@ -35,6 +35,7 @@ class AdkModelFactory:
                 try:
                     from .deepseek_streaming_llm import DeepSeekStreamingLLM
                     if settings:
+                        # DeepSeek still uses direct env variable access for now
                         api_key = getattr(settings, "deepseek_api_key", None)
                         base_url = getattr(settings, "deepseek_base_url", "https://api.deepseek.com/v1")
                         return DeepSeekStreamingLLM(
@@ -62,6 +63,14 @@ class AdkModelFactory:
         ]):
             try:
                 from google.adk.models.lite_llm import LiteLlm
+                import os
+                
+                # Set OpenAI API key from settings if available
+                if settings:
+                    openai_key = settings.get_openai_api_key()
+                    if openai_key:
+                        os.environ["OPENAI_API_KEY"] = openai_key
+                
                 return LiteLlm(model=model_identifier)
             except ImportError:
                 # LiteLLM not available, fallback to string
@@ -75,8 +84,12 @@ class AdkModelFactory:
                 
                 # Set Azure environment variables if settings provided
                 if settings:
-                    if hasattr(settings, 'azure_api_key') and settings.azure_api_key:
-                        os.environ["AZURE_API_KEY"] = settings.azure_api_key
+                    # Use new API key management system for Azure API key
+                    azure_key = settings.get_azure_api_key()
+                    if azure_key:
+                        os.environ["AZURE_API_KEY"] = azure_key
+                    
+                    # Set other Azure configuration from settings
                     if hasattr(settings, 'azure_api_base') and settings.azure_api_base:
                         os.environ["AZURE_API_BASE"] = settings.azure_api_base
                     if hasattr(settings, 'azure_api_version') and settings.azure_api_version:

@@ -32,8 +32,17 @@ async def lifespan(app: FastAPI):
     logger = logging.getLogger(__name__)
     logger.info("Starting Aether Frame Controller API...")
     
+    # Initialize API Key Manager
+    api_key_manager = None
     try:
         settings = Settings()
+        
+        # Initialize and start API key manager
+        from ..services import initialize_api_key_manager
+        api_key_manager = initialize_api_key_manager(settings)
+        await api_key_manager.start()
+        logger.info("API key manager started successfully")
+        
         controller_service = ControllerService(settings)
         # Don't initialize here to avoid blocking startup
         # await controller_service.initialize()
@@ -46,6 +55,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # Shutdown
+        if api_key_manager:
+            try:
+                await api_key_manager.stop()
+                logger.info("API key manager stopped")
+            except Exception as e:
+                logger.error(f"Error stopping API key manager: {str(e)}")
+                
         if controller_service:
             try:
                 await controller_service.shutdown()

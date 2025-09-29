@@ -35,7 +35,7 @@ def run_server(
 ) -> None:
     """
     Run the FastAPI server with uvicorn.
-    
+
     Args:
         host: Host to bind the server to
         port: Port to bind the server to
@@ -52,17 +52,17 @@ def run_server(
             if os.path.exists(env_path):
                 load_dotenv(env_path)
                 break
-    
+
     # Setup logging
     setup_logging(log_level.upper())
-    
+
     logger = logging.getLogger(__name__)
     logger.info(f"Starting Aether Frame Controller API server...")
     logger.info(f"Host: {host}")
     logger.info(f"Port: {port}")
     logger.info(f"Reload: {reload}")
     logger.info(f"Log level: {log_level}")
-    
+
     if reload:
         # Development mode with reload - use import string
         uvicorn.run(
@@ -75,10 +75,10 @@ def run_server(
             factory=True,  # Indicate that create_app_factory is a factory function
         )
     else:
-        # Production mode - use app object with optimizations
+        # Production mode - use app object directly (single process)
         settings = Settings()
         app = create_app(settings)
-        
+
         uvicorn.run(
             app,
             host=host,
@@ -86,14 +86,9 @@ def run_server(
             reload=False,
             log_level=log_level,
             access_log=True,
-            # Production optimizations
-            workers=4,  # Multi-process for production
-            loop="uvloop",  # Faster event loop
-            http="httptools",  # Faster HTTP parser
-            backlog=2048,  # Increase connection backlog
+            # Single process optimizations
             timeout_keep_alive=5,  # Keep-alive timeout
             limit_concurrency=1000,  # Limit concurrent connections
-            limit_max_requests=10000,  # Restart workers after N requests
         )
 
 
@@ -105,9 +100,9 @@ async def run_server_async(
 ) -> None:
     """
     Run the FastAPI server asynchronously.
-    
+
     This is useful for embedding the server in other async applications.
-    
+
     Args:
         host: Host to bind the server to
         port: Port to bind the server to
@@ -117,14 +112,14 @@ async def run_server_async(
     # Load environment variables
     if env_file:
         load_dotenv(env_file)
-    
+
     # Setup logging
     setup_logging(log_level.upper())
-    
+
     # Create settings and app
     settings = Settings()
     app = create_app(settings)
-    
+
     # Create server config
     config = uvicorn.Config(
         app,
@@ -133,7 +128,7 @@ async def run_server_async(
         log_level=log_level,
         access_log=True
     )
-    
+
     # Run server
     server = uvicorn.Server(config)
     await server.serve()
@@ -141,16 +136,19 @@ async def run_server_async(
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Aether Frame Controller API Server")
+
+    parser = argparse.ArgumentParser(
+        description="Aether Frame Controller API Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+    parser.add_argument("--port", type=int, default=8000,
+                        help="Port to bind to")
+    parser.add_argument("--reload", action="store_true",
+                        help="Enable auto-reload")
     parser.add_argument("--log-level", default="info", help="Log level")
     parser.add_argument("--env-file", help="Path to environment file")
-    
+
     args = parser.parse_args()
-    
+
     try:
         run_server(
             host=args.host,

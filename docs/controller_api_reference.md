@@ -6,7 +6,7 @@ The Aether Frame Controller API is a FastAPI-based HTTP service that provides st
 
 ### Interface Responsibility Division
 
-1. **`/api/v1/create-context`** - Pre-create context, returns `agent_id` and `session_id`
+1. **`/api/v1/create-agent`** - Pre-create context, returns `agent_id` and `session_id`
 2. **`/api/v1/chat`** - Continuous conversation based on existing context (requires `agent_id` and `session_id`)
 3. **`/api/v1/process`** - One-time task processing (automatically creates temporary context)
 4. **`/api/v1/health`** - Service health check
@@ -268,9 +268,9 @@ curl -X GET "http://localhost:8000/api/v1/health/detailed"
 
 **Endpoint**: `POST /api/v1/chat`
 
-**Description**: Conduct continuous conversation based on pre-created context, requires creating context through `/api/v1/create-context` first
+**Description**: Conduct continuous conversation based on pre-created context, requires creating context through `/api/v1/create-agent` first
 
-**Prerequisites**: Must call `/api/v1/create-context` first to obtain `agent_id` and `session_id`
+**Prerequisites**: Must call `/api/v1/create-agent` first to obtain `agent_id` and `session_id`
 
 **Request Format**:
 ```json
@@ -284,8 +284,8 @@ curl -X GET "http://localhost:8000/api/v1/health/detailed"
 
 **Request Field Descriptions**:
 - `message` (required): User message content
-- `agent_id` (required): Agent ID obtained from create-context interface
-- `session_id` (required): Session ID obtained from create-context interface
+- `agent_id` (required): Agent ID obtained from create-agent interface
+- `session_id` (required): Session ID obtained from create-agent interface
 - `metadata` (optional): Additional metadata
 
 **Response Format**:
@@ -323,7 +323,7 @@ curl -X GET "http://localhost:8000/api/v1/health/detailed"
 
 1. **Step 1: Create Context**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "chat_assistant",
@@ -518,7 +518,7 @@ curl -X POST "http://localhost:8000/api/v1/process" \
 
 #### 4.1 Create Runtime Context
 
-**Endpoint**: `POST /api/v1/create-context`
+**Endpoint**: `POST /api/v1/create-agent`
 
 **Description**: Pre-create runtime context (RuntimeContext), including agents, runners, and sessions, to improve response speed for subsequent requests
 
@@ -581,7 +581,7 @@ curl -X POST "http://localhost:8000/api/v1/process" \
 
 **Example Request**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "echarts_generator",
@@ -712,7 +712,7 @@ Create specialized chart generation assistant and conduct continuous conversatio
 
 ```bash
 # 1. Create professional context
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "echarts_generator",
@@ -736,7 +736,7 @@ Maintain continuous interaction with conversation context:
 
 ```bash
 # 1. Create programming tutor context
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "programming_tutor",
@@ -784,7 +784,7 @@ Pre-create dedicated contexts for multiple users:
 
 ```bash
 # Create dedicated assistant for user1
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "personal_assistant",
@@ -793,7 +793,7 @@ curl -X POST "http://localhost:8000/api/v1/create-context" \
   }'
 
 # Create dedicated assistant for user2
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_type": "personal_assistant", 
@@ -815,7 +815,7 @@ curl -X POST "http://localhost:8000/api/v1/chat" \
 
 ### Context Pre-creation Advantages
 
-Using `/api/v1/create-context` to pre-create contexts can significantly improve performance:
+Using `/api/v1/create-agent` to pre-create contexts can significantly improve performance:
 
 - **Initialization Time**: 0.8-1.2 seconds (including agent creation, model loading, etc.)
 - **Subsequent Request Time**: 0.2-0.5 seconds (directly using pre-created context)
@@ -829,17 +829,17 @@ Using `/api/v1/create-context` to pre-create contexts can significantly improve 
 # ✅ Recommended: Pre-create common contexts at application startup
 
 # Create chat assistant context
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{"agent_type": "conversational_assistant", "system_prompt": "You are a chat assistant"}'
 
 # Create data analysis assistant context  
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{"agent_type": "data_analyst", "system_prompt": "You are a data analyst"}'
 
 # Create programming assistant context
-curl -X POST "http://localhost:8000/api/v1/create-context" \
+curl -X POST "http://localhost:8000/api/v1/create-agent" \
   -H "Content-Type: application/json" \
   -d '{"agent_type": "programming_assistant", "system_prompt": "You are a programming assistant"}'
 
@@ -987,7 +987,7 @@ Recommended timeout settings for different interfaces:
 - `/health`: 5 seconds
 - `/chat`: 30 seconds  
 - `/process`: 60 seconds
-- `/create-context`: 30 seconds
+- `/create-agent`: 30 seconds
 
 #### 2. Retry Strategy
 

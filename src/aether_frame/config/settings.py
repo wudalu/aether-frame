@@ -27,12 +27,10 @@ class Settings(BaseSettings):
     )
 
     # LLM Provider settings
-    openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4", env="OPENAI_MODEL")
     openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
 
-    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(
         default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
     )
@@ -44,9 +42,6 @@ class Settings(BaseSettings):
     deepseek_base_url: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
     deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
     deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
-
-    # Azure OpenAI configuration - Using LiteLLM standard environment variable names
-    azure_api_key: Optional[str] = Field(default=None, env="AZURE_API_KEY")
     azure_api_base: str = Field(default="", env="AZURE_API_BASE")
     azure_api_version: str = Field(default="2023-07-01-preview", env="AZURE_API_VERSION")
 
@@ -148,9 +143,57 @@ class Settings(BaseSettings):
     default_autogen_model: str = Field(default="gpt-4", env="DEFAULT_AUTOGEN_MODEL")
     default_langgraph_model: str = Field(default="gpt-4", env="DEFAULT_LANGGRAPH_MODEL")
 
+    # API Key Management Configuration
+    api_key_refresh_interval: int = Field(default=60, env="API_KEY_REFRESH_INTERVAL")
+    enable_api_key_manager: bool = Field(default=True, env="ENABLE_API_KEY_MANAGER")
+    
+    # Key Management Database Configuration
+    db_host: str = Field(default="localhost", env="DB_HOST")
+    db_port: int = Field(default=5432, env="DB_PORT")
+    db_user: str = Field(default="user", env="DB_USER")
+    db_password: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    db_name: str = Field(default="key_management", env="DB_NAME")
+
+    def get_openai_api_key(self) -> Optional[str]:
+        """Get OpenAI API key from manager or fallback to env."""
+        from ..services import get_api_key_manager
+        manager = get_api_key_manager()
+        if manager and manager.is_running:
+            key = manager.get_openai_api_key()
+            if key:
+                return key
+        # Fallback to environment variable
+        import os
+        return os.getenv("OPENAI_API_KEY")
+    
+    def get_anthropic_api_key(self) -> Optional[str]:
+        """Get Anthropic API key from manager or fallback to env."""
+        from ..services import get_api_key_manager
+        manager = get_api_key_manager()
+        if manager and manager.is_running:
+            key = manager.get_anthropic_api_key()
+            if key:
+                return key
+        # Fallback to environment variable
+        import os
+        return os.getenv("ANTHROPIC_API_KEY")
+    
+    def get_azure_api_key(self) -> Optional[str]:
+        """Get Azure OpenAI API key from manager or fallback to env."""
+        from ..services import get_api_key_manager
+        manager = get_api_key_manager()
+        if manager and manager.is_running:
+            key = manager.get_azure_api_key()
+            if key:
+                return key
+        # Fallback to environment variable
+        import os
+        return os.getenv("AZURE_API_KEY")
+
     class Config:
         """Pydantic configuration."""
 
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # 忽略额外的环境变量
