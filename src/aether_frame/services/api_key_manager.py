@@ -113,6 +113,8 @@ class APIKeyManager:
                         result = await conn.fetchval(query)
                         if result:
                             self._api_keys[provider] = result
+                            # Immediately set the API key to environment variables
+                            self._set_env_variable(provider, result)
                             # Only log the first few characters for security
                             masked_key = result[:8] + "..." if len(result) > 8 else "***"
                             logger.debug(
@@ -132,7 +134,11 @@ class APIKeyManager:
 
     def get_api_key(self, provider: str) -> Optional[str]:
         """Get API key for a specific provider."""
-        return self._api_keys.get(provider)
+        api_key = self._api_keys.get(provider)
+        if api_key:
+            # Ensure environment variable is set when key is retrieved
+            self._set_env_variable(provider, api_key)
+        return api_key
 
     def get_azure_api_key(self) -> Optional[str]:
         """Get Azure OpenAI API key."""
@@ -146,6 +152,28 @@ class APIKeyManager:
         """Get Anthropic API key."""
         return self.get_api_key("anthropic")
 
+    def _set_env_variable(self, provider: str, api_key: str):
+        """Set API key to appropriate environment variable."""
+        import os
+        
+        # Map provider names to environment variable names
+        env_var_mapping = {
+            "azure_openai": "AZURE_API_KEY",
+            "openai": "OPENAI_API_KEY", 
+            "anthropic": "ANTHROPIC_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "google_ai": "GOOGLE_AI_API_KEY",
+            "cohere": "COHERE_API_KEY",
+            "replicate": "REPLICATE_API_KEY",
+        }
+        
+        env_var_name = env_var_mapping.get(provider)
+        if env_var_name:
+            os.environ[env_var_name] = api_key
+            logger.debug(f"Set environment variable {env_var_name} for provider {provider}")
+        else:
+            logger.warning(f"No environment variable mapping found for provider: {provider}")
+    
     def set_query(self, provider: str, query: str):
         """Set SQL query for a provider."""
         self._queries[provider] = query

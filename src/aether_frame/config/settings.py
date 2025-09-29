@@ -153,37 +153,40 @@ class Settings(BaseSettings):
     def get_openai_api_key(self) -> Optional[str]:
         """Get OpenAI API key from manager or fallback to env."""
         from ..services import get_api_key_manager
+        import os
+        
         manager = get_api_key_manager()
         if manager and manager.is_running:
-            key = manager.get_openai_api_key()
-            if key:
-                return key
-        # Fallback to environment variable
-        import os
+            # Manager will automatically set environment variable when getting key
+            manager.get_openai_api_key()
+        
+        # Always return from environment variable (manager sets it if available)
         return os.getenv("OPENAI_API_KEY")
     
     def get_anthropic_api_key(self) -> Optional[str]:
         """Get Anthropic API key from manager or fallback to env."""
         from ..services import get_api_key_manager
+        import os
+        
         manager = get_api_key_manager()
         if manager and manager.is_running:
-            key = manager.get_anthropic_api_key()
-            if key:
-                return key
-        # Fallback to environment variable
-        import os
+            # Manager will automatically set environment variable when getting key
+            manager.get_anthropic_api_key()
+        
+        # Always return from environment variable (manager sets it if available)
         return os.getenv("ANTHROPIC_API_KEY")
     
     def get_azure_api_key(self) -> Optional[str]:
         """Get Azure OpenAI API key from manager or fallback to env."""
         from ..services import get_api_key_manager
+        import os
+        
         manager = get_api_key_manager()
         if manager and manager.is_running:
-            key = manager.get_azure_api_key()
-            if key:
-                return key
-        # Fallback to environment variable
-        import os
+            # Manager will automatically set environment variable when getting key
+            manager.get_azure_api_key()
+        
+        # Always return from environment variable (manager sets it if available)
         return os.getenv("AZURE_API_KEY")
     
     def is_debug_mode(self) -> bool:
