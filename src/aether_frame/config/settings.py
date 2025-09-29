@@ -146,13 +146,6 @@ class Settings(BaseSettings):
     # API Key Management Configuration
     api_key_refresh_interval: int = Field(default=60, env="API_KEY_REFRESH_INTERVAL")
     enable_api_key_manager: bool = Field(default=True, env="ENABLE_API_KEY_MANAGER")
-    
-    # Key Management Database Configuration
-    db_host: str = Field(default="localhost", env="DB_HOST")
-    db_port: int = Field(default=5432, env="DB_PORT")
-    db_user: str = Field(default="user", env="DB_USER")
-    db_password: Optional[str] = Field(default=None, env="DB_PASSWORD")
-    db_name: str = Field(default="key_management", env="DB_NAME")
 
     def get_openai_api_key(self) -> Optional[str]:
         """Get OpenAI API key from manager or fallback to env."""

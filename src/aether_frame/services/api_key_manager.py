@@ -42,13 +42,13 @@ class APIKeyManager:
         logger.info("Starting API key manager...")
 
         try:
-            # Create database connection pool
+            # Create database connection pool using existing PostgreSQL settings
             self._connection_pool = await asyncpg.create_pool(
-                host=self.settings.db_host,
-                port=self.settings.db_port,
-                user=self.settings.db_user,
-                password=self.settings.db_password,
-                database=self.settings.db_name,
+                host=self.settings.postgres_host,
+                port=self.settings.postgres_port,
+                user=self.settings.postgres_user,
+                password=self.settings.postgres_password,
+                database=self.settings.postgres_database,
                 min_size=1,
                 max_size=5
             )
