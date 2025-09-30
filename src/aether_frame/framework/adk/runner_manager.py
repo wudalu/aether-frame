@@ -22,10 +22,12 @@ class RunnerManager:
     4. Agent configs with same hash can share Runners
     """
 
-    def __init__(self, settings: Settings = None):
+    def __init__(self, settings: Settings = None, session_manager=None, agent_runner_mapping=None):
         """Initialize runner manager."""
         self.logger = logging.getLogger(__name__)
         self.settings = settings or Settings()
+        self.session_manager = session_manager  # SessionManager instance for creating session services
+        self.agent_runner_mapping = agent_runner_mapping  # External agent_id -> runner_id mapping
         
         # Core storage
         self.runners = {}  # runner_id -> RunnerContext
@@ -87,7 +89,7 @@ class RunnerManager:
         
         # H5: Use Engine-provided session_id instead of generating our own
         session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
-        await self._create_session_in_runner(runner_id, agent_config, task_request, external_session_id=session_id)
+        await self._create_session_in_runner(runner_id, task_request, external_session_id=session_id)
         
         # Record session-to-runner mapping
         self.session_to_runner[session_id] = runner_id
@@ -145,10 +147,14 @@ class RunnerManager:
         
         try:
             from google.adk.runners import Runner
-            from google.adk.sessions import InMemorySessionService
             
-            # Create dedicated SessionService for this Runner
-            session_service = InMemorySessionService()
+            # Create dedicated SessionService for this Runner through SessionManager
+            if self.session_manager:
+                session_service = self.session_manager.create_session_service()
+            else:
+                # Fallback to direct creation if no session manager provided
+                from google.adk.sessions import InMemorySessionService
+                session_service = InMemorySessionService()
             
             # Use provided ADK Agent or build internal one as fallback
             if adk_agent is None:
@@ -180,7 +186,7 @@ class RunnerManager:
             self.logger.error(f"Failed to create Runner {runner_id}: {str(e)}")
             raise RuntimeError(f"Runner creation failed: {str(e)}")
 
-    async def _create_session_in_runner(self, runner_id: str, agent_config: AgentConfig, task_request = None, external_session_id: str = None) -> str:
+    async def _create_session_in_runner(self, runner_id: str, task_request = None, external_session_id: str = None) -> str:
         """
         Create new Session within existing Runner using provided session_id.
         
@@ -188,7 +194,6 @@ class RunnerManager:
         
         Args:
             runner_id: Target Runner ID
-            agent_config: Agent configuration for session context
             task_request: TaskRequest containing context information for Session
             external_session_id: Session ID provided by Framework (H5)
             
@@ -350,3 +355,108 @@ class RunnerManager:
                 for rid, ctx in self.runners.items()
             ]
         }
+
+    async def remove_session_from_runner(self, runner_id: str, session_id: str) -> bool:
+        """
+        Remove a specific session from a runner.
+        
+        Args:
+            runner_id: The runner to remove session from
+            session_id: The session to remove
+            
+        Returns:
+            bool: True if session was removed successfully
+        """
+        runner_context = self.runners.get(runner_id)
+        if not runner_context:
+            self.logger.warning(f"Runner {runner_id} not found")
+            return False
+            
+        if session_id not in runner_context["sessions"]:
+            self.logger.warning(f"Session {session_id} not found in runner {runner_id}")
+            return False
+        
+        try:
+            # Get the session_service and session for this runner
+            session_service = runner_context["session_service"]
+            adk_session = runner_context["sessions"][session_id]
+            
+            # If this is a real ADK session (not mock), delete through SessionService
+            if self._adk_available and session_service and not isinstance(adk_session, dict):
+                # Use the correct ADK API: session_service.delete_session(app_name, user_id, session_id)
+                app_name = adk_session.app_name
+                user_id = adk_session.user_id
+                
+                await session_service.delete_session(
+                    app_name=app_name,
+                    user_id=user_id,
+                    session_id=session_id
+                )
+                    
+                self.logger.info(f"Deleted ADK session {session_id} through SessionService")
+            
+            # Remove session from runner's sessions dict
+            del runner_context["sessions"][session_id]
+            
+            # Remove from global session mapping
+            if session_id in self.session_to_runner:
+                del self.session_to_runner[session_id]
+            
+            self.logger.info(f"Removed session {session_id} from runner {runner_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to remove session {session_id} from runner {runner_id}: {e}")
+            return False
+
+    async def get_runner_session_count(self, runner_id: str) -> int:
+        """
+        Get the number of sessions in a runner.
+        
+        Args:
+            runner_id: The runner to check
+            
+        Returns:
+            int: Number of sessions in the runner (0 if runner not found)
+        """
+        runner_context = self.runners.get(runner_id)
+        if not runner_context:
+            return 0
+            
+        return len(runner_context["sessions"])
+
+    async def get_runner_for_agent(self, agent_id: str) -> str:
+        """
+        Get runner ID for a specific agent.
+        
+        Args:
+            agent_id: The agent identifier
+            
+        Returns:
+            str: Runner ID for the agent
+            
+        Raises:
+            RuntimeError: If no runner found for the agent
+        """
+        if not self.agent_runner_mapping:
+            raise RuntimeError(
+                f"No agent-runner mapping provided to RunnerManager. "
+                f"Cannot find runner for agent_id: {agent_id}"
+            )
+        
+        runner_id = self.agent_runner_mapping.get(agent_id)
+        if not runner_id:
+            raise RuntimeError(
+                f"No runner found for agent_id: {agent_id}. "
+                f"Available agents: {list(self.agent_runner_mapping.keys())}"
+            )
+        
+        # Verify the runner actually exists
+        if runner_id not in self.runners:
+            raise RuntimeError(
+                f"Runner {runner_id} mapped to agent {agent_id} does not exist. "
+                f"Available runners: {list(self.runners.keys())}"
+            )
+        
+        return runner_id
+

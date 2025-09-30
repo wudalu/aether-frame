@@ -57,13 +57,20 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from ...agents.manager import AgentManager
         self.agent_manager = AgentManager()
         
-        # Runner Manager for correct session lifecycle
-        from .runner_manager import RunnerManager
-        self.runner_manager = RunnerManager()
-        
-        # Agent to Runner mapping management
+        # Agent to Runner mapping management (initialize before RunnerManager)
         self._agent_runners: Dict[str, str] = {}  # agent_id -> runner_id
         self._agent_sessions: Dict[str, List[str]] = {}  # agent_id -> [session_ids]
+        
+        # ADK Session Manager for chat session coordination
+        from .adk_session_manager import AdkSessionManager
+        self.adk_session_manager = AdkSessionManager()
+        
+        # Runner Manager for correct session lifecycle
+        from .runner_manager import RunnerManager
+        self.runner_manager = RunnerManager(
+            session_manager=self.adk_session_manager,
+            agent_runner_mapping=self._agent_runners
+        )
         
         self._adk_available = False  # Initialize availability flag
         self.logger = logging.getLogger(__name__)
@@ -121,7 +128,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # Re-initialize RunnerManager with settings if provided
         if settings:
             from .runner_manager import RunnerManager
-            self.runner_manager = RunnerManager(settings)
+            self.runner_manager = RunnerManager(
+                settings,
+                session_manager=self.adk_session_manager,
+                agent_runner_mapping=self._agent_runners
+            )
 
         # Strong dependency check - ADK must be available
         try:
@@ -243,7 +254,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         
         try:
             returned_session_id = await self.runner_manager._create_session_in_runner(
-                runner_id, agent_config, task_request, session_id
+                runner_id, task_request, session_id
             )
             session_id = returned_session_id
             
@@ -337,12 +348,9 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self, task_request: TaskRequest, strategy: ExecutionStrategy
     ) -> TaskResult:
         """
-        Execute a task using agent_id + session_id architecture with RuntimeContext.
-
-        New Architecture Flow:
-        1. agent_id + session_id: Continue existing agent's existing session
-        2. agent_id only: Create new session for existing agent  
-        3. agent_config only: Create new agent, runner, and session
+        Execute task with two distinct modes:
+        1. Creation Mode: agent_config provided -> create new agent
+        2. Conversation Mode: agent_id + session_id provided -> execute conversation
 
         Args:
             task_request: The universal task request
@@ -356,49 +364,23 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.logger.info(f"ADK task execution started - task_id: {task_request.task_id}, agent_id: {task_request.agent_id}, session_id: {task_request.session_id}")
 
         try:
-            runtime_context: RuntimeContext = None
+            # === Creation Mode - agent_config provided ===
+            if task_request.agent_config and not task_request.agent_id:
+                return await self._handle_agent_creation(task_request, strategy)
             
-            # === Pattern 1 - agent_id + session_id (continue existing session) ===
-            if task_request.agent_id and task_request.session_id:
-                runtime_context = await self._create_runtime_context_for_existing_session(task_request)
-
-            # === Pattern 2 - agent_id only (create new session for existing agent) ===
-            elif task_request.agent_id and not task_request.session_id:
-                runtime_context = await self._create_runtime_context_for_new_session(task_request)
-                    
-            # === Pattern 3 - agent_config only (create new agent and session) ===
+            # === Conversation Mode - agent_id + session_id provided ===
+            elif task_request.agent_id and task_request.session_id:
+                return await self._handle_conversation(task_request, strategy)
+            
+            # === Invalid request ===
             else:
-                if not task_request.agent_config:
-                    return TaskResult(
-                        task_id=task_request.task_id,
-                        status=TaskStatus.ERROR,
-                        error_message="No agent_id, session_id, or agent_config provided",
-                        agent_id=task_request.agent_id,
-                    )
-                
-                runtime_context = await self._create_runtime_context_for_new_agent(task_request)
-
-            # Update activity timestamp
-            runtime_context.update_activity()
-            
-            # Execute task through domain agent with RuntimeContext
-            domain_agent = runtime_context.metadata.get("domain_agent")
-            result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
-            
-            # Ensure session_id and agent_id are included in result
-            result.session_id = runtime_context.session_id
-            result.agent_id = runtime_context.agent_id
-            result.metadata = result.metadata or {}
-            result.metadata.update({
-                "framework": "adk", 
-                "session_id": runtime_context.session_id, 
-                "agent_id": runtime_context.agent_id,
-                "execution_id": runtime_context.execution_id,
-                "pattern": runtime_context.metadata.get("pattern")
-            })
-            
-            self.logger.info(f"Task execution completed - task_id: {task_request.task_id}, agent_id: {runtime_context.agent_id}, session_id: {runtime_context.session_id}, status: {result.status.value if result.status else 'unknown'}")
-            return result
+                return TaskResult(
+                    task_id=task_request.task_id,
+                    status=TaskStatus.ERROR,
+                    error_message="Invalid request: must provide either agent_config "\
+                         "(creation) or agent_id+session_id (conversation)",
+                    agent_id=task_request.agent_id,
+                )
 
         except self.ExecutionError as e:
             # Handle our custom execution errors
@@ -419,6 +401,89 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 session_id=task_request.session_id,  # Keep original session_id if any
                 agent_id=task_request.agent_id,  # Keep original agent_id if any
             )
+
+    async def _handle_agent_creation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
+        """Handle agent creation mode (original Pattern 3)."""
+        from ...contracts import RuntimeContext
+        
+        runtime_context = await self._create_runtime_context_for_new_agent(task_request)
+        
+        # Update activity timestamp
+        runtime_context.update_activity()
+        
+        # Execute task through domain agent with RuntimeContext
+        domain_agent = runtime_context.metadata.get("domain_agent")
+        result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
+        
+        # Ensure session_id and agent_id are included in result
+        result.session_id = runtime_context.session_id
+        result.agent_id = runtime_context.agent_id
+        result.metadata = result.metadata or {}
+        result.metadata.update({
+            "framework": "adk", 
+            "session_id": runtime_context.session_id, 
+            "agent_id": runtime_context.agent_id,
+            "execution_id": runtime_context.execution_id,
+            "pattern": "agent_creation"
+        })
+        
+        self.logger.info(f"Agent creation completed - task_id: "
+                        f"{task_request.task_id}, agent_id: "
+                        f"{runtime_context.agent_id}, session_id: "
+                        f"{runtime_context.session_id}")
+        return result
+
+    async def _handle_conversation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
+        """Handle conversation mode with SessionManager coordination."""
+        from ...contracts import RuntimeContext
+        
+        # === SessionManager Coordination ===
+        coordination_result = await self.adk_session_manager.coordinate_chat_session(
+            chat_session_id=task_request.session_id,
+            target_agent_id=task_request.agent_id,
+            user_id=task_request.user_context.get_adk_user_id(),
+            task_request=task_request,
+            runner_manager=self.runner_manager
+        )
+        
+        # Replace chat_session_id with adk_session_id
+        original_session_id = task_request.session_id
+        task_request.session_id = coordination_result.adk_session_id
+        
+        if coordination_result.switch_occurred:
+            self.logger.info(f"Session switch completed: "
+                           f"chat_session={original_session_id}, "
+                           f"{coordination_result.previous_agent_id} -> "
+                           f"{coordination_result.new_agent_id}, "
+                           f"adk_session={coordination_result.adk_session_id}")
+        
+        # Execute conversation (original Pattern 1 logic)
+        runtime_context = await self._create_runtime_context_for_existing_session(task_request)
+        
+        # Update activity timestamp
+        runtime_context.update_activity()
+        
+        # Execute task through domain agent with RuntimeContext
+        domain_agent = runtime_context.metadata.get("domain_agent")
+        result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
+        
+        # Ensure session_id and agent_id are included in result
+        result.session_id = runtime_context.session_id
+        result.agent_id = runtime_context.agent_id
+        result.metadata = result.metadata or {}
+        result.metadata.update({
+            "framework": "adk", 
+            "session_id": runtime_context.session_id, 
+            "agent_id": runtime_context.agent_id,
+            "execution_id": runtime_context.execution_id,
+            "pattern": "conversation"
+        })
+        
+        self.logger.info(f"Conversation completed - task_id: "
+                        f"{task_request.task_id}, agent_id: "
+                        f"{runtime_context.agent_id}, session_id: "
+                        f"{runtime_context.session_id}")
+        return result
 
 
     async def _execute_with_domain_agent(

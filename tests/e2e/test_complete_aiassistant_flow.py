@@ -333,6 +333,7 @@ class TestCompleteAIAssistantFlow:
         try:
             # Create multiple sessions rapidly
             sessions = []
+            agents = []  # Store corresponding agent_ids
             for i in range(5):
                 request = TaskRequest(
                     task_id=f"lifecycle_test_{i}",
@@ -349,16 +350,18 @@ class TestCompleteAIAssistantFlow:
                 
                 result = await ai_assistant.process_request(request)
                 sessions.append(result.session_id)
-                print(f"✅ Created session {i}: {result.session_id}")
+                agents.append(result.agent_id)  # Store the corresponding agent_id
+                print(f"✅ Created session {i}: {result.session_id} with agent {result.agent_id}")
             
             # Verify all sessions are active and usable
-            for i, session_id in enumerate(sessions):
+            for i, (session_id, agent_id) in enumerate(zip(sessions, agents)):
                 test_request = TaskRequest(
                     task_id=f"verify_session_{i}",
                     task_type="chat",
                     description=f"Verify session {i}",
                     messages=[UniversalMessage(role="user", content=f"Verify session {i}")],
-                    session_id=session_id
+                    session_id=session_id,
+                    agent_id=agent_id  # Provide both session_id and agent_id
                 )
                 
                 verify_result = await ai_assistant.process_request(test_request)
