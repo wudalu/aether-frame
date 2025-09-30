@@ -94,10 +94,6 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
         logger.info("Phase 4: Initializing Agent Manager...")
         agent_manager = AgentManager()
 
-        # TODO: Agent factory registration will be implemented later
-        # For now, AgentManager uses direct if/elif logic in _create_domain_agent
-        logger.info("Agent Manager initialized - detection method: direct_framework_check")
-
         # Phase 5: Execution components
         logger.info("Phase 5: Initializing Execution Components...")
         execution_engine = ExecutionEngine(framework_registry, settings)

@@ -125,14 +125,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self._config = config or {}
         self._tool_service = tool_service
         
-        # Re-initialize RunnerManager with settings if provided
+        # Update RunnerManager settings if provided (avoid data loss from rebuild)
         if settings:
-            from .runner_manager import RunnerManager
-            self.runner_manager = RunnerManager(
-                settings,
-                session_manager=self.adk_session_manager,
-                agent_runner_mapping=self._agent_runners
-            )
+            # Update settings without rebuilding to preserve existing runners/sessions
+            self.runner_manager.settings = settings
+            self.logger.info(f"Updated RunnerManager settings without rebuild to preserve data")
 
         # Strong dependency check - ADK must be available
         try:
