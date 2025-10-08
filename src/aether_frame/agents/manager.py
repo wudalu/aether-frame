@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Agent Manager Implementation - Agent Lifecycle Management."""
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
@@ -34,6 +35,7 @@ class AgentManager:
         self._agent_factories: Dict[FrameworkType, Callable] = (
             {}
         )  # framework -> factory
+        self.logger = logging.getLogger(__name__)
 
     # Agent Lifecycle Management
 
@@ -131,7 +133,7 @@ class AgentManager:
             return True
         except Exception as e:
             # Log but don't fail
-            print(f"Warning: Failed to cleanup agent {agent_id}: {str(e)}")
+            self.logger.warning(f"Failed to cleanup agent {agent_id}: {str(e)}")
             return False
 
     async def cleanup_expired_agents(
@@ -252,11 +254,11 @@ class AgentManager:
                 if hasattr(agent, "health_check"):
                     is_healthy = await agent.health_check()
                     if not is_healthy:
-                        print(f"Agent {agent_id} failed health check")
+                        self.logger.warning(f"Agent {agent_id} failed health check")
                         return False
             return True
         except Exception as e:
-            print(f"Health check failed: {str(e)}")
+            self.logger.error(f"Health check failed: {str(e)}")
             return False
 
     async def shutdown(self):
@@ -267,6 +269,6 @@ class AgentManager:
                 await self.cleanup_agent(agent_id)
             
             self._agent_factories.clear()
-            print(f"Successfully shutdown {len(agent_ids)} agents")
+            self.logger.info(f"Successfully shutdown {len(agent_ids)} agents")
         except Exception as e:
-            print(f"Warning: Shutdown encountered errors: {str(e)}")
+            self.logger.warning(f"Shutdown encountered errors: {str(e)}")

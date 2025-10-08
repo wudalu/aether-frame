@@ -176,6 +176,7 @@ class RunnerManager:
                 "config_hash": config_hash,
                 "sessions": {},  # session_id -> adk_session
                 "created_at": "datetime_now",  # TODO: actual datetime
+                "app_name": self.settings.default_app_name,  # Store app_name for session operations
                 "user_id": self.settings.default_user_id,  # Default user_id, will be updated when creating sessions
             }
             
@@ -223,10 +224,16 @@ class RunnerManager:
             if task_request and task_request.user_context:
                 # Use UserContext's method which handles fallbacks properly
                 user_id = task_request.user_context.get_adk_user_id()
+                self.logger.info(f"Extracted user_id from task_request: {user_id}")
+            else:
+                self.logger.warning(f"No user_context in task_request: {task_request}")
             
             # Only use config default as absolute fallback if no user context provided
             if not user_id:
                 user_id = self.settings.default_user_id
+                self.logger.info(f"Using default user_id: {user_id}")
+            
+            self.logger.info(f"Creating ADK session with app_name={app_name}, user_id={user_id}, session_id={session_id}")
             
             # Create ADK Session in the Runner's SessionService with context
             adk_session = await session_service.create_session(

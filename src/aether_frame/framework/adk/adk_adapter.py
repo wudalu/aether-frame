@@ -465,12 +465,15 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
         
         # Ensure session_id and agent_id are included in result
-        result.session_id = runtime_context.session_id
+        # IMPORTANT: Return original_session_id (business chat_session_id) not ADK session_id
+        # This allows business layer to continue using the same chat_session_id for agent switching
+        result.session_id = original_session_id  # Return business chat_session_id
         result.agent_id = runtime_context.agent_id
         result.metadata = result.metadata or {}
         result.metadata.update({
             "framework": "adk", 
-            "session_id": runtime_context.session_id, 
+            "chat_session_id": original_session_id,  # Business chat session ID
+            "adk_session_id": runtime_context.session_id,  # Internal ADK session ID
             "agent_id": runtime_context.agent_id,
             "execution_id": runtime_context.execution_id,
             "pattern": "conversation"

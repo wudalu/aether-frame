@@ -2,7 +2,7 @@
 """ADK-specific session management."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from ...contracts import TaskRequest
@@ -67,16 +67,18 @@ class AdkSessionManager:
         # Check if agent switch is needed
         current_active_agent = chat_session.active_agent_id
         
-        if current_active_agent != target_agent_id:
-            # === Agent switch detected ===
-            return await self._switch_agent_session(
+        if current_active_agent is None:
+            # === First-time agent binding ===
+            self.logger.info(f"First-time agent binding: binding agent {target_agent_id} for chat_session={chat_session_id}")
+            chat_session.active_agent_id = target_agent_id
+            return await self._create_session_for_agent(
                 chat_session, target_agent_id, user_id, task_request, runner_manager
             )
         
-        else:
-            # === Same agent, continue conversation ===
+        elif current_active_agent == target_agent_id:
+            # === Same agent ===
             if chat_session.active_adk_session_id:
-                # Existing session, update activity
+                # Existing session, continue conversation
                 chat_session.last_activity = datetime.now()
                 
                 return CoordinationResult(
@@ -84,31 +86,18 @@ class AdkSessionManager:
                     switch_occurred=False
                 )
             else:
-                # No session exists but agent is same, create session in existing runner
-                # Since we're continuing with the same agent, the runner should already exist
-                if chat_session.active_runner_id:
-                    # Use existing runner
-                    runner_id = chat_session.active_runner_id
-                    new_adk_session_id = await self._create_session_in_existing_runner(
-                        runner_id, target_agent_id, user_id, task_request, runner_manager
-                    )
-                else:
-                    # TODO: Investigate why we don't have active_runner_id for the same agent
-                    # This should not happen in normal flow - indicates a bug in session state management
-                    raise RuntimeError(
-                        f"Chat session {chat_session.chat_session_id} has active_agent_id "
-                        f"{chat_session.active_agent_id} but no active_runner_id. "
-                        f"This indicates a session state inconsistency."
-                    )
-                
-                chat_session.active_adk_session_id = new_adk_session_id
-                chat_session.active_runner_id = runner_id
-                chat_session.last_activity = datetime.now()
-                
-                return CoordinationResult(
-                    adk_session_id=new_adk_session_id, 
-                    switch_occurred=False
+                # Same agent but no session - create new session
+                self.logger.info(f"Same agent {target_agent_id} but no session, creating new session for chat_session={chat_session_id}")
+                return await self._create_session_for_agent(
+                    chat_session, target_agent_id, user_id, task_request, runner_manager
                 )
+        
+        else:
+            # === Agent switch detected ===
+            self.logger.info(f"Agent switch detected: {current_active_agent} -> {target_agent_id} for chat_session={chat_session_id}")
+            return await self._switch_agent_session(
+                chat_session, target_agent_id, user_id, task_request, runner_manager
+            )
 
     async def _switch_agent_session(
         self,
@@ -132,19 +121,24 @@ class AdkSessionManager:
         # 1. Extract chat history from current session before cleanup
         chat_history = None
         if chat_session.active_adk_session_id:
+            self.logger.info(f"Attempting to extract chat history from session {chat_session.active_adk_session_id}")
             chat_history = await self._extract_chat_history(chat_session, runner_manager)
+            self.logger.info(f"Extracted chat history: {len(chat_history) if chat_history else 0} messages")
             await self._cleanup_session_only(chat_session, runner_manager)
         
         # 2. Get runner for target agent and create session
         # Since we have agent_id, the runner should already exist
         runner_id = await runner_manager.get_runner_for_agent(target_agent_id)
         new_adk_session_id = await runner_manager._create_session_in_runner(
-            runner_id, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
         )
         
         # 3. Inject chat history into new session if available
         if chat_history:
+            self.logger.info(f"Attempting to inject {len(chat_history)} messages into new session {new_adk_session_id}")
             await self._inject_chat_history(runner_id, new_adk_session_id, chat_history, runner_manager)
+        else:
+            self.logger.info("No chat history to inject into new session")
         
         # 3. Update chat session mapping
         chat_session.active_agent_id = target_agent_id
@@ -157,6 +151,40 @@ class AdkSessionManager:
             adk_session_id=new_adk_session_id, 
             switch_occurred=True,
             previous_agent_id=previous_agent_id,
+            new_agent_id=target_agent_id
+        )
+    
+    async def _create_session_for_agent(
+        self,
+        chat_session: ChatSessionInfo,
+        target_agent_id: str,
+        user_id: str,
+        task_request: TaskRequest,
+        runner_manager
+    ) -> CoordinationResult:
+        """
+        Create a new ADK session for the specified agent.
+        
+        This method handles both first-time agent binding and creating new sessions
+        for existing agents.
+        """
+        self.logger.info(f"Creating session for agent {target_agent_id} in chat_session={chat_session.chat_session_id}")
+        
+        # Get runner for target agent and create session
+        runner_id = await runner_manager.get_runner_for_agent(target_agent_id)
+        new_adk_session_id = await runner_manager._create_session_in_runner(
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+        )
+        
+        # Update chat session mapping
+        chat_session.active_agent_id = target_agent_id
+        chat_session.active_adk_session_id = new_adk_session_id
+        chat_session.active_runner_id = runner_id
+        chat_session.last_activity = datetime.now()
+        
+        return CoordinationResult(
+            adk_session_id=new_adk_session_id, 
+            switch_occurred=False,
             new_agent_id=target_agent_id
         )
     
@@ -220,7 +248,7 @@ class AdkSessionManager:
         """Create new session in existing runner."""
         # Create session in existing runner - no need for agent_config since runner already has the agent
         adk_session_id = await runner_manager._create_session_in_runner(
-            runner_id, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
         )
         
         self.logger.info(f"Created new ADK session in existing runner: agent={target_agent_id}, "
@@ -249,7 +277,7 @@ class AdkSessionManager:
 
     async def _extract_chat_history(self, chat_session: ChatSessionInfo, runner_manager):
         """
-        Extract chat history from current session before cleanup.
+        Extract chat history from current session using ADK official API.
         
         Args:
             chat_session: The chat session to extract history from
@@ -266,43 +294,158 @@ class AdkSessionManager:
                 self.logger.warning(f"Cannot extract history - missing runner_id: {runner_id} or session_id: {session_id}")
                 return None
             
+            self.logger.info(f"🔍 DEBUG: Starting history extraction from runner {runner_id}, session {session_id}")
+            
             # Get runner context
             runner_context = runner_manager.runners.get(runner_id)
             if not runner_context:
                 self.logger.warning(f"Runner {runner_id} not found for history extraction")
                 return None
             
-            # Get ADK session
-            adk_session = runner_context["sessions"].get(session_id)
-            if not adk_session:
-                self.logger.warning(f"ADK session {session_id} not found for history extraction")
+            # Get SessionService instance from runner context
+            session_service = runner_context.get("session_service")
+            if not session_service:
+                self.logger.warning(f"SessionService not found in runner {runner_id}")
                 return None
             
-            # Extract chat history from ADK session
-            # TODO: Implement actual ADK session history extraction
-            # This depends on ADK's session API for retrieving conversation history
-            chat_history = await self._get_adk_session_history(adk_session)
+            # Get app_name and user_id from runner context
+            app_name = runner_context.get("app_name")
+            user_id = runner_context.get("user_id")
             
-            self.logger.info(f"Extracted {len(chat_history) if chat_history else 0} messages from session {session_id}")
-            return chat_history
+            if not app_name or not user_id:
+                self.logger.warning(f"Missing app_name({app_name}) or user_id({user_id}) in runner context")
+                return None
+            
+            self.logger.info(f"🔍 DEBUG: Using SessionService API: app_name={app_name}, user_id={user_id}, session_id={session_id}")
+            
+            # Get the session object first
+            try:
+                session_obj = await session_service.get_session(
+                    app_name=app_name,
+                    user_id=user_id,
+                    session_id=session_id
+                )
+                
+                if session_obj and hasattr(session_obj, 'events'):
+                    self.logger.debug(f"Retrieved session with {len(session_obj.events) if session_obj.events else 0} events")
+                    
+                    # Log extracted events for debugging
+                    for i, event in enumerate(session_obj.events):
+                        author = getattr(event, 'author', 'Unknown')
+                        content = getattr(event, 'content', None)
+                        if content and hasattr(content, 'parts') and content.parts:
+                            text = content.parts[0].text if hasattr(content.parts[0], 'text') else 'No text'
+                            self.logger.debug(f"Event {i+1}: author={author}, text={text[:100]}...")
+                        else:
+                            self.logger.debug(f"Event {i+1}: author={author}, no content")
+                    
+                    # Parse events from session object
+                    chat_history = await self._parse_adk_events_to_history(session_obj.events)
+                    self.logger.debug(f"Parsed {len(chat_history) if chat_history else 0} messages from session events")
+                    
+                    # Log parsed history
+                    for i, msg in enumerate(chat_history):
+                        self.logger.debug(f"Parsed message {i+1}: role={msg.get('role')}, content={msg.get('content', '')[:100]}...")
+                    
+                    return chat_history
+                else:
+                    self.logger.info("No session found or session has no events attribute")
+                    return []
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to get session from SessionService: {e}")
+                return None
             
         except Exception as e:
             self.logger.error(f"Failed to extract chat history from session {chat_session.chat_session_id}: {e}")
             return None
 
+    async def _parse_adk_events_to_history(self, events):
+        """
+        Parse ADK events to standard chat history format.
+        
+        Args:
+            events: List of ADK Event objects
+            
+        Returns:
+            List of chat messages in standard format
+        """
+        try:
+            conversation_history = []
+            
+            for event in events:
+                try:
+                    # Extract author and content from Event
+                    author = getattr(event, 'author', None)
+                    content = getattr(event, 'content', None)
+                    timestamp = getattr(event, 'timestamp', None)
+                    
+                    if not content:
+                        continue
+                    
+                    # Extract text from content parts
+                    content_text = ""
+                    if hasattr(content, 'parts') and content.parts:
+                        for part in content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                content_text += part.text + " "
+                    
+                    content_text = content_text.strip()
+                    if not content_text:
+                        continue
+                    
+                    # Map author to role
+                    if author == 'user':
+                        role = 'user'
+                    elif author and ('agent' in author.lower() or author == 'assistant'):
+                        role = 'assistant'
+                    else:
+                        # Try to determine from content role
+                        content_role = getattr(content, 'role', None)
+                        if content_role == 'user':
+                            role = 'user'
+                        elif content_role in ['assistant', 'agent']:
+                            role = 'assistant'
+                        else:
+                            continue  # Skip unknown roles
+                    
+                    conversation_history.append({
+                        "role": role,
+                        "content": content_text,
+                        "timestamp": timestamp
+                    })
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse event {type(event)}: {e}")
+                    continue
+            
+            return conversation_history
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse ADK events: {e}")
+            return []
+
     async def _inject_chat_history(self, runner_id: str, session_id: str, chat_history, runner_manager):
         """
-        Inject chat history into new session.
+        Inject chat history into new session using ADK official API.
         
         Args:
             runner_id: Target runner ID
             session_id: Target session ID  
-            chat_history: Chat history to inject
+            chat_history: Chat history to inject (list of message objects)
             runner_manager: Runner manager instance
         """
         try:
             if not chat_history:
+                self.logger.debug("No chat history to inject")
                 return
+            
+            self.logger.info(f"Starting history injection into runner {runner_id}, session {session_id}")
+            self.logger.debug(f"Injecting {len(chat_history)} messages")
+            
+            # Log what we're injecting for debugging
+            for i, msg in enumerate(chat_history):
+                self.logger.debug(f"Message {i+1} to inject: role={msg.get('role')}, content={msg.get('content', '')[:100]}...")
             
             # Get runner context
             runner_context = runner_manager.runners.get(runner_id)
@@ -310,90 +453,127 @@ class AdkSessionManager:
                 self.logger.warning(f"Runner {runner_id} not found for history injection")
                 return
             
-            # Get ADK session
-            adk_session = runner_context["sessions"].get(session_id)
-            if not adk_session:
-                self.logger.warning(f"ADK session {session_id} not found for history injection")
+            # Get SessionService instance
+            session_service = runner_context.get("session_service")
+            if not session_service:
+                self.logger.warning(f"SessionService not found in runner {runner_id}")
                 return
             
-            # Inject chat history into ADK session
-            # TODO: Implement actual ADK session history injection
-            # This depends on ADK's session API for setting conversation history
-            await self._set_adk_session_history(adk_session, chat_history)
+            # Get app_name and user_id
+            app_name = runner_context.get("app_name")
+            user_id = runner_context.get("user_id")
             
-            self.logger.info(f"Injected {len(chat_history)} messages into session {session_id}")
+            if not app_name or not user_id:
+                self.logger.warning(f"Missing app_name({app_name}) or user_id({user_id}) for history injection")
+                return
+            
+            # Get the target session object
+            try:
+                target_session = await session_service.get_session(
+                    app_name=app_name,
+                    user_id=user_id,
+                    session_id=session_id
+                )
+                
+                if not target_session:
+                    self.logger.warning(f"Target session {session_id} not found for history injection")
+                    return
+                
+                self.logger.debug(f"Target session found, current events: {len(target_session.events) if hasattr(target_session, 'events') and target_session.events else 0}")
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to get target session {session_id}: {e}")
+                return
+            
+            # Create and inject events for each message using official API
+            injected_count = 0
+            for i, msg in enumerate(chat_history):
+                try:
+                    self.logger.debug(f"Creating event {i+1} from message: {msg}")
+                    event = await self._create_event_from_message(msg)
+                    if event:
+                        self.logger.debug(f"Created event {i+1}: author={event.author}, content_parts={len(event.content.parts) if event.content and hasattr(event.content, 'parts') else 0}")
+                        # Use official ADK API to append event
+                        await session_service.append_event(target_session, event)
+                        injected_count += 1
+                        self.logger.debug(f"Successfully appended event {i+1} to session")
+                    else:
+                        self.logger.warning(f"Failed to create event from message {i+1}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to inject message {i+1}: {msg} - Error: {e}")
+                    continue
+            
+            self.logger.info(f"Successfully injected {injected_count}/{len(chat_history)} events into session {session_id}")
+            
+            # Verify injection by getting session again
+            try:
+                updated_session = await session_service.get_session(
+                    app_name=app_name,
+                    user_id=user_id,
+                    session_id=session_id
+                )
+                if updated_session and hasattr(updated_session, 'events'):
+                    self.logger.debug(f"After injection, session has {len(updated_session.events)} total events")
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to verify injection: {e}")
             
         except Exception as e:
             self.logger.error(f"Failed to inject chat history into session {session_id}: {e}")
 
-    async def _get_adk_session_history(self, adk_session):
+    async def _create_event_from_message(self, message):
         """
-        Get chat history from ADK session.
+        Create ADK Event from chat message using official ADK structures.
         
         Args:
-            adk_session: ADK session instance
+            message: Message dict with role, content, timestamp
             
         Returns:
-            List of chat messages in ADK format
+            ADK Event object or None if creation fails
         """
         try:
-            # ADK sessions store conversation history in session.state
-            # Based on Google ADK documentation, conversation history is typically stored as:
-            # session.state['conversation_history'] or session.state['messages']
+            from google.adk.events import Event
+            from google.genai import types
+            import uuid
             
-            if hasattr(adk_session, 'state'):
-                # Try common conversation history keys
-                history_keys = ['conversation_history', 'messages', 'chat_history', 'history']
-                
-                for key in history_keys:
-                    if key in adk_session.state:
-                        history = adk_session.state[key]
-                        if isinstance(history, list):
-                            self.logger.info(f"Found conversation history in session.state['{key}'] with {len(history)} messages")
-                            return history
-                
-                # If no specific history key found, check if there are any message-like structures
-                for key, value in adk_session.state.items():
-                    if isinstance(value, list) and len(value) > 0:
-                        # Check if this looks like message history (has role/content structure)
-                        first_item = value[0]
-                        if isinstance(first_item, dict) and ('role' in first_item or 'author' in first_item):
-                            self.logger.info(f"Found message-like history in session.state['{key}'] with {len(value)} messages")
-                            return value
-                
-                self.logger.info("No conversation history found in session state")
-                return []
+            role = message.get('role', '')
+            content_text = message.get('content', '')
+            timestamp = message.get('timestamp')
+            
+            if not content_text:
+                return None
+            
+            # Create ADK Content based on role
+            if role == 'user':
+                content = types.Content(
+                    role='user',
+                    parts=[types.Part(text=content_text)]
+                )
+                author = 'user'
+            elif role in ['assistant', 'agent']:
+                content = types.Content(
+                    role='assistant',
+                    parts=[types.Part(text=content_text)]
+                )
+                author = 'agent'  # Use generic agent name
             else:
-                self.logger.warning("ADK session does not have 'state' attribute")
-                return []
-                
+                self.logger.warning(f"Unknown role: {role}")
+                return None
+            
+            # Create Event with proper structure
+            event = Event(
+                invocation_id=str(uuid.uuid4()),
+                author=author,
+                content=content,
+                timestamp=timestamp if timestamp else datetime.now(timezone.utc)
+            )
+            
+            return event
+            
+        except ImportError as e:
+            self.logger.error(f"ADK Event/types classes not available: {e}")
+            return None
         except Exception as e:
-            self.logger.error(f"Failed to get ADK session history: {e}")
-            return []
-
-    async def _set_adk_session_history(self, adk_session, chat_history):
-        """
-        Set chat history in ADK session.
-        
-        Args:
-            adk_session: ADK session instance
-            chat_history: Chat history to set (list of message objects)
-        """
-        try:
-            if not chat_history:
-                return
-                
-            if hasattr(adk_session, 'state'):
-                # Store conversation history in session state
-                # Use 'conversation_history' as the primary key for consistency
-                adk_session.state['conversation_history'] = chat_history
-                
-                # Also store in 'messages' for compatibility with different ADK patterns
-                adk_session.state['messages'] = chat_history
-                
-                self.logger.info(f"Set conversation history with {len(chat_history)} messages in session state")
-            else:
-                self.logger.warning("ADK session does not have 'state' attribute for history injection")
-                
-        except Exception as e:
-            self.logger.error(f"Failed to set ADK session history: {e}")
+            self.logger.error(f"Failed to create event from message: {e}")
+            return None
