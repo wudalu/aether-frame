@@ -286,7 +286,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.logger.info(f"Pattern 3: agent_config - Creating new agent for agent_type: {task_request.agent_config.agent_type}")
         
         # Generate agent_id and session_id
-        agent_id = f"agent_{uuid4().hex[:12]}"
+        agent_id = self.agent_manager.generate_agent_id()
         session_id = f"adk_session_{uuid4().hex[:12]}"
         self.logger.info(f"Generated agent_id: {agent_id}, session_id: {session_id}")
         

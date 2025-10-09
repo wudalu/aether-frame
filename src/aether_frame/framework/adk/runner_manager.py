@@ -88,7 +88,7 @@ class RunnerManager:
             self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
         
         # H5: Use Engine-provided session_id instead of generating our own
-        session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
+        session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
         await self._create_session_in_runner(runner_id, task_request, external_session_id=session_id)
         
         # Record session-to-runner mapping
@@ -130,7 +130,7 @@ class RunnerManager:
         Returns:
             runner_id: Unique identifier for the created Runner
         """
-        runner_id = f"{self.settings.runner_id_prefix}_{uuid4().hex[:8]}"
+        runner_id = f"{self.settings.runner_id_prefix}_{uuid4().hex[:12]}"
         
         if not self._adk_available:
             # Mock mode for testing without ADK
@@ -206,7 +206,7 @@ class RunnerManager:
             raise ValueError(f"Runner {runner_id} not found")
         
         # H5: Use external session_id if provided, otherwise generate
-        session_id = external_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:8]}"
+        session_id = external_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
         
         if not self._adk_available:
             # Mock session

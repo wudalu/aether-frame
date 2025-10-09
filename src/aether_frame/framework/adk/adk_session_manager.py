@@ -4,6 +4,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Optional
+from uuid import uuid4
 
 from ...contracts import TaskRequest
 from .adk_session_models import ChatSessionInfo, CoordinationResult
@@ -130,7 +131,7 @@ class AdkSessionManager:
         # Since we have agent_id, the runner should already exist
         runner_id = await runner_manager.get_runner_for_agent(target_agent_id)
         new_adk_session_id = await runner_manager._create_session_in_runner(
-            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{uuid4().hex[:12]}"
         )
         
         # 3. Inject chat history into new session if available
@@ -173,7 +174,7 @@ class AdkSessionManager:
         # Get runner for target agent and create session
         runner_id = await runner_manager.get_runner_for_agent(target_agent_id)
         new_adk_session_id = await runner_manager._create_session_in_runner(
-            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{uuid4().hex[:12]}"
         )
         
         # Update chat session mapping
@@ -248,7 +249,7 @@ class AdkSessionManager:
         """Create new session in existing runner."""
         # Create session in existing runner - no need for agent_config since runner already has the agent
         adk_session_id = await runner_manager._create_session_in_runner(
-            runner_id, task_request=task_request, external_session_id=f"adk_session_{task_request.task_id}_{user_id}"
+            runner_id, task_request=task_request, external_session_id=f"adk_session_{uuid4().hex[:12]}"
         )
         
         self.logger.info(f"Created new ADK session in existing runner: agent={target_agent_id}, "
