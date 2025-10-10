@@ -38,5 +38,5 @@ google-adk>=1.13.0                    # ADK - Agent Development Kit
 # langgraph>=0.1.0                   # LangGraph
 # langchain>=0.1.0                   # LangGraph dependency
 
-# MCP (Model Context Protocol) support (future)
-# mcp>=1.0.0
+# MCP (Model Context Protocol) support
+mcp>=1.0.0

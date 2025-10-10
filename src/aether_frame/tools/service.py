@@ -233,13 +233,60 @@ class ToolService:
     async def _load_mcp_tools(self):
         """Load MCP (Model Context Protocol) tools."""
         try:
-            # TODO: Implement MCP tool loading
-            # from .mcp.client_manager import MCPClientManager
-            # mcp_manager = MCPClientManager()
-            # await mcp_manager.discover_tools()
-            pass
-        except ImportError:
-            # MCP not available
+            from .mcp import MCPClient, MCPServerConfig, MCPTool
+            
+            # Get MCP server configurations
+            mcp_servers = self._config.get("mcp_servers", [])
+            
+            if not mcp_servers:
+                print("⚠️ No MCP servers configured")
+                return
+                
+            print(f"🔌 Loading MCP tools from {len(mcp_servers)} servers...")
+            
+            for server_config in mcp_servers:
+                try:
+                    # Create server configuration
+                    config = MCPServerConfig(
+                        name=server_config["name"],
+                        endpoint=server_config["endpoint"],
+                        headers=server_config.get("headers", {}),
+                        timeout=server_config.get("timeout", 30)
+                    )
+                    
+                    # Create and connect MCP client
+                    client = MCPClient(config)
+                    await client.connect()
+                    
+                    # Discover tools from this server
+                    universal_tools = await client.discover_tools()
+                    print(f"📋 Found {len(universal_tools)} tools from {config.name}")
+                    
+                    # Convert UniversalTools to MCPTools and register
+                    for universal_tool in universal_tools:
+                        # Create MCPTool wrapper
+                        mcp_tool = MCPTool(
+                            mcp_client=client,
+                            tool_name=universal_tool.name.split('.')[-1],  # Remove namespace prefix
+                            tool_description=universal_tool.description,
+                            tool_schema=universal_tool.parameters_schema,
+                            namespace=config.name
+                        )
+                        
+                        # Initialize the tool
+                        await mcp_tool.initialize()
+                        
+                        # Register with the service
+                        await self.register_tool(mcp_tool)
+                        
+                    print(f"✅ Successfully loaded {len(universal_tools)} tools from {config.name}")
+                    
+                except Exception as e:
+                    print(f"❌ Failed to load tools from {server_config.get('name', 'unknown')}: {e}")
+                    continue
+                    
+        except ImportError as e:
+            print(f"⚠️ MCP not available: {e}")
             pass
 
     async def _load_adk_native_tools(self):

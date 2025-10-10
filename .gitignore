@@ -223,3 +223,5 @@ archive/
 review.*
 *.diff
 temp.*
+tests/debug/*
+stream.txt
