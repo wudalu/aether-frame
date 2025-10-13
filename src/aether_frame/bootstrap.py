@@ -14,6 +14,7 @@ from .agents.manager import AgentManager
 from .config.settings import Settings
 from .contracts import AgentConfig, FrameworkType
 from .execution.execution_engine import ExecutionEngine
+from .execution.task_factory import TaskRequestFactory
 from .framework.framework_registry import FrameworkRegistry
 from .tools.service import ToolService
 
@@ -27,6 +28,7 @@ class SystemComponents(NamedTuple):
     agent_manager: AgentManager
     execution_engine: ExecutionEngine
     tool_service: Optional[ToolService] = None
+    task_factory: Optional[TaskRequestFactory] = None
 
 
 async def initialize_system(settings: Optional[Settings] = None) -> SystemComponents:
@@ -97,15 +99,26 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
         # Phase 5: Execution components
         logger.info("Phase 5: Initializing Execution Components...")
         execution_engine = ExecutionEngine(framework_registry, settings)
-        logger.info("Execution components initialized - task_router, execution_engine created")
+        
+        # Phase 6: Task Factory (with tool resolution integration)
+        task_factory = None
+        if tool_service:
+            logger.info("Phase 6: Initializing Task Factory with tool resolution...")
+            task_factory = TaskRequestFactory(tool_service)
+            logger.info("Task Factory initialized with ToolResolver integration")
+        else:
+            logger.info("Task Factory skipped - Tool Service not available")
+        
+        logger.info("Execution components initialized - task_router, execution_engine, task_factory created")
 
-        logger.info("System initialization completed successfully - 5 phases, 5 components")
+        logger.info("System initialization completed successfully - 6 phases, 6 components")
 
         return SystemComponents(
             framework_registry=framework_registry,
             agent_manager=agent_manager,
             execution_engine=execution_engine,
             tool_service=tool_service,
+            task_factory=task_factory,
         )
 
     except Exception as e:
@@ -202,6 +215,12 @@ async def health_check_system(components: SystemComponents) -> dict:
 
         # Execution engine health
         health_status["components"]["execution_engine"] = {"status": "healthy"}
+
+        # Task factory health
+        if components.task_factory:
+            health_status["components"]["task_factory"] = {"status": "healthy"}
+        else:
+            health_status["components"]["task_factory"] = {"status": "disabled"}
 
         # Task router health
         health_status["components"]["task_router"] = {"status": "healthy"}

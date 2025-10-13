@@ -148,6 +148,24 @@ class ToolService:
         else:
             return list(self._tools.keys())
 
+    async def get_tools_dict(self, namespace: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get available tools as a dictionary mapping names to tool instances.
+        
+        This method is used by ToolResolver for tool resolution.
+
+        Args:
+            namespace: Optional namespace filter
+
+        Returns:
+            Dict[str, Any]: Dictionary mapping tool names to tool instances
+        """
+        if namespace:
+            tool_names = self._tool_namespaces.get(namespace, [])
+            return {name: self._tools[name] for name in tool_names if name in self._tools}
+        else:
+            return dict(self._tools)
+
     async def get_tool_schema(
         self, tool_name: str, namespace: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:

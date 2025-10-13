@@ -54,6 +54,9 @@ class DevTools:
         print("  type-check      Run type checking")
         print("  setup-dev       Set up development environment")
         print("  version         Show current version")
+        print("")
+        print("For tool management (MCP servers, tool testing):")
+        print("  python tools.py help")
         
     def venv_init(self):
         """Create virtual environment and show activation command."""

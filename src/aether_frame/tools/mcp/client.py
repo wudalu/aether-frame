@@ -60,83 +60,60 @@ class MCPClient:
     async def _notification_handler(self, message) -> None:
         """Handle incoming notifications from MCP server.
         
-        This handler receives all server notifications, including progress
-        events, logging messages, and resource change notifications.
+        This handler receives server notifications like logging messages
+        and resource change notifications. Progress events are now handled
+        via the official progress_callback mechanism.
         """
         try:
             print(f"🔍 Received notification: {type(message)} - {message}")
             
-            # Check different message types and handle accordingly
+            # Handle different message types
             if hasattr(message, 'method'):
                 method = message.method
                 params = getattr(message, 'params', {})
                 
-                if method == "notifications/progress":
-                    # Handle progress notification
-                    print(f"📊 Progress notification received: {params}")
-                    
-                    progress_token = params.get('progressToken') or params.get('progress_token')
-                    progress = params.get('progress', 0)
-                    total = params.get('total', 1.0)
-                    message_text = params.get('message', '')
-                    
-                    print(f"📊 Progress details: token={progress_token}, progress={progress}, total={total}, message='{message_text}'")
-                    
-                    if progress_token and progress_token in self._progress_handlers:
-                        progress_event = {
-                            "type": "progress_update",
-                            "progress": progress,
-                            "total": total,
-                            "message": message_text,
-                            "progress_token": progress_token,
-                            "timestamp": time.time()
-                        }
-                        
-                        # Send to the appropriate progress handler queue
-                        queue = self._progress_handlers[progress_token]
-                        await queue.put(progress_event)
-                        print(f"✅ Progress event queued for token: {progress_token}")
-                    else:
-                        print(f"⚠️ No handler for progress token: {progress_token}, available: {list(self._progress_handlers.keys())}")
-                
-                elif method == "notifications/message":
-                    # Handle logging notification (optional debugging)
+                if method == "notifications/message":
+                    # Handle logging notification
                     level = params.get('level', 'info')
                     data = params.get('data', '')
                     print(f"🔍 Server log [{level}]: {data}")
                 
+                elif method == "notifications/resources/updated":
+                    # Handle resource update notifications
+                    print(f"📋 Resource updated: {params}")
+                
+                elif method == "notifications/resources/list_changed":
+                    # Handle resource list change notifications
+                    print(f"📋 Resource list changed")
+                
                 else:
-                    print(f"📫 Other notification method: {method} with params: {params}")
+                    print(f"📫 Other notification: {method} - {params}")
             
-            # Try the original approach as fallback
+            # Handle typed notifications
             elif isinstance(message, types.ServerNotification):
-                print(f"📫 ServerNotification type: {type(message.root)}")
                 notification = message.root
                 
-                if isinstance(notification, types.ProgressNotification):
-                    print("📊 ProgressNotification detected via ServerNotification")
-                    params = notification.params
-                    progress_token = getattr(params, 'progressToken', None)
-                    
-                    if progress_token and progress_token in self._progress_handlers:
-                        progress_event = {
-                            "type": "progress_update",
-                            "progress": params.progress,
-                            "total": getattr(params, 'total', 1.0),
-                            "message": getattr(params, 'message', ''),
-                            "progress_token": progress_token,
-                            "timestamp": time.time()
-                        }
-                        
-                        queue = self._progress_handlers[progress_token]
-                        await queue.put(progress_event)
-                
-                elif isinstance(notification, types.LoggingMessageNotification):
+                if isinstance(notification, types.LoggingMessageNotification):
                     params = notification.params
                     print(f"🔍 Server log [{params.level}]: {params.data}")
+                
+                elif isinstance(notification, types.ResourceUpdatedNotification):
+                    print(f"📋 Resource updated: {notification.params.uri}")
+                
+                elif isinstance(notification, types.ResourceListChangedNotification):
+                    print(f"📋 Resource list changed")
+                
+                elif isinstance(notification, types.ProgressNotification):
+                    # Progress notifications are now handled via progress_callback
+                    # We just log them for debugging
+                    params = notification.params
+                    print(f"📊 Progress notification (handled via callback): {params.progress}/{params.total} - {params.message}")
+                
+                else:
+                    print(f"📫 Unhandled notification type: {type(notification)}")
             
             else:
-                print(f"📫 Unknown message type: {type(message)} - {message}")
+                print(f"📫 Unknown message type: {type(message)}")
                 
         except Exception as e:
             print(f"⚠️ Error handling notification: {e}")
@@ -264,7 +241,10 @@ class MCPClient:
         )
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        """Execute tool synchronously.
+        """Execute tool synchronously by collecting streaming result.
+        
+        This method now internally uses call_tool_stream and collects the final result,
+        providing a unified interface while maintaining backward compatibility.
         
         Args:
             name: Tool name (without namespace prefix)  
@@ -277,41 +257,26 @@ class MCPClient:
             MCPConnectionError: When not connected to server
             MCPToolError: When tool execution fails
         """
-        if not self._connected or not self._session:
-            raise MCPConnectionError("Not connected to MCP server")
-        
         try:
-            # Use official SDK to call tool
-            result = await self._session.call_tool(name, arguments)
+            final_result = None
+            async for chunk in self.call_tool_stream(name, arguments):
+                if chunk.get("type") == "complete_result" and chunk.get("is_final"):
+                    final_result = chunk.get("content")
+                    break
+                elif chunk.get("type") == "error":
+                    error_msg = chunk.get("error", "Tool execution failed")
+                    raise MCPToolError(error_msg)
             
-            # Extract content from result
-            if hasattr(result, 'content') and result.content:
-                # Return the content array or first content item
-                if len(result.content) == 1:
-                    content_item = result.content[0]
-                    if hasattr(content_item, 'text'):
-                        return content_item.text
-                    elif hasattr(content_item, 'data'):
-                        return content_item.data
-                    else:
-                        return content_item
-                else:
-                    return result.content
+            if final_result is None:
+                raise MCPToolError("No result received from tool execution")
+                
+            return final_result
             
-            # Check for error flag
-            if hasattr(result, 'isError') and result.isError:
-                error_msg = "Tool execution failed"
-                if hasattr(result, 'content') and result.content:
-                    first_content = result.content[0]
-                    if hasattr(first_content, 'text'):
-                        error_msg = first_content.text
-                raise MCPToolError(error_msg)
-            
-            return result
-            
+        except MCPToolError:
+            raise
+        except MCPConnectionError:
+            raise  # Keep connection errors as-is
         except Exception as e:
-            if isinstance(e, MCPToolError):
-                raise
             raise MCPToolError(f"Tool execution failed: {e}")
     
     async def call_tool_stream(
@@ -358,9 +323,9 @@ class MCPClient:
                 "transport": "streamable_http_with_real_notifications"
             }
             
-            # Create progress callback to capture progress events
-            async def progress_callback(progress: float, total: float, message: str = ""):
-                """Callback function for receiving progress updates from MCP SDK."""
+            # Create progress callback to capture progress events from MCP SDK
+            async def progress_callback(progress: float, total: float = 1.0, message: str = ""):
+                """Official MCP SDK progress callback function."""
                 progress_event = {
                     "type": "progress_update",
                     "progress": progress,
@@ -371,16 +336,17 @@ class MCPClient:
                 }
                 
                 # Send to the appropriate progress handler queue
-                queue = self._progress_handlers[progress_token]
-                await queue.put(progress_event)
-                print(f"✅ Progress event queued: {progress}/{total} - {message}")
+                if progress_token in self._progress_handlers:
+                    queue = self._progress_handlers[progress_token]
+                    await queue.put(progress_event)
+                    print(f"✅ Progress via callback: {progress}/{total} - {message}")
             
-            # Create task to execute tool with progress callback
+            # Execute tool with official progress_callback parameter
             tool_task = asyncio.create_task(
                 self._session.call_tool(
                     name, 
                     arguments,
-                    progress_callback=progress_callback  # Use the correct parameter!
+                    progress_callback=progress_callback  # Official MCP SDK parameter!
                 )
             )
             
