@@ -37,6 +37,7 @@ class AdkDomainAgent(DomainAgent):
         self.adk_agent = None
         self.hooks = AdkAgentHooks(self)
         self.event_converter = AdkEventConverter()
+        self._tools_initialized = False  # Track if tools have been initialized
 
     # === Core Interface Methods ===
 
@@ -68,7 +69,7 @@ class AdkDomainAgent(DomainAgent):
         except Exception as e:
             raise RuntimeError(f"Failed to initialize ADK agent: {str(e)}")
     
-    async def _create_adk_agent(self):
+    async def _create_adk_agent(self, available_tools=None):
         """Create ADK agent instance for session execution within domain agent scope."""
         try:
             from google.adk import Agent
@@ -80,8 +81,13 @@ class AdkDomainAgent(DomainAgent):
             from ...framework.adk.model_factory import AdkModelFactory
             model = AdkModelFactory.create_model(model_identifier, self._get_settings())
             
-            # Get tools from runtime context if available
-            tools = self._get_adk_tools()
+            # Get tools - either from parameter or default empty list
+            if available_tools:
+                tools = self._convert_universal_tools_to_adk(available_tools)
+                self.logger.info(f"Creating ADK agent with {len(tools)} tools from available_tools")
+            else:
+                tools = []
+                self.logger.info("Creating ADK agent with empty tool list")
             
             # Create the ADK agent with model configuration and tools
             self.adk_agent = Agent(
@@ -134,125 +140,169 @@ class AdkDomainAgent(DomainAgent):
         except Exception:
             return None
 
-    def _get_adk_tools(self):
-        """Get tools for ADK agent from runtime context."""
+    def _get_adk_tools(self, agent_request=None):
+        """Get tools for ADK agent - focused on MCP tools from TaskRequest.
+        
+        Args:
+            agent_request: Optional AgentRequest containing TaskRequest with available_tools
+        """
         try:
-            # Get tool service from runtime context if available
-            tool_service = self.runtime_context.get("tool_service")
-            if not tool_service:
-                # No tool service available, return empty list
-                return []
+            # Priority: Use MCP tools from TaskRequest.available_tools
+            if agent_request and agent_request.task_request and agent_request.task_request.available_tools:
+                self.logger.info(f"Using {len(agent_request.task_request.available_tools)} MCP tools from TaskRequest")
+                return self._convert_universal_tools_to_adk(agent_request.task_request.available_tools)
             
-            # Convert our tools to ADK tool format
-            adk_tools = []
-            
-            # Create chat_log tool for ADK using function calling format
-            def chat_log_function(content: str):
-                """Save chat conversations to local files with ADK-compliant organization."""
-                # This function will be called by ADK when the model invokes the tool
-                # We need to forward it to our tool service
-                import asyncio
-                from ...contracts import ToolRequest
-                
-                tool_request = ToolRequest(
-                    tool_name="chat_log",
-                    tool_namespace="builtin",
-                    parameters={
-                        "content": content,
-                        "session_id": self.runtime_context.get("session_id"),  # Use current session_id
-                        "format": "json",
-                        "append": True,
-                        "filename": None,
-                    },
-                    session_id=self.runtime_context.get("session_id")  # Also set at request level
-                )
-                
-                # Log tool request in execution chain
-                from ...common.unified_logging import create_execution_context
-                exec_context = create_execution_context(f"agent_tool_{tool_request.tool_name}")
-                exec_context.log_execution_chain({
-                    "agent_request": {
-                        "agent_type": "adk_domain_agent",
-                        "action": "tool_call"
-                    },
-                    "tool_request": {
-                        "tool_name": tool_request.tool_name,
-                        "tool_namespace": tool_request.tool_namespace,
-                        "parameters_count": len(tool_request.parameters)
-                    }
-                })
-                
-                # Execute through tool service synchronously (ADK requirement)
-                try:
-                    # Use thread-based execution to avoid event loop conflicts
-                    import concurrent.futures
-                    import threading
-                    from ...tools.builtin.chat_log_tool import ChatLogTool
-                    
-                    def execute_tool_in_thread():
-                        """Execute tool in separate thread with its own event loop"""
-                        import asyncio
-                        
-                        # Create new event loop for this thread
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        
-                        try:
-                            # Create and initialize tool
-                            chat_log_tool = ChatLogTool()
-                            loop.run_until_complete(chat_log_tool.initialize())
-                            
-                            # Execute tool
-                            result = loop.run_until_complete(chat_log_tool.execute(tool_request))
-                            return result
-                        finally:
-                            loop.close()
-                    
-                    # Execute in thread to avoid event loop conflicts
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(execute_tool_in_thread)
-                        result = future.result(timeout=30)  # 30 second timeout
-                    
-                    # Log tool result in execution chain
-                    exec_context.log_execution_chain({
-                        "tool_result": {
-                            "tool_name": result.tool_name if result else tool_request.tool_name,
-                            "status": result.status.value if result and result.status else "unknown",
-                            "execution_time": result.execution_time if result else None,
-                            "has_error": bool(result.error_message) if result else True
-                        },
-                        "agent_response": {
-                            "agent_type": "adk_domain_agent",
-                            "action": "tool_result_processed"
-                        }
-                    })
-                    
-                    if result and result.status.value == "success":
-                        return {
-                            "status": "success",
-                            "message": f"Chat log saved successfully to {result.result_data.get('filename', 'file')}",
-                            "file_path": result.result_data.get("file_path", "unknown"),
-                            "details": result.result_data
-                        }
-                    else:
-                        return {
-                            "status": "error", 
-                            "message": result.error_message if result else "Tool execution failed"
-                        }
-                        
-                except Exception as e:
-                    return {
-                        "status": "error",
-                        "message": f"Tool execution error: {str(e)}"
-                    }
-            
-            adk_tools.append(chat_log_function)
-            return adk_tools
+            # Fallback: Return empty list - no legacy builtin tools needed
+            self.logger.info("No MCP tools available from TaskRequest, using empty tool list")
+            return []
             
         except Exception as e:
-            # Log error but don't fail - return empty tools
+            # Simple error handling - return empty tools on failure
             self.logger.warning(f"Failed to configure ADK tools: {str(e)}")
             return []
+
+    def _convert_universal_tools_to_adk(self, universal_tools):
+        """Convert UniversalTool objects to ADK-compatible async functions.
+
+        Args:
+            universal_tools: List of UniversalTool objects from TaskRequest
+
+        Returns:
+            List of ADK-compatible async function objects
+        """
+        adk_tools = []
+
+        try:
+            tool_service = self.runtime_context.get("tool_service")
+            if not tool_service:
+                self.logger.warning(
+                    "No tool service available for UniversalTool conversion"
+                )
+                return []
+
+            for universal_tool in universal_tools:
+                try:
+                    # Create ADK-compatible async function with closure
+                    def create_async_adk_wrapper(tool):
+                        async def async_adk_tool(**kwargs):
+                            """ADK native async tool function."""
+
+                            # Create ToolRequest
+                            from ...contracts import ToolRequest
+                            tool_request = ToolRequest(
+                                tool_name=(
+                                    tool.name.split('.')[-1]
+                                    if '.' in tool.name else tool.name
+                                ),
+                                tool_namespace=tool.namespace,
+                                parameters=kwargs,
+                                session_id=self.runtime_context.get(
+                                    "session_id"
+                                )
+                            )
+
+                            # Direct await - no asyncio.run or
+                            # ThreadPoolExecutor needed!
+                            result = await tool_service.execute_tool(
+                                tool_request
+                            )
+
+                            # Simple result processing
+                            if result and result.status.value == "success":
+                                return {
+                                    "status": "success",
+                                    "result": result.result_data,
+                                    "tool_name": tool.name,
+                                    "namespace": tool.namespace,
+                                    "execution_time": getattr(
+                                        result, 'execution_time', 0
+                                    )
+                                }
+                            else:
+                                return {
+                                    "status": "error",
+                                    "error": (
+                                        result.error_message if result
+                                        else "Tool execution failed"
+                                    ),
+                                    "tool_name": tool.name
+                                }
+
+                        # Set function metadata for ADK
+                        async_adk_tool.__name__ = (
+                            tool.name.split('.')[-1]
+                            if '.' in tool.name else tool.name
+                        )
+                        async_adk_tool.__doc__ = (
+                            tool.description or f"Tool: {tool.name}"
+                        )
+
+                        # Add parameter annotations if available
+                        if (tool.parameters_schema and
+                                isinstance(tool.parameters_schema, dict)):
+                            properties = tool.parameters_schema.get(
+                                'properties', {}
+                            )
+                            annotations = {}
+                            for param_name, param_info in properties.items():
+                                param_type = param_info.get('type', 'str')
+                                if param_type == 'string':
+                                    annotations[param_name] = str
+                                elif param_type == 'integer':
+                                    annotations[param_name] = int
+                                elif param_type == 'boolean':
+                                    annotations[param_name] = bool
+                                elif param_type == 'number':
+                                    annotations[param_name] = float
+
+                            if annotations:
+                                async_adk_tool.__annotations__ = annotations
+
+                        return async_adk_tool
+
+                    # Use ADK's FunctionTool constructor for async functions
+                    from google.adk.tools import FunctionTool
+                    adk_function = FunctionTool(
+                        func=create_async_adk_wrapper(universal_tool)
+                    )
+                    adk_tools.append(adk_function)
+                    self.logger.debug(
+                        f"Created async ADK function for {universal_tool.name}"
+                    )
+
+                except Exception as e:
+                    self.logger.error(
+                        f"Error converting tool {universal_tool.name}: {e}"
+                    )
+                    continue
+
+            self.logger.info(
+                f"Successfully converted {len(adk_tools)} UniversalTools "
+                f"to async ADK functions"
+            )
+            return adk_tools
+
+        except Exception as e:
+            self.logger.error(f"Failed to convert UniversalTools to ADK: {e}")
+            return []
+    
+    async def update_tools(self, available_tools):
+        """
+        Update agent tools dynamically.
+        
+        Args:
+            available_tools: List of UniversalTool objects
+        """
+        if self.adk_agent and available_tools:
+            tools = self._convert_universal_tools_to_adk(available_tools)
+            self.adk_agent.tools = tools
+            self._tools_initialized = True
+            self.logger.info(f"Updated ADK agent with {len(tools)} tools")
+        elif available_tools:
+            # If agent doesn't exist, create it with tools
+            await self._create_adk_agent(available_tools)
+            self._tools_initialized = True
+            self.logger.info(f"Created ADK agent with {len(available_tools)} tools")
 
     async def execute(self, agent_request: AgentRequest) -> TaskResult:
         """
@@ -270,6 +320,19 @@ class AdkDomainAgent(DomainAgent):
             # Pre-execution hooks
             await self.hooks.before_execution(agent_request)
 
+            # Initialize tools only once or when tools change
+            if not self._tools_initialized:
+                if (agent_request.task_request and 
+                    agent_request.task_request.available_tools):
+                    
+                    self.logger.info(f"Initializing ADK agent with {len(agent_request.task_request.available_tools)} tools")
+                    await self._create_adk_agent(agent_request.task_request.available_tools)
+                else:
+                    # Mark as initialized even without tools - agent already exists from initialize()
+                    self.logger.info("Marking tools as initialized (no tools specified)")
+                
+                self._tools_initialized = True
+
             # Execute through ADK using runtime context
             result = await self._execute_with_adk_runner(agent_request)
 
@@ -280,24 +343,6 @@ class AdkDomainAgent(DomainAgent):
             execution_time = (datetime.now() - start_time).total_seconds()
             result.execution_time = execution_time
             result.created_at = datetime.now()
-            
-            # Log agent response in execution chain  
-            from ...common.unified_logging import create_execution_context
-            exec_context = create_execution_context(f"agent_response_{result.task_id}")
-            exec_context.log_execution_chain({
-                "agent_response": {
-                    "agent_id": self.agent_id,
-                    "agent_type": "adk_domain_agent",
-                    "execution_time": execution_time,
-                    "has_task_result": True
-                },
-                "task_result": {
-                    "task_id": result.task_id,
-                    "status": result.status.value if result.status else "unknown", 
-                    "messages_count": len(result.messages) if result.messages else 0,
-                    "has_error": bool(result.error_message)
-                }
-            })
 
             return result
 
