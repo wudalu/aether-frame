@@ -284,6 +284,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from datetime import datetime
         
         self.logger.info(f"Pattern 3: agent_config - Creating new agent for agent_type: {task_request.agent_config.agent_type}")
+        # Preserve any business-level chat_session_id for later mapping
+        chat_session_id = task_request.session_id
+        if not chat_session_id and task_request.metadata:
+            chat_session_id = task_request.metadata.get("chat_session_id")
         
         # Generate agent_id and session_id
         agent_id = self.agent_manager.generate_agent_id()
@@ -315,31 +319,74 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # ADK agent is already created by domain_agent.initialize()
         adk_agent = domain_agent.adk_agent
         
-        # Create runner and session
-        runner_id, returned_session_id = await self.runner_manager.get_or_create_runner(
-            task_request.agent_config, task_request, adk_agent, engine_session_id=session_id
+        # Create or reuse runner without creating session yet (lazy session creation)
+        runner_id, _ = await self.runner_manager.get_or_create_runner(
+            task_request.agent_config,
+            task_request,
+            adk_agent,
+            engine_session_id=session_id,
+            create_session=False,
         )
         
         # Store agent to runner mapping
         self._agent_runners[agent_id] = runner_id
-        self._agent_sessions[agent_id] = [returned_session_id]
-        
-        # Use returned session_id for consistency
-        if returned_session_id != session_id:
-            self.logger.warning(f"RunnerManager returned different session_id: {session_id} -> {returned_session_id}")
-            session_id = returned_session_id
+        self._agent_sessions[agent_id] = []
         
         runner_context_dict = self.runner_manager.runners[runner_id]
         adk_session = runner_context_dict["sessions"].get(session_id)
         
+        runtime_metadata_chat_id = chat_session_id if chat_session_id else None
+        
         self.logger.info(f"✅ Pattern 3: Created new agent {agent_id} with runner {runner_id} and session {session_id}")
         
         # Create RuntimeContext with new agent and session information
-        return self._create_runtime_context_from_data(
+        runtime_context = self._create_runtime_context_from_data(
             task_request, session_id, agent_id, task_request.agent_config,
             runner_id, runner_context_dict, adk_session, 
             domain_agent, "create_new_agent_and_session"
         )
+        if runtime_metadata_chat_id:
+            runtime_context.metadata["business_chat_session_id"] = runtime_metadata_chat_id
+        runtime_context.metadata["adk_session_initialized"] = False
+        return runtime_context
+
+    async def _ensure_adk_session_initialized(self, runtime_context: "RuntimeContext", task_request: TaskRequest) -> str:
+        """Ensure an ADK session exists before execution."""
+        runner_id = runtime_context.runner_id
+        session_id = runtime_context.session_id
+        
+        if not runner_id:
+            raise self.ExecutionError("Runner not ready; cannot create session", task_request)
+        
+        runner_context_dict = self.runner_manager.runners.get(runner_id)
+        if not runner_context_dict:
+            raise self.ExecutionError(f"Runner {runner_id} not found", task_request)
+        
+        # If the session already exists, reuse it
+        if session_id and session_id in runner_context_dict["sessions"]:
+            runtime_context.framework_session = runner_context_dict["sessions"][session_id]
+            runtime_context.metadata["adk_session_initialized"] = True
+            return session_id
+        
+        # Create a new session identifier if none is set yet
+        if not session_id:
+            session_id = f"adk_session_{uuid4().hex[:12]}"
+            runtime_context.session_id = session_id
+        
+        created_session_id = await self.runner_manager._create_session_in_runner(
+            runner_id, task_request, external_session_id=session_id
+        )
+        # Make sure runtime context reflects the actual session identifier
+        runtime_context.session_id = created_session_id
+        runtime_context.framework_session = runner_context_dict["sessions"].get(created_session_id)
+        runtime_context.runner_context = runner_context_dict
+        runtime_context.metadata["adk_session_initialized"] = True
+        
+        agent_sessions = self._agent_sessions.setdefault(runtime_context.agent_id, [])
+        if created_session_id not in agent_sessions:
+            agent_sessions.append(created_session_id)
+        
+        return created_session_id
 
     async def execute_task(
         self, task_request: TaskRequest, strategy: ExecutionStrategy
@@ -408,21 +455,37 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # Update activity timestamp
         runtime_context.update_activity()
         
-        # Execute task through domain agent with RuntimeContext
-        domain_agent = runtime_context.metadata.get("domain_agent")
-        result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
+        business_chat_session_id = runtime_context.metadata.get("business_chat_session_id")
+        
+        # Do not create an ADK session during agent creation; return a success placeholder
+        result = TaskResult(
+            task_id=task_request.task_id,
+            status=TaskStatus.SUCCESS,
+            agent_id=runtime_context.agent_id,
+            session_id=business_chat_session_id or runtime_context.session_id,
+            metadata={
+                "framework": "adk",
+                "agent_id": runtime_context.agent_id,
+                "pattern": "agent_creation",
+                "adk_session_initialized": False,
+            },
+        )
         
         # Ensure session_id and agent_id are included in result
-        result.session_id = runtime_context.session_id
+        business_chat_session_id = runtime_context.metadata.get("business_chat_session_id")
+        result.session_id = business_chat_session_id or runtime_context.session_id
         result.agent_id = runtime_context.agent_id
         result.metadata = result.metadata or {}
         result.metadata.update({
             "framework": "adk", 
-            "session_id": runtime_context.session_id, 
             "agent_id": runtime_context.agent_id,
             "execution_id": runtime_context.execution_id,
             "pattern": "agent_creation"
         })
+        result.metadata["session_id"] = None
+        result.metadata["adk_session_id"] = None
+        if business_chat_session_id:
+            result.metadata["chat_session_id"] = business_chat_session_id
         
         self.logger.info(f"Agent creation completed - task_id: "
                         f"{task_request.task_id}, agent_id: "
@@ -654,7 +717,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         """
         return self._initialized and self._adk_available
 
-    # FIXME: 如我们一开始设计，这个应该是返回配置
+    # FIXME: As originally planned, this should return configuration details
     async def get_capabilities(self) -> List[str]:
         """Get ADK framework capabilities."""
         return [

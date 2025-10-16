@@ -228,3 +228,6 @@ stream.txt
 *.txt
 docs/comlete_tool_workflow.md
 tests/debug_logs/
+AGENTS.md
+CODEX.md
+docs/codex_mcp_setup.md

@@ -12,7 +12,8 @@ import json
 import warnings
 import argparse
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from uuid import uuid4
 from pathlib import Path
 
 # Suppress warnings
@@ -35,6 +36,7 @@ from aether_frame.contracts import (
     AgentConfig,
     ContentPart,
     ImageReference,
+    UserContext,
 )
 
 
@@ -117,6 +119,7 @@ class CompleteE2ETestSuite:
         # Test configuration
         self.settings = Settings()
         self.assistant = None
+        self.test_user_context = UserContext(user_id="complete_e2e_user")
         
         # Performance tracking
         self.performance_metrics = {
@@ -129,6 +132,263 @@ class CompleteE2ETestSuite:
             "models_tested": [],
             "model_results": {},
         }
+
+    def _build_user_context(self) -> UserContext:
+        """Return default user context for requests."""
+        return self.test_user_context
+
+    def _summarize_message_content(self, content) -> str:
+        """Create a short preview for logging."""
+        if isinstance(content, str):
+            return content[:100] + ("..." if len(content) > 100 else "")
+        if isinstance(content, list):
+            part_summaries = []
+            for part in content:
+                if isinstance(part, ContentPart):
+                    if part.text:
+                        summary = part.text[:30] + ("..." if len(part.text) > 30 else "")
+                        part_summaries.append(f"text:{summary}")
+                    elif part.image_reference:
+                        part_summaries.append("image:base64")
+                    elif part.function_call:
+                        part_summaries.append(f"function:{part.function_call.tool_name}")
+                    else:
+                        part_summaries.append("content-part")
+                else:
+                    part_summaries.append(str(part))
+            return " | ".join(part_summaries)
+        return str(content)
+
+    async def _create_agent_and_session(
+        self,
+        *,
+        model_name: str,
+        agent_type: str,
+        system_prompt: str,
+        initial_message: Optional[UniversalMessage],
+        creation_task: str,
+        creation_description: str,
+        creation_metadata: Dict[str, Any],
+        user_context: UserContext,
+        model_config: Optional[Dict[str, Any]] = None,
+        available_tools: Optional[List[str]] = None,
+    ) -> Tuple[str, str]:
+        """Create an agent and obtain business chat session id."""
+        creation_metadata = dict(creation_metadata or {})
+        metadata = {
+            "test_framework": "adk_complete_e2e",
+            "framework_type": "adk",
+            "test_suite": "complete_e2e",
+            "preferred_model": model_name,
+            "timestamp": datetime.now().isoformat(),
+            "phase": "creation",
+        }
+        metadata.update(creation_metadata)
+
+        business_chat_session_id = metadata.get("chat_session_id") or f"chat_session_{uuid4().hex[:12]}"
+        metadata.setdefault("chat_session_id", business_chat_session_id)
+
+        resolved_model_config = model_config.copy() if model_config else {
+            "model": model_name,
+            "temperature": 0.6,
+            "max_tokens": 1500,
+        }
+        resolved_model_config["model"] = model_name
+
+        creation_request = TaskRequest(
+            task_id=creation_task,
+            task_type="chat",
+            description=creation_description,
+            messages=[initial_message] if initial_message else [],
+            agent_config=AgentConfig(
+                agent_type=agent_type,
+                system_prompt=system_prompt,
+                model_config=resolved_model_config,
+                available_tools=available_tools or [],
+                framework_config={
+                    "provider": "deepseek" if "deepseek" in model_name else "openai"
+                },
+            ),
+            user_context=user_context,
+            session_id=business_chat_session_id,
+            metadata=metadata,
+        )
+
+        self.log_request_details(creation_request, f"{agent_type}_creation", model_name)
+        creation_result = await self.assistant.process_request(creation_request)
+        self.log_response_details(creation_result, f"{agent_type}_creation", 0.0, model_name)
+
+        if creation_result.status != TaskStatus.SUCCESS:
+            raise RuntimeError(
+                f"Agent creation failed: {creation_result.error_message or 'unknown error'}"
+            )
+
+        agent_id = creation_result.agent_id
+        if not agent_id:
+            raise RuntimeError("Agent creation response missing agent_id")
+
+        self.logger.info(
+            f"Agent created successfully - agent_id={agent_id}, chat_session_id={business_chat_session_id}"
+        )
+        return agent_id, business_chat_session_id
+
+    async def _run_conversation_test(
+        self,
+        *,
+        test_case: str,
+        model_name: str,
+        agent_type: str,
+        system_prompt: str,
+        messages: List[UniversalMessage],
+        creation_metadata: Optional[Dict[str, Any]] = None,
+        conversation_metadata: Optional[Dict[str, Any]] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+        available_tools: Optional[List[str]] = None,
+        evaluate_response=None,
+    ) -> bool:
+        """Create agent lazily and execute a conversation test."""
+        start_time = datetime.now()
+        user_context = self._build_user_context()
+        creation_metadata = dict(creation_metadata or {})
+        conversation_metadata = dict(conversation_metadata or {})
+        messages = messages or []
+
+        initial_message = messages[0] if messages else None
+
+        business_chat_session_id = (
+            conversation_metadata.get("chat_session_id")
+            or creation_metadata.get("chat_session_id")
+            or f"chat_session_{uuid4().hex[:12]}"
+        )
+        creation_metadata.setdefault("chat_session_id", business_chat_session_id)
+        conversation_metadata.setdefault("chat_session_id", business_chat_session_id)
+
+        agent_id, _ = await self._create_agent_and_session(
+            model_name=model_name,
+            agent_type=agent_type,
+            system_prompt=system_prompt,
+            initial_message=initial_message,
+            creation_task=f"e2e_create_{test_case}_{int(start_time.timestamp())}",
+            creation_description=f"{test_case} agent creation",
+            creation_metadata=creation_metadata,
+            user_context=user_context,
+            model_config=model_config,
+            available_tools=available_tools,
+        )
+
+        conversation_request = TaskRequest(
+            task_id=f"e2e_conversation_{test_case}_{int(datetime.now().timestamp())}",
+            task_type="chat",
+            description=f"{test_case} conversation",
+            messages=messages,
+            agent_id=agent_id,
+            session_id=business_chat_session_id,
+            user_context=user_context,
+            metadata={
+                "test_framework": "adk_complete_e2e",
+                "framework_type": "adk",
+                "test_suite": "complete_e2e",
+                "test_case": test_case,
+                "preferred_model": model_name,
+                "timestamp": datetime.now().isoformat(),
+                "phase": "conversation",
+                **conversation_metadata,
+            },
+        )
+
+        self.log_request_details(conversation_request, test_case, model_name)
+
+        try:
+            result = await self.assistant.process_request(conversation_request)
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            self.log_response_details(result, test_case, execution_time, model_name)
+
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            if result.status == TaskStatus.SUCCESS and result.messages:
+                passed = True
+                extra_fields: Dict[str, Any] = {}
+                warning_message: Optional[str] = None
+
+                response_text = result.messages[0].content
+                extra_fields.update(
+                    {
+                        "response_length": len(response_text),
+                        "has_response": bool(response_text.strip()),
+                        "response_preview": response_text[:200]
+                        + ("..." if len(response_text) > 200 else response_text),
+                    }
+                )
+
+                if evaluate_response:
+                    eval_passed, eval_fields, warning_message = evaluate_response(result)
+                    passed = passed and bool(eval_passed)
+                    if eval_fields:
+                        extra_fields.update(eval_fields)
+
+                if passed:
+                    self.performance_metrics["successful_requests"] += 1
+                    if extra_fields.get("tool_calls_detected"):
+                        self.performance_metrics["tool_calls_detected"] += 1
+
+                    test_result = {
+                        "test_case": test_case,
+                        "task_id": conversation_request.task_id,
+                        "model": model_name,
+                        "status": "success",
+                        "execution_time": execution_time,
+                        "error_message": None,
+                        "metadata": result.metadata,
+                        "timestamp": datetime.now().isoformat(),
+                        **extra_fields,
+                    }
+                    self.test_results.append(test_result)
+
+                    if warning_message:
+                        self.logger.warning(f"⚠️ {test_case} WARNING - {warning_message}")
+                    return True
+
+                # Evaluation failed despite successful status
+                warning_message = warning_message or "Response did not meet evaluation criteria"
+                self.logger.error(f"❌ {test_case} FAILED - {warning_message}")
+
+            else:
+                warning_message = result.error_message or "No response returned"
+                self.logger.error(f"❌ {test_case} FAILED - {warning_message}")
+
+            self.performance_metrics["failed_requests"] += 1
+            test_result = {
+                "test_case": test_case,
+                "task_id": conversation_request.task_id,
+                "model": model_name,
+                "status": "failed",
+                "execution_time": execution_time,
+                "error_message": result.error_message or "No response returned",
+                "timestamp": datetime.now().isoformat(),
+            }
+            self.test_results.append(test_result)
+            return False
+
+        except Exception as e:
+            execution_time = (datetime.now() - start_time).total_seconds()
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["failed_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            self.logger.error(f"❌ {test_case} EXCEPTION - {str(e)}")
+            test_result = {
+                "test_case": test_case,
+                "task_id": conversation_request.task_id,
+                "model": model_name,
+                "status": "exception",
+                "execution_time": execution_time,
+                "error_message": str(e),
+                "timestamp": datetime.now().isoformat(),
+            }
+            self.test_results.append(test_result)
+            return False
 
     def setup_logging(self):
         """Setup detailed logging for the test suite."""
@@ -258,27 +518,7 @@ class CompleteE2ETestSuite:
         if task_request.messages:
             self.logger.debug(f"Messages Count: {len(task_request.messages)}")
             for i, msg in enumerate(task_request.messages):
-                if isinstance(msg.content, str):
-                    preview = msg.content[:100] + ("..." if len(msg.content) > 100 else "")
-                elif isinstance(msg.content, list):
-                    part_summaries = []
-                    for part in msg.content:
-                        if isinstance(part, ContentPart):
-                            if part.text:
-                                summary = part.text[:30] + ("..." if len(part.text) > 30 else "")
-                                part_summaries.append(f"text:{summary}")
-                            elif part.image_reference:
-                                part_summaries.append("image:base64")
-                            elif part.function_call:
-                                part_summaries.append(f"function:{part.function_call.tool_name}")
-                            else:
-                                part_summaries.append("content-part")
-                        else:
-                            part_summaries.append(str(part))
-                    preview = " | ".join(part_summaries)
-                else:
-                    preview = str(msg.content)
-
+                preview = self._summarize_message_content(msg.content)
                 self.logger.debug(f"Message {i+1}: [{msg.role}] {preview}")
                 if msg.metadata:
                     self.logger.debug(f"Message {i+1} metadata: {msg.metadata}")
@@ -312,140 +552,28 @@ class CompleteE2ETestSuite:
             self.logger.debug(f"Result data: {result.result_data}")
 
     async def test_simple_conversation(self, model: str = None):
-        """Test simple conversation with detailed logging.
-        
-        Args:
-            model: Specific model to test (if None, uses default from settings)
-        """
+        """Test simple conversation using two-step (creation + conversation) flow."""
         test_case = "simple_conversation"
         model_name = model or self.settings.default_model
-        self.logger.info(f"🧪 TEST CASE: {test_case} - Model: {model_name}")
-        self.logger.info(f"├── FLOW: User Request → AI Assistant → ADK Adapter → {model_name} → Response")
-        
-        start_time = datetime.now()
-        
-        # First create a session by sending a request with agent_config
-        session_request = TaskRequest(
-            task_id=f"e2e_session_setup_{int(start_time.timestamp())}",
-            task_type="chat",
-            description="Session setup for E2E test",
-            messages=[
-                UniversalMessage(
-                    role="user",
-                    content="Hello! Please tell me about yourself and what you can do.",
-                    metadata={"test_case": test_case, "expects_response": True}
-                )
-            ],
-            agent_config=AgentConfig(
-                agent_type="conversational_assistant",
-                system_prompt="You are a helpful AI assistant.",
-                model_config={
-                    "model": model_name,
-                    "temperature": 0.7,
-                    "max_tokens": 1500
-                },
-                framework_config={
-                    "provider": "deepseek" if "deepseek" in model_name else "openai"
-                }
-            ),
-            metadata={
-                "test_framework": "adk_complete_e2e",
-                "framework_type": "adk",
-                "test_suite": "complete_e2e",
-                "test_case": test_case,
-                "preferred_model": model_name,
-                "timestamp": start_time.isoformat(),
-            }
+        initial_message = UniversalMessage(
+            role="user",
+            content="Hello! Please tell me about yourself and what you can do.",
+            metadata={"test_case": test_case, "expects_response": True},
         )
-        
-        # Log request details
-        self.logger.info("└── 📤 STEP 1: Preparing request...")
-        self.log_request_details(session_request, test_case, model_name)
-        
-        try:
-            self.logger.info("└── 🔄 STEP 2: Sending to AI Assistant...")
-            result = await self.assistant.process_request(session_request)
-            execution_time = (datetime.now() - start_time).total_seconds()
-            
-            self.logger.info("└── 📥 STEP 3: Processing response...")
-            # Log response details
-            self.log_response_details(result, test_case, execution_time, model_name)
-            
-            # Update performance metrics
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            if result.status == TaskStatus.SUCCESS:
-                self.performance_metrics["successful_requests"] += 1
-                
-                # Check if we got a meaningful response
-                has_response = bool(result.messages and result.messages[0].content.strip())
-                
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": session_request.task_id,
-                    "model": model_name,
-                    "status": "success",
-                    "execution_time": execution_time,
-                    "response_length": len(result.messages[0].content) if result.messages else 0,
-                    "has_response": has_response,
-                    "error_message": None,
-                    "metadata": result.metadata,
-                    "timestamp": datetime.now().isoformat(),
-                    "response_preview": result.messages[0].content[:200] + "..." if result.messages and len(result.messages[0].content) > 200 else result.messages[0].content if result.messages else "",
-                    "session_id": result.session_id,  # Store session ID for potential reuse
-                }
-                
-                self.test_results.append(test_result)
-                self.logger.info(f"└── ✅ STEP 4: SUCCESS - Got response ({len(result.messages[0].content) if result.messages else 0} chars)")
-                return True
-                
-            else:
-                self.performance_metrics["failed_requests"] += 1
-                
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": session_request.task_id,
-                    "model": model_name,
-                    "status": "failed",
-                    "execution_time": execution_time,
-                    "error_message": result.error_message,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                
-                self.test_results.append(test_result)
-                self.logger.error(f"└── ❌ STEP 4: FAILED - {result.error_message}")
-                return False
-                
-        except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds()
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["failed_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            self.logger.error(f"└── ❌ STEP 4: EXCEPTION - {str(e)}")
-            
-            test_result = {
-                "test_case": test_case,
-                "task_id": session_request.task_id,
-                "model": model_name,
-                "status": "exception",
-                "execution_time": execution_time,
-                "error_message": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-            self.test_results.append(test_result)
-            return False
+
+        return await self._run_conversation_test(
+            test_case=test_case,
+            model_name=model_name,
+            agent_type="conversational_assistant",
+            system_prompt="You are a helpful AI assistant.",
+            messages=[initial_message],
+            creation_metadata={"test_case": test_case},
+        )
 
     async def test_multimodal_image_analysis(self, model: str = None):
-        """Test multimodal image analysis with detailed logging."""
+        """Test multimodal image analysis with post-creation conversation."""
         test_case = "multimodal_image_analysis"
         model_name = model or self.settings.default_model
-        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
-        self.logger.info("├── FLOW: Text + Image → ADK → LiteLLM → Model → Response")
-
-        start_time = datetime.now()
 
         tiny_png_base64 = (
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
@@ -463,384 +591,117 @@ class CompleteE2ETestSuite:
             metadata={"test_case": test_case, "expects_image": True},
         )
 
-        task_request = TaskRequest(
-            task_id=f"e2e_multimodal_{int(start_time.timestamp())}",
-            task_type="chat",
-            description="Multimodal image analysis smoke test",
+        def evaluate_response(result):
+            response_text = result.messages[0].content if result.messages else ""
+            recognized_color = any(
+                keyword in response_text.lower()
+                for keyword in ["red", "green", "blue", "yellow", "色"]
+            )
+            warning = None
+            if not recognized_color:
+                warning = "Model response did not explicitly mention color keywords"
+            return True, {"recognized_color": recognized_color}, warning
+
+        return await self._run_conversation_test(
+            test_case=test_case,
+            model_name=model_name,
+            agent_type="vision_assistant",
+            system_prompt="你是一个多模态视觉助手，善于分析图像内容。",
             messages=[multimodal_message],
-            agent_config=AgentConfig(
-                agent_type="vision_assistant",
-                system_prompt="你是一个多模态视觉助手，善于分析图像内容。",
-                model_config={
-                    "model": model_name,
-                    "temperature": 0.2,
-                    "max_tokens": 800,
-                },
-                framework_config={
-                    "provider": "deepseek" if "deepseek" in model_name else "openai"
-                },
-            ),
-            metadata={
-                "test_framework": "adk_complete_e2e",
-                "framework_type": "adk",
-                "test_suite": "complete_e2e",
-                "test_case": test_case,
-                "preferred_model": model_name,
-                "timestamp": start_time.isoformat(),
-                "expects_multimodal": True,
-            },
-        )
-
-        self.log_request_details(task_request, test_case, model_name)
-
-        try:
-            result = await self.assistant.process_request(task_request)
-            execution_time = (datetime.now() - start_time).total_seconds()
-
-            self.log_response_details(result, test_case, execution_time, model_name)
-
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-
-            if result.status == TaskStatus.SUCCESS and result.messages:
-                self.performance_metrics["successful_requests"] += 1
-
-                response_text = result.messages[0].content if result.messages else ""
-                recognized_color = any(
-                    keyword in response_text.lower()
-                    for keyword in ["red", "green", "blue", "yellow", "色"]
-                )
-
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "success",
-                    "execution_time": execution_time,
-                    "response_length": len(response_text),
-                    "recognized_color": recognized_color,
-                    "error_message": None,
-                    "metadata": result.metadata,
-                    "timestamp": datetime.now().isoformat(),
-                    "response_preview": response_text[:200]
-                    + ("..." if len(response_text) > 200 else ""),
-                }
-
-                self.test_results.append(test_result)
-                if recognized_color:
-                    self.logger.info(f"✅ {test_case} PASSED - Model described image content")
-                else:
-                    self.logger.warning(
-                        f"⚠️ {test_case} PASSED BUT COLOR NOT DETECTED - Review response"
-                    )
-                return True
-
-            else:
-                self.performance_metrics["failed_requests"] += 1
-
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "failed",
-                    "execution_time": execution_time,
-                    "error_message": result.error_message
-                    if result.status != TaskStatus.SUCCESS
-                    else "No response returned",
-                    "timestamp": datetime.now().isoformat(),
-                }
-
-                self.test_results.append(test_result)
-                self.logger.error(f"❌ {test_case} FAILED - {test_result['error_message']}")
-                return False
-
-        except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds()
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["failed_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-
-            self.logger.error(f"❌ {test_case} EXCEPTION - {str(e)}")
-
-            test_result = {
-                "test_case": test_case,
-                "task_id": task_request.task_id,
+            creation_metadata={"expects_multimodal": True},
+            conversation_metadata={"expects_multimodal": True},
+            model_config={
                 "model": model_name,
-                "status": "exception",
-                "execution_time": execution_time,
-                "error_message": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
-
-            self.test_results.append(test_result)
-            return False
+                "temperature": 0.2,
+                "max_tokens": 800,
+            },
+            evaluate_response=evaluate_response,
+        )
 
     async def test_tool_usage_request(self, model: str = None):
-        """Test tool usage with detailed logging.
-        
-        Args:
-            model: Specific model to test (if None, uses default from settings)
-        """
+        """Test tool usage request with the new conversation flow."""
         test_case = "tool_usage_request"
         model_name = model or self.settings.default_model
-        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
-        
-        start_time = datetime.now()
-        
-        task_request = TaskRequest(
-            task_id=f"e2e_tool_{int(start_time.timestamp())}",
-            task_type="chat",
-            description="Tool usage test with chat log saving",
-            messages=[
-                UniversalMessage(
-                    role="user",
-                    content="Please use the chat_log tool to save this conversation content: 'Complete E2E test conversation for tool usage validation'. Use these exact parameters: content='Complete E2E test conversation for tool usage validation', format='json', session_id='e2e_test_session'.",
-                    metadata={"test_case": test_case, "expects_tool_call": True}
-                )
-            ],
-            agent_config=AgentConfig(
-                agent_type="tool_assistant",
-                system_prompt="You are a helpful AI assistant with access to tools.",
-                model_config={
-                    "model": model_name,
-                    "temperature": 0.3,
-                    "max_tokens": 1500
-                },
-                available_tools=["chat_log"],
-                framework_config={
-                    "provider": "deepseek" if "deepseek" in model_name else "openai"
-                }
-            ),
-            metadata={
-                "test_framework": "adk_complete_e2e",
-                "framework_type": "adk", 
-                "test_suite": "complete_e2e",
-                "test_case": test_case,
-                "preferred_model": model_name,
-                "timestamp": start_time.isoformat(),
-                "expects_tool_usage": True,
-            }
+
+        tool_message = UniversalMessage(
+            role="user",
+            content="Please use the chat_log tool to save this conversation content: 'Complete E2E test conversation for tool usage validation'. Use these exact parameters: content='Complete E2E test conversation for tool usage validation', format='json', session_id='e2e_test_session'.",
+            metadata={"test_case": test_case, "expects_tool_call": True},
         )
-        
-        # Log request details
-        self.log_request_details(task_request, test_case, model_name)
-        
-        try:
-            result = await self.assistant.process_request(task_request)
-            execution_time = (datetime.now() - start_time).total_seconds()
-            
-            # Log response details
-            self.log_response_details(result, test_case, execution_time, model_name)
-            
-            # Update performance metrics
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            if result.status == TaskStatus.SUCCESS:
-                self.performance_metrics["successful_requests"] += 1
-                
-                # Check for tool usage indicators
-                tool_used = False
-                if result.messages:
-                    response_content = result.messages[0].content.lower()
-                    tool_indicators = ["chat_log", "saved", "logged", "tool", "file"]
-                    tool_used = any(indicator in response_content for indicator in tool_indicators)
-                
-                if tool_used:
-                    self.performance_metrics["tool_calls_detected"] += 1
-                    
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "success",
-                    "execution_time": execution_time,
-                    "response_length": len(result.messages[0].content) if result.messages else 0,
-                    "tool_calls_detected": tool_used,
-                    "error_message": None,
-                    "metadata": result.metadata,
-                    "timestamp": datetime.now().isoformat(),
-                    "response_preview": result.messages[0].content[:200] + "..." if result.messages and len(result.messages[0].content) > 200 else result.messages[0].content if result.messages else "",
-                }
-                
-                self.test_results.append(test_result)
-                
-                if tool_used:
-                    self.logger.info(f"✅ {test_case} PASSED - Tool usage detected")
-                else:
-                    self.logger.warning(f"⚠️ {test_case} PARTIAL - No tool usage detected")
-                return True
-                
-            else:
-                self.performance_metrics["failed_requests"] += 1
-                
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "failed",
-                    "execution_time": execution_time,
-                    "error_message": result.error_message,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                
-                self.test_results.append(test_result)
-                self.logger.error(f"❌ {test_case} FAILED - {result.error_message}")
-                return False
-                
-        except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds()
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["failed_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            self.logger.error(f"❌ {test_case} EXCEPTION - {str(e)}")
-            
-            test_result = {
-                "test_case": test_case,
-                "task_id": task_request.task_id,
+
+        def evaluate_response(result):
+            tool_used = False
+            if result.messages:
+                response_content = result.messages[0].content.lower()
+                tool_indicators = ["chat_log", "saved", "logged", "tool", "file"]
+                tool_used = any(indicator in response_content for indicator in tool_indicators)
+            warning = None
+            if not tool_used:
+                warning = "Tool usage indicators not detected in response"
+            return True, {"tool_calls_detected": tool_used}, warning
+
+        return await self._run_conversation_test(
+            test_case=test_case,
+            model_name=model_name,
+            agent_type="tool_assistant",
+            system_prompt="You are a helpful AI assistant with access to tools.",
+            messages=[tool_message],
+            creation_metadata={"expects_tool_usage": True},
+            conversation_metadata={"expects_tool_usage": True},
+            model_config={
                 "model": model_name,
-                "status": "exception",
-                "execution_time": execution_time,
-                "error_message": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-            self.test_results.append(test_result)
-            return False
+                "temperature": 0.3,
+                "max_tokens": 1500,
+            },
+            available_tools=["chat_log"],
+            evaluate_response=evaluate_response,
+        )
 
     async def test_complex_conversation(self, model: str = None):
-        """Test complex multi-turn conversation with detailed logging.
-        
-        Args:
-            model: Specific model to test (if None, uses default from settings)
-        """
+        """Test complex conversation with evaluation of response quality."""
         test_case = "complex_conversation"
         model_name = model or self.settings.default_model
-        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
-        
-        start_time = datetime.now()
-        
-        task_request = TaskRequest(
-            task_id=f"e2e_complex_{int(start_time.timestamp())}",
-            task_type="chat",
-            description="Complex conversation with context and multiple requirements",
-            messages=[
-                UniversalMessage(
-                    role="user",
-                    content="I'm working on a Python project and need help with the following: 1) Explain async/await in Python, 2) Give me a simple example, 3) Tell me when to use it vs regular functions. Please be comprehensive but concise.",
-                    metadata={"test_case": test_case, "complexity": "high"}
-                )
-            ],
-            agent_config=AgentConfig(
-                agent_type="programming_assistant",
-                system_prompt="You are an expert Python programming assistant.",
-                model_config={
-                    "model": model_name,
-                    "temperature": 0.2,
-                    "max_tokens": 2000
-                },
-                framework_config={
-                    "provider": "deepseek" if "deepseek" in model_name else "openai"
-                }
-            ),
-            metadata={
-                "test_framework": "adk_complete_e2e",
-                "framework_type": "adk",
-                "test_suite": "complete_e2e", 
-                "test_case": test_case,
-                "preferred_model": model_name,
-                "timestamp": start_time.isoformat(),
+
+        complex_message = UniversalMessage(
+            role="user",
+            content="I'm working on a Python project and need help with the following: 1) Explain async/await in Python, 2) Give me a simple example, 3) Tell me when to use it vs regular functions. Please be comprehensive but concise.",
+            metadata={"test_case": test_case, "complexity": "high"},
+        )
+
+        def evaluate_response(result):
+            if not result.messages:
+                return False, {"response_quality": {}}, "No response returned"
+            content = result.messages[0].content.lower()
+            response_quality = {
+                "comprehensive": len(content) > 300,
+                "has_examples": any(word in content for word in ["example", "def ", "async def", "await"]),
+                "addresses_all_points": all(word in content for word in ["async", "await", "function"]),
+            }
+            quality_score = sum(response_quality.values())
+            warning = None
+            if quality_score < 2:
+                warning = f"Lower quality response (score: {quality_score}/3)"
+            return True, {"response_quality": response_quality}, warning
+
+        return await self._run_conversation_test(
+            test_case=test_case,
+            model_name=model_name,
+            agent_type="programming_assistant",
+            system_prompt="You are an expert Python programming assistant.",
+            messages=[complex_message],
+            creation_metadata={"complexity_level": "high"},
+            conversation_metadata={
                 "complexity_level": "high",
                 "expected_topics": ["async", "await", "python", "examples"],
-            }
-        )
-        
-        # Log request details
-        self.log_request_details(task_request, test_case, model_name)
-        
-        try:
-            result = await self.assistant.process_request(task_request)
-            execution_time = (datetime.now() - start_time).total_seconds()
-            
-            # Log response details
-            self.log_response_details(result, test_case, execution_time, model_name)
-            
-            # Update performance metrics
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            if result.status == TaskStatus.SUCCESS:
-                self.performance_metrics["successful_requests"] += 1
-                
-                # Check response quality
-                response_quality = {"comprehensive": False, "has_examples": False, "addresses_all_points": False}
-                if result.messages:
-                    content = result.messages[0].content.lower()
-                    response_quality["comprehensive"] = len(content) > 300
-                    response_quality["has_examples"] = any(word in content for word in ["example", "def ", "async def", "await"])
-                    response_quality["addresses_all_points"] = all(word in content for word in ["async", "await", "function"])
-                
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "success",
-                    "execution_time": execution_time,
-                    "response_length": len(result.messages[0].content) if result.messages else 0,
-                    "response_quality": response_quality,
-                    "error_message": None,
-                    "metadata": result.metadata,
-                    "timestamp": datetime.now().isoformat(),
-                    "response_preview": result.messages[0].content[:300] + "..." if result.messages and len(result.messages[0].content) > 300 else result.messages[0].content if result.messages else "",
-                }
-                
-                self.test_results.append(test_result)
-                
-                quality_score = sum(response_quality.values())
-                if quality_score >= 2:
-                    self.logger.info(f"✅ {test_case} PASSED - High quality response (score: {quality_score}/3)")
-                else:
-                    self.logger.warning(f"⚠️ {test_case} PARTIAL - Lower quality response (score: {quality_score}/3)")
-                return True
-                
-            else:
-                self.performance_metrics["failed_requests"] += 1
-                
-                test_result = {
-                    "test_case": test_case,
-                    "task_id": task_request.task_id,
-                    "model": model_name,
-                    "status": "failed",
-                    "execution_time": execution_time,
-                    "error_message": result.error_message,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                
-                self.test_results.append(test_result)
-                self.logger.error(f"❌ {test_case} FAILED - {result.error_message}")
-                return False
-                
-        except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds()
-            self.performance_metrics["total_requests"] += 1
-            self.performance_metrics["failed_requests"] += 1
-            self.performance_metrics["total_execution_time"] += execution_time
-            
-            self.logger.error(f"❌ {test_case} EXCEPTION - {str(e)}")
-            
-            test_result = {
                 "test_case": test_case,
-                "task_id": task_request.task_id,
+            },
+            model_config={
                 "model": model_name,
-                "status": "exception",
-                "execution_time": execution_time,
-                "error_message": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-            self.test_results.append(test_result)
-            return False
+                "temperature": 0.2,
+                "max_tokens": 2000,
+            },
+            evaluate_response=evaluate_response,
+        )
 
     def generate_final_report(self):
         """Generate comprehensive final test report."""

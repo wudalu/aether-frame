@@ -60,7 +60,7 @@ class RunnerManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:16]
 
-    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None, engine_session_id: str = None) -> Tuple[str, str]:
+    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None, engine_session_id: str = None, create_session: bool = True) -> Tuple[str, Optional[str]]:
         """
         Get existing Runner or create new one, then create Session using Engine-provided session_id.
         
@@ -87,12 +87,17 @@ class RunnerManager:
             self.config_to_runner[config_hash] = runner_id
             self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
         
-        # H5: Use Engine-provided session_id instead of generating our own
-        session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
-        await self._create_session_in_runner(runner_id, task_request, external_session_id=session_id)
-        
-        # Record session-to-runner mapping
-        self.session_to_runner[session_id] = runner_id
+        session_id = None
+        if create_session:
+            # H5: Use Engine-provided session_id instead of generating our own
+            session_id = engine_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
+            created_session_id = await self._create_session_in_runner(
+                runner_id, task_request, external_session_id=session_id
+            )
+            session_id = created_session_id
+            
+            # Record session-to-runner mapping
+            self.session_to_runner[session_id] = runner_id
         
         return runner_id, session_id
 
@@ -212,6 +217,7 @@ class RunnerManager:
             # Mock session
             runner_context["sessions"][session_id] = {"mock": True}
             self.logger.info(f"Created mock Session {session_id} in Runner {runner_id} - ADK not available")
+            self.session_to_runner[session_id] = runner_id
             return session_id
         
         try:
@@ -247,6 +253,7 @@ class RunnerManager:
             
             # Update runner context with the user_id used for this session
             runner_context["user_id"] = user_id
+            self.session_to_runner[session_id] = runner_id
             
             self.logger.info(f"Created ADK Session {session_id} in Runner {runner_id}")
             return session_id
@@ -466,4 +473,3 @@ class RunnerManager:
             )
         
         return runner_id
-
