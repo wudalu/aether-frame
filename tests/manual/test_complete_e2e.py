@@ -37,6 +37,7 @@ from aether_frame.contracts import (
     ContentPart,
     ImageReference,
     UserContext,
+    FrameworkType,
 )
 
 
@@ -703,6 +704,158 @@ class CompleteE2ETestSuite:
             evaluate_response=evaluate_response,
         )
 
+    async def test_agent_reuse_same_config(self, model: str = None):
+        """Validate that identical agent configs are reused until session capacity is exceeded."""
+        test_case = "agent_reuse_same_config"
+        model_name = model or self.settings.default_model
+        start_time = datetime.now()
+
+        user_context = self._build_user_context()
+        shared_system_prompt = "You specialize in knowledge-base lookups and should maintain reusable state."
+        shared_model_config = {
+            "model": model_name,
+            "temperature": 0.3,
+            "max_tokens": 800,
+        }
+
+        initial_metadata = {
+            "test_case": test_case,
+            "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
+        }
+
+        first_agent_id, first_chat_id = await self._create_agent_and_session(
+            model_name=model_name,
+            agent_type="reuse_assistant",
+            system_prompt=shared_system_prompt,
+            initial_message=None,
+            creation_task=f"reuse_create_1_{int(start_time.timestamp())}",
+            creation_description="Create agent for reuse baseline",
+            creation_metadata=initial_metadata,
+            user_context=user_context,
+            model_config=shared_model_config,
+        )
+
+        adk_adapter = await self.assistant.execution_engine.framework_registry.get_adapter(FrameworkType.ADK)
+        if not adk_adapter:
+            self.logger.error("❌ Agent reuse test aborted: ADK adapter unavailable")
+            return False
+        first_runner_id = adk_adapter._agent_runners.get(first_agent_id)
+
+        self.logger.info(
+            "🔄 Agent reuse test - initial agent created | agent_id=%s | runner_id=%s | chat_session_id=%s",
+            first_agent_id,
+            first_runner_id,
+            first_chat_id,
+        )
+
+        second_metadata = {
+            "test_case": test_case,
+            "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
+        }
+
+        second_agent_id, second_chat_id = await self._create_agent_and_session(
+            model_name=model_name,
+            agent_type="reuse_assistant",
+            system_prompt=shared_system_prompt,
+            initial_message=None,
+            creation_task=f"reuse_create_2_{int(datetime.now().timestamp())}",
+            creation_description="Create agent for reuse verification",
+            creation_metadata=second_metadata,
+            user_context=user_context,
+            model_config=shared_model_config,
+        )
+
+        second_runner_id = adk_adapter._agent_runners.get(second_agent_id)
+        reuse_success = (second_agent_id == first_agent_id) and (second_runner_id == first_runner_id)
+
+        self.logger.info(
+            "🔁 Agent reuse attempt | agent_id=%s | runner_id=%s | reused=%s | chat_session_id=%s",
+            second_agent_id,
+            second_runner_id,
+            reuse_success,
+            second_chat_id,
+        )
+
+        overflow_success = False
+        overflow_agent_id = None
+        overflow_runner_id = None
+        original_threshold = getattr(adk_adapter.runner_manager.settings, "max_sessions_per_agent", 100)
+
+        runner_context = adk_adapter.runner_manager.runners.get(first_runner_id)
+        try:
+            adk_adapter.runner_manager.settings.max_sessions_per_agent = 1
+            if runner_context is not None:
+                runner_context.setdefault("sessions", {})["force_existing_session"] = {}
+
+            overflow_metadata = {
+                "test_case": test_case,
+                "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
+                "trigger": "threshold_overflow",
+            }
+
+            overflow_agent_id, overflow_chat_id = await self._create_agent_and_session(
+                model_name=model_name,
+                agent_type="reuse_assistant",
+                system_prompt=shared_system_prompt,
+                initial_message=None,
+                creation_task=f"reuse_create_overflow_{int(datetime.now().timestamp())}",
+                creation_description="Create agent after forcing session threshold",
+                creation_metadata=overflow_metadata,
+                user_context=user_context,
+                model_config=shared_model_config,
+            )
+
+            overflow_runner_id = adk_adapter._agent_runners.get(overflow_agent_id)
+            overflow_success = overflow_agent_id != first_agent_id
+
+            self.logger.info(
+                "♻️ Agent overflow attempt | agent_id=%s | runner_id=%s | new_agent=%s | chat_session_id=%s",
+                overflow_agent_id,
+                overflow_runner_id,
+                overflow_success,
+                overflow_chat_id,
+            )
+        finally:
+            adk_adapter.runner_manager.settings.max_sessions_per_agent = original_threshold
+            if runner_context is not None:
+                runner_context.setdefault("sessions", {}).pop("force_existing_session", None)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        success = reuse_success and overflow_success
+
+        if success:
+            self.logger.info("✅ Agent reuse behaviour validated: reuse occurred and new agent spawned when threshold exceeded")
+        else:
+            self.logger.error(
+                "❌ Agent reuse behaviour failed: reuse_success=%s, overflow_success=%s",
+                reuse_success,
+                overflow_success,
+            )
+
+        self.test_results.append(
+            {
+                "test_case": test_case,
+                "task_id": f"e2e_{test_case}_{int(datetime.now().timestamp())}",
+                "model": model_name,
+                "status": "success" if success else "failed",
+                "execution_time": duration,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {
+                    "first_agent_id": first_agent_id,
+                    "second_agent_id": second_agent_id,
+                    "overflow_agent_id": overflow_agent_id,
+                    "first_runner_id": first_runner_id,
+                    "second_runner_id": second_runner_id,
+                    "overflow_runner_id": overflow_runner_id,
+                    "reuse_success": reuse_success,
+                    "overflow_success": overflow_success,
+                    "model": model_name,
+                },
+            }
+        )
+
+        return success
+
     def generate_final_report(self):
         """Generate comprehensive final test report."""
         end_time = datetime.now()
@@ -775,7 +928,8 @@ class CompleteE2ETestSuite:
             self.logger.info("       ├── Test 1: Simple Conversation")
             self.logger.info("       ├── Test 2: Multimodal Image Analysis")
             self.logger.info("       ├── Test 3: Tool Usage Request")
-            self.logger.info("       └── Test 4: Complex Conversation")
+            self.logger.info("       ├── Test 4: Complex Conversation")
+            self.logger.info("       └── Test 5: Agent Config Reuse")
         self.logger.info("5. Report Generation & Summary")
         self.logger.info("=" * 80)
         
@@ -838,11 +992,21 @@ class CompleteE2ETestSuite:
                 self.logger.info(f"\n📋 [{model}] Starting Test 4: Complex Conversation...")
                 result4 = await self.test_complex_conversation(model)
                 model_results.append(("complex_conversation", result4))
-                
+
                 if result4:
                     self.logger.info(f"✅ [{model}] Test 4 COMPLETED: Complex Conversation - SUCCESS")
                 else:
                     self.logger.error(f"❌ [{model}] Test 4 COMPLETED: Complex Conversation - FAILED")
+
+                # Test 5: Agent config reuse behaviour
+                self.logger.info(f"\n📋 [{model}] Starting Test 5: Agent Config Reuse...")
+                result5 = await self.test_agent_reuse_same_config(model)
+                model_results.append(("agent_reuse_same_config", result5))
+
+                if result5:
+                    self.logger.info(f"✅ [{model}] Test 5 COMPLETED: Agent Config Reuse - SUCCESS")
+                else:
+                    self.logger.error(f"❌ [{model}] Test 5 COMPLETED: Agent Config Reuse - FAILED")
                 
                 # Calculate model success rate
                 model_success_count = sum(1 for _, success in model_results if success)

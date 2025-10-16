@@ -1,161 +1,157 @@
-"""Application settings using Pydantic."""
+"""Application settings using Pydantic V2 style configuration."""
 
 from typing import List, Optional
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings."""
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
     # Application settings
-    app_name: str = Field(default="aether-frame", env="APP_NAME")
-    app_version: str = Field(default="0.1.0", env="APP_VERSION")
-    environment: str = Field(default="development", env="ENVIRONMENT")
-    debug: bool = Field(default=True, env="DEBUG")
+    app_name: str = "aether-frame"
+    app_version: str = "0.1.0"
+    environment: str = "development"
+    debug: bool = True
 
     # Logging configuration
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    log_format: str = Field(default="json", env="LOG_FORMAT")
-    log_file_path: Optional[str] = Field(default=None, env="LOG_FILE_PATH")
+    log_level: str = "INFO"
+    log_format: str = "json"
+    log_file_path: Optional[str] = None
 
     # Framework settings
-    default_framework: str = Field(default="adk", env="DEFAULT_FRAMEWORK")
-    enable_framework_switching: bool = Field(
-        default=True, env="ENABLE_FRAMEWORK_SWITCHING"
-    )
+    default_framework: str = "adk"
+    enable_framework_switching: bool = True
 
     # LLM Provider settings
-    openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4", env="OPENAI_MODEL")
-    openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
-    openai_temperature: float = Field(default=0.7, env="OPENAI_TEMPERATURE")
+    openai_api_key: Optional[str] = None
+    openai_model: str = "gpt-4"
+    openai_max_tokens: int = 4096
+    openai_temperature: float = 0.7
 
-    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    anthropic_model: str = Field(
-        default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
-    )
-    anthropic_max_tokens: int = Field(default=4096, env="ANTHROPIC_MAX_TOKENS")
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-3-sonnet-20240229"
+    anthropic_max_tokens: int = 4096
 
     # DeepSeek configuration
-    deepseek_api_key: Optional[str] = Field(default=None, env="DEEPSEEK_API_KEY")
-    deepseek_model: str = Field(default="deepseek-chat", env="DEEPSEEK_MODEL")
-    deepseek_base_url: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
-    deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
-    deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
+    deepseek_api_key: Optional[str] = None
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_max_tokens: int = 4096
+    deepseek_temperature: float = 0.7
 
     # Qwen / DashScope configuration
-    qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
-    qwen_base_url: Optional[str] = Field(default=None, env="QWEN_BASE_URL")
-    qwen_model: str = Field(default="qwen-vl-plus", env="QWEN_MODEL")
+    qwen_api_key: Optional[str] = None
+    qwen_base_url: Optional[str] = None
+    qwen_model: str = "qwen-vl-plus"
 
     # Azure OpenAI configuration - Using LiteLLM standard environment variable names
-    azure_api_key: Optional[str] = Field(default=None, env="AZURE_API_KEY")
-    azure_api_base: str = Field(default="", env="AZURE_API_BASE")
-    azure_api_version: str = Field(default="2023-07-01-preview", env="AZURE_API_VERSION")
+    azure_api_key: Optional[str] = None
+    azure_api_base: str = ""
+    azure_api_version: str = "2023-07-01-preview"
 
     # LiteLLM configuration
-    litellm_log: str = Field(default="ERROR", env="LITELLM_LOG")
-    deepseek_api_base: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_API_BASE")
+    litellm_log: str = "ERROR"
+    deepseek_api_base: str = "https://api.deepseek.com/v1"
 
     # Google AI/Vertex AI configuration
-    google_ai_api_key: Optional[str] = Field(default=None, env="GOOGLE_AI_API_KEY")
-    vertex_ai_project_id: Optional[str] = Field(default=None, env="VERTEX_AI_PROJECT_ID")
-    vertex_ai_location: str = Field(default="us-central1", env="VERTEX_AI_LOCATION")
-    vertex_ai_model: str = Field(default="gemini-pro", env="VERTEX_AI_MODEL")
+    google_ai_api_key: Optional[str] = None
+    vertex_ai_project_id: Optional[str] = None
+    vertex_ai_location: str = "us-central1"
+    vertex_ai_model: str = "gemini-pro"
 
     # ADK configuration
-    adk_project_id: Optional[str] = Field(default=None, env="ADK_PROJECT_ID")
-    adk_location: str = Field(default="us-central1", env="ADK_LOCATION")
-    adk_credentials_path: Optional[str] = Field(default=None, env="ADK_CREDENTIALS_PATH")
+    adk_project_id: Optional[str] = None
+    adk_location: str = "us-central1"
+    adk_credentials_path: Optional[str] = None
 
     # AutoGen configuration
-    autogen_model_name: str = Field(default="gpt-4", env="AUTOGEN_MODEL_NAME")
-    autogen_max_tokens: int = Field(default=4096, env="AUTOGEN_MAX_TOKENS")
+    autogen_model_name: str = "gpt-4"
+    autogen_max_tokens: int = 4096
 
     # LangGraph configuration
-    langgraph_memory_type: str = Field(default="postgres", env="LANGGRAPH_MEMORY_TYPE")
-    langgraph_checkpoint_backend: str = Field(default="postgres", env="LANGGRAPH_CHECKPOINT_BACKEND")
+    langgraph_memory_type: str = "postgres"
+    langgraph_checkpoint_backend: str = "postgres"
 
     # PostgreSQL configuration
-    postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
-    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
-    postgres_user: str = Field(default="postgres", env="POSTGRES_USER")
-    postgres_password: Optional[str] = Field(default=None, env="POSTGRES_PASSWORD")
-    postgres_database: str = Field(default="aether_frame", env="POSTGRES_DATABASE")
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_user: str = "postgres"
+    postgres_password: Optional[str] = None
+    postgres_database: str = "aether_frame"
 
     # Search engine configuration
-    search_engine: str = Field(default="google", env="SEARCH_ENGINE")
-    google_search_api_key: Optional[str] = Field(default=None, env="GOOGLE_SEARCH_API_KEY")
-    google_search_cx: Optional[str] = Field(default=None, env="GOOGLE_SEARCH_CX")
+    search_engine: str = "google"
+    google_search_api_key: Optional[str] = None
+    google_search_cx: Optional[str] = None
 
     # Observability and monitoring
-    jaeger_endpoint: str = Field(default="http://localhost:14268/api/traces", env="JAEGER_ENDPOINT")
+    jaeger_endpoint: str = "http://localhost:14268/api/traces"
 
     # Security configuration
-    secret_key: str = Field(default="your-secret-key-here", env="SECRET_KEY")
-    api_key_header: str = Field(default="X-API-Key", env="API_KEY_HEADER")
+    secret_key: str = "your-secret-key-here"
+    api_key_header: str = "X-API-Key"
 
     # CORS configuration
-    cors_origins: str = Field(default='["http://localhost:3000"]', env="CORS_ORIGINS")
+    cors_origins: str = '["http://localhost:3000"]'
 
     # Development settings
-    reload_on_change: bool = Field(default=True, env="RELOAD_ON_CHANGE")
-    profiling_enabled: bool = Field(default=False, env="PROFILING_ENABLED")
+    reload_on_change: bool = True
+    profiling_enabled: bool = False
 
     # Default model configuration
-    default_model_provider: str = Field(default="deepseek", env="DEFAULT_MODEL_PROVIDER")
-    default_model: str = Field(default="deepseek-chat", env="DEFAULT_MODEL")
+    default_model_provider: str = "deepseek"
+    default_model: str = "deepseek-chat"
 
     # Memory & Storage configuration
-    memory_backend: str = Field(default="redis", env="MEMORY_BACKEND")
-    redis_url: str = Field(default="redis://localhost:6379", env="REDIS_URL")
-    redis_db: int = Field(default=0, env="REDIS_DB")
-    redis_password: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    memory_backend: str = "redis"
+    redis_url: str = "redis://localhost:6379"
+    redis_db: int = 0
+    redis_password: Optional[str] = None
 
     # Session management
-    session_timeout: int = Field(default=3600, env="SESSION_TIMEOUT")
-    session_storage: str = Field(default="redis", env="SESSION_STORAGE")
+    session_timeout: int = 3600
+    session_storage: str = "redis"
 
     # Observability settings
-    enable_metrics: bool = Field(default=True, env="ENABLE_METRICS")
-    enable_tracing: bool = Field(default=True, env="ENABLE_TRACING")
-    prometheus_port: int = Field(default=9090, env="PROMETHEUS_PORT")
+    enable_metrics: bool = True
+    enable_tracing: bool = True
+    prometheus_port: int = 9090
 
     # Performance settings
-    max_concurrent_tasks: int = Field(default=10, env="MAX_CONCURRENT_TASKS")
-    task_timeout: int = Field(default=300, env="TASK_TIMEOUT")
-    memory_limit_mb: int = Field(default=1024, env="MEMORY_LIMIT_MB")
+    max_concurrent_tasks: int = 10
+    task_timeout: int = 300
+    memory_limit_mb: int = 1024
 
     # Bootstrap configuration
-    enable_tool_service: bool = Field(default=True, env="ENABLE_TOOL_SERVICE")
-    enable_mcp_tools: bool = Field(default=False, env="ENABLE_MCP_TOOLS")
-    enable_adk_native_tools: bool = Field(default=False, env="ENABLE_ADK_NATIVE_TOOLS")
+    enable_tool_service: bool = True
+    enable_mcp_tools: bool = False
+    enable_adk_native_tools: bool = False
 
     # Framework preferences
-    preferred_frameworks: List[str] = Field(default=["adk"], env="PREFERRED_FRAMEWORKS")
-    framework_timeout: int = Field(default=30, env="FRAMEWORK_TIMEOUT")
+    preferred_frameworks: List[str] = Field(default_factory=lambda: ["adk"])
+    framework_timeout: int = 30
 
     # Runtime ID configuration
-    default_user_id: str = Field(default="anonymous", env="DEFAULT_USER_ID")
-    default_app_name: str = Field(default="aether_frame", env="DEFAULT_APP_NAME")
-    default_agent_type: str = Field(default="adk_domain_agent", env="DEFAULT_AGENT_TYPE")
-    
+    default_user_id: str = "anonymous"
+    default_app_name: str = "aether_frame"
+    default_agent_type: str = "adk_domain_agent"
+
     # ID generation configuration
-    runner_id_prefix: str = Field(default="runner", env="RUNNER_ID_PREFIX")
-    session_id_prefix: str = Field(default="session", env="SESSION_ID_PREFIX")
-    agent_id_prefix: str = Field(default="agent", env="AGENT_ID_PREFIX")
-    domain_agent_id_prefix: str = Field(default="domain_agent", env="DOMAIN_AGENT_ID_PREFIX")
-    
+    runner_id_prefix: str = "runner"
+    session_id_prefix: str = "session"
+    agent_id_prefix: str = "agent"
+    domain_agent_id_prefix: str = "domain_agent"
+    max_sessions_per_agent: int = 100
+
     # Default model fallbacks
-    default_adk_model: str = Field(default="gemini-1.5-flash", env="DEFAULT_ADK_MODEL")
-    default_autogen_model: str = Field(default="gpt-4", env="DEFAULT_AUTOGEN_MODEL")
-    default_langgraph_model: str = Field(default="gpt-4", env="DEFAULT_LANGGRAPH_MODEL")
-
-    class Config:
-        """Pydantic configuration."""
-
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    default_adk_model: str = "gemini-1.5-flash"
+    default_autogen_model: str = "gpt-4"
+    default_langgraph_model: str = "gpt-4"

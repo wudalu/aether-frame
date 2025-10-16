@@ -60,7 +60,19 @@ class RunnerManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:16]
 
-    async def get_or_create_runner(self, agent_config: AgentConfig, task_request = None, adk_agent = None, engine_session_id: str = None, create_session: bool = True) -> Tuple[str, Optional[str]]:
+    def compute_config_hash(self, agent_config: AgentConfig) -> str:
+        """Public helper to compute a stable hash for an agent configuration."""
+        return self._hash_config(agent_config)
+
+    async def get_or_create_runner(
+        self,
+        agent_config: AgentConfig,
+        task_request = None,
+        adk_agent = None,
+        engine_session_id: str = None,
+        create_session: bool = True,
+        allow_reuse: bool = True,
+    ) -> Tuple[str, Optional[str]]:
         """
         Get existing Runner or create new one, then create Session using Engine-provided session_id.
         
@@ -71,6 +83,7 @@ class RunnerManager:
             task_request: TaskRequest containing context information for Session creation
             adk_agent: Optional pre-created ADK agent to use (if provided, skips agent creation)
             engine_session_id: Session ID provided by Engine (H5)
+            allow_reuse: When False, forces creation of a new runner even if a config match exists
             
         Returns:
             Tuple[runner_id, session_id]: IDs for created/existing runner and session
@@ -78,7 +91,7 @@ class RunnerManager:
         config_hash = self._hash_config(agent_config)
         
         # Check if Runner exists for this config
-        if config_hash in self.config_to_runner:
+        if allow_reuse and config_hash in self.config_to_runner:
             runner_id = self.config_to_runner[config_hash]
             self.logger.info(f"Reusing existing Runner {runner_id} for config hash {config_hash}")
         else:

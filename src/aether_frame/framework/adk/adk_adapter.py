@@ -60,6 +60,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         # Agent to Runner mapping management (initialize before RunnerManager)
         self._agent_runners: Dict[str, str] = {}  # agent_id -> runner_id
         self._agent_sessions: Dict[str, List[str]] = {}  # agent_id -> [session_ids]
+        self._config_agents: Dict[str, List[str]] = {}  # config_hash -> [agent_ids]
         
         # ADK Session Manager for chat session coordination
         from .adk_session_manager import AdkSessionManager
@@ -241,7 +242,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
     async def _create_runtime_context_for_new_session(self, task_request: TaskRequest) -> "RuntimeContext":
         """Create RuntimeContext for new session with existing agent (agent_id only)."""
         self.logger.info(f"Pattern 2: agent_id only - Creating new session for existing agent {task_request.agent_id}")
-        
+
         # Get agent and runner data (may raise ExecutionError)
         domain_agent, runner_id, runner_context_dict = self._get_agent_and_runner(task_request.agent_id, task_request)
         agent_config = self.agent_manager._agent_configs.get(task_request.agent_id)
@@ -279,114 +280,150 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 task_request
             )
 
+    async def _select_agent_for_config(
+        self,
+        config_hash: str,
+        max_sessions: int,
+    ) -> Optional[Tuple[str, "AdkDomainAgent", str]]:
+        """Pick a reusable agent for the given config hash if capacity allows."""
+        candidate_ids = self._config_agents.get(config_hash, [])
+        if not candidate_ids:
+            return None
+
+        valid_candidates: List[str] = []
+        selected: Optional[Tuple[str, "AdkDomainAgent", str]] = None
+
+        for agent_id in candidate_ids:
+            domain_agent = self.agent_manager._agents.get(agent_id)
+            if not domain_agent:
+                continue
+
+            runner_id = self._agent_runners.get(agent_id)
+            if not runner_id:
+                continue
+
+            runner_context = self.runner_manager.runners.get(runner_id)
+            if not runner_context:
+                continue
+
+            valid_candidates.append(agent_id)
+
+            session_count = await self.runner_manager.get_runner_session_count(runner_id)
+            if selected is None and session_count < max_sessions:
+                selected = (agent_id, domain_agent, runner_id)
+
+        if valid_candidates:
+            self._config_agents[config_hash] = valid_candidates
+        else:
+            self._config_agents.pop(config_hash, None)
+
+        return selected
+
     async def _create_runtime_context_for_new_agent(self, task_request: TaskRequest) -> "RuntimeContext":
         """Create RuntimeContext for new agent and session (agent_config only)."""
-        from datetime import datetime
-        
         self.logger.info(f"Pattern 3: agent_config - Creating new agent for agent_type: {task_request.agent_config.agent_type}")
         # Preserve any business-level chat_session_id for later mapping
         chat_session_id = task_request.session_id
         if not chat_session_id and task_request.metadata:
             chat_session_id = task_request.metadata.get("chat_session_id")
         
-        # Generate agent_id and session_id
-        agent_id = self.agent_manager.generate_agent_id()
+        # Prepare session identifier (actual ADK session lazily created later)
         session_id = f"adk_session_{uuid4().hex[:12]}"
-        self.logger.info(f"Generated agent_id: {agent_id}, session_id: {session_id}")
-        
-        # Create domain agent first
-        domain_agent = await self._create_domain_agent_for_config(task_request.agent_config, task_request)
-        
-        # Register agent with AgentManager
-        try:
-            self.agent_manager._agents[agent_id] = domain_agent
-            self.agent_manager._agent_configs[agent_id] = task_request.agent_config
-            self.agent_manager._agent_metadata[agent_id] = {
-                "created_at": datetime.now(),
-                "last_activity": datetime.now(),
-                "agent_type": task_request.agent_config.agent_type,
-                "framework_type": FrameworkType.ADK,
-            }
-            
-            self.logger.info(f"✅ Agent {agent_id} registered with AgentManager")
-            
-        except Exception as e:
-            raise self.ExecutionError(
-                f"Failed to register agent with AgentManager: {str(e)}", 
-                task_request
-            )
-        
-        # ADK agent is already created by domain_agent.initialize()
-        adk_agent = domain_agent.adk_agent
-        
-        # Create or reuse runner without creating session yet (lazy session creation)
-        runner_id, _ = await self.runner_manager.get_or_create_runner(
-            task_request.agent_config,
-            task_request,
-            adk_agent,
-            engine_session_id=session_id,
-            create_session=False,
-        )
-        
-        # Store agent to runner mapping
-        self._agent_runners[agent_id] = runner_id
-        self._agent_sessions[agent_id] = []
-        
-        runner_context_dict = self.runner_manager.runners[runner_id]
-        adk_session = runner_context_dict["sessions"].get(session_id)
-        
         runtime_metadata_chat_id = chat_session_id if chat_session_id else None
-        
-        self.logger.info(f"✅ Pattern 3: Created new agent {agent_id} with runner {runner_id} and session {session_id}")
-        
-        # Create RuntimeContext with new agent and session information
-        runtime_context = self._create_runtime_context_from_data(
-            task_request, session_id, agent_id, task_request.agent_config,
-            runner_id, runner_context_dict, adk_session, 
-            domain_agent, "create_new_agent_and_session"
-        )
+
+        config_hash = self.runner_manager.compute_config_hash(task_request.agent_config)
+        max_sessions = getattr(self.runner_manager.settings, "max_sessions_per_agent", 100)
+
+        reuse_candidate = await self._select_agent_for_config(config_hash, max_sessions)
+
+        if reuse_candidate:
+            agent_id, domain_agent, runner_id = reuse_candidate
+            runner_context_dict = self.runner_manager.runners[runner_id]
+            adk_session = runner_context_dict["sessions"].get(session_id)
+            agent_config = self.agent_manager._agent_configs.get(agent_id, task_request.agent_config)
+
+            metadata = self.agent_manager._agent_metadata.get(agent_id)
+            if metadata is not None:
+                metadata["last_activity"] = datetime.now()
+            self._agent_sessions.setdefault(agent_id, [])
+
+            self.logger.info(
+                f"Reusing agent {agent_id} with runner {runner_id} for config hash {config_hash}"
+            )
+
+            runtime_context = self._create_runtime_context_from_data(
+                task_request,
+                session_id,
+                agent_id,
+                agent_config,
+                runner_id,
+                runner_context_dict,
+                adk_session,
+                domain_agent,
+                "reuse_existing_agent",
+            )
+
+        else:
+            agent_id = self.agent_manager.generate_agent_id()
+            self.logger.info(f"Generated agent_id: {agent_id}, session_id: {session_id}")
+
+            domain_agent = await self._create_domain_agent_for_config(task_request.agent_config, task_request)
+
+            try:
+                self.agent_manager._agents[agent_id] = domain_agent
+                self.agent_manager._agent_configs[agent_id] = task_request.agent_config
+                self.agent_manager._agent_metadata[agent_id] = {
+                    "created_at": datetime.now(),
+                    "last_activity": datetime.now(),
+                    "agent_type": task_request.agent_config.agent_type,
+                    "framework_type": FrameworkType.ADK,
+                }
+
+                self.logger.info(f"✅ Agent {agent_id} registered with AgentManager")
+
+            except Exception as e:
+                raise self.ExecutionError(
+                    f"Failed to register agent with AgentManager: {str(e)}",
+                    task_request
+                )
+
+            adk_agent = domain_agent.adk_agent
+
+            runner_id, _ = await self.runner_manager.get_or_create_runner(
+                task_request.agent_config,
+                task_request,
+                adk_agent,
+                engine_session_id=session_id,
+                create_session=False,
+                allow_reuse=False,
+            )
+
+            self._agent_runners[agent_id] = runner_id
+            self._agent_sessions[agent_id] = []
+            self._config_agents.setdefault(config_hash, []).append(agent_id)
+
+            runner_context_dict = self.runner_manager.runners[runner_id]
+            adk_session = runner_context_dict["sessions"].get(session_id)
+
+            self.logger.info(
+                f"✅ Pattern 3: Created new agent {agent_id} with dedicated runner {runner_id} and session {session_id}"
+            )
+
+            runtime_context = self._create_runtime_context_from_data(
+                task_request,
+                session_id,
+                agent_id,
+                task_request.agent_config,
+                runner_id,
+                runner_context_dict,
+                adk_session,
+                domain_agent,
+                "create_new_agent_and_session",
+            )
         if runtime_metadata_chat_id:
             runtime_context.metadata["business_chat_session_id"] = runtime_metadata_chat_id
         runtime_context.metadata["adk_session_initialized"] = False
         return runtime_context
-
-    async def _ensure_adk_session_initialized(self, runtime_context: "RuntimeContext", task_request: TaskRequest) -> str:
-        """Ensure an ADK session exists before execution."""
-        runner_id = runtime_context.runner_id
-        session_id = runtime_context.session_id
-        
-        if not runner_id:
-            raise self.ExecutionError("Runner not ready; cannot create session", task_request)
-        
-        runner_context_dict = self.runner_manager.runners.get(runner_id)
-        if not runner_context_dict:
-            raise self.ExecutionError(f"Runner {runner_id} not found", task_request)
-        
-        # If the session already exists, reuse it
-        if session_id and session_id in runner_context_dict["sessions"]:
-            runtime_context.framework_session = runner_context_dict["sessions"][session_id]
-            runtime_context.metadata["adk_session_initialized"] = True
-            return session_id
-        
-        # Create a new session identifier if none is set yet
-        if not session_id:
-            session_id = f"adk_session_{uuid4().hex[:12]}"
-            runtime_context.session_id = session_id
-        
-        created_session_id = await self.runner_manager._create_session_in_runner(
-            runner_id, task_request, external_session_id=session_id
-        )
-        # Make sure runtime context reflects the actual session identifier
-        runtime_context.session_id = created_session_id
-        runtime_context.framework_session = runner_context_dict["sessions"].get(created_session_id)
-        runtime_context.runner_context = runner_context_dict
-        runtime_context.metadata["adk_session_initialized"] = True
-        
-        agent_sessions = self._agent_sessions.setdefault(runtime_context.agent_id, [])
-        if created_session_id not in agent_sessions:
-            agent_sessions.append(created_session_id)
-        
-        return created_session_id
 
     async def execute_task(
         self, task_request: TaskRequest, strategy: ExecutionStrategy
