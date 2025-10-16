@@ -81,6 +81,15 @@ class ImageReference:
     width: Optional[int] = None
     height: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @classmethod
+    def from_base64(cls, base64_data: str, image_format: str = "jpeg", **kwargs) -> "ImageReference":
+        """Create ImageReference from base64 data (for frontend integration)."""
+        return cls(
+            image_path="",  # No file path for base64 images
+            image_format=image_format,
+            metadata={"base64_data": base64_data, **kwargs}
+        )
 
 
 @dataclass

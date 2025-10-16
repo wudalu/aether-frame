@@ -471,15 +471,23 @@ class AdkDomainAgent(DomainAgent):
     # === ADK Execution Methods ===
 
     async def _send_initial_message_to_live_queue(
-        self, live_request_queue, adk_content: str
+        self, live_request_queue, adk_content
     ):
         """Send initial message to ADK LiveRequestQueue."""
         try:
             # Import ADK types for content creation
             from google.genai import types
 
-            # Create ADK content for initial message
-            content = types.Content(role="user", parts=[types.Part(text=adk_content)])
+            # Handle different content types
+            if isinstance(adk_content, str):
+                # Text-only content
+                content = types.Content(role="user", parts=[types.Part(text=adk_content)])
+            elif hasattr(adk_content, 'role') and hasattr(adk_content, 'parts'):
+                # Already ADK Content object
+                content = adk_content
+            else:
+                # Fallback to string conversion
+                content = types.Content(role="user", parts=[types.Part(text=str(adk_content))])
 
             # Send initial message to start conversation
             live_request_queue.send_content(content=content)
@@ -555,8 +563,16 @@ class AdkDomainAgent(DomainAgent):
             # Import ADK types for content creation
             from google.genai import types
 
-            # Create ADK content
-            content = types.Content(role="user", parts=[types.Part(text=adk_content)])
+            # Handle different content types for ADK
+            if isinstance(adk_content, str):
+                # Text-only content
+                content = types.Content(role="user", parts=[types.Part(text=adk_content)])
+            elif hasattr(adk_content, 'role') and hasattr(adk_content, 'parts'):
+                # Already ADK Content object
+                content = adk_content
+            else:
+                # Fallback to string conversion
+                content = types.Content(role="user", parts=[types.Part(text=str(adk_content))])
             self.logger.debug(f"About to call runner.run_async with user_id: {user_id}, session_id: {session_id}")
 
             # Get the actual ADK session from runtime context
@@ -652,22 +668,90 @@ class AdkDomainAgent(DomainAgent):
 
     # === Format Conversion Methods ===
 
-    def _convert_messages_to_adk_content(self, messages: list) -> str:
-        """Convert our messages to ADK content format."""
+    def _convert_messages_to_adk_content(self, messages: list):
+        """
+        Convert messages to ADK content format, supporting both text and multimodal content.
+        
+        Returns:
+            For text-only: str content
+            For multimodal: ADK Content object with parts
+        """
         if not messages:
             return "Hello"
 
-        # Extract user messages and combine them
+        # Check if any message contains multimodal content
+        has_multimodal = False
         user_messages = []
+        
         for msg in messages:
             if isinstance(msg, UniversalMessage):
                 if msg.role == "user":
-                    user_messages.append(msg.content)
+                    user_messages.append(msg)
+                    # Check if this message has multimodal content
+                    if isinstance(msg.content, list):
+                        has_multimodal = True
             elif isinstance(msg, dict):
                 if msg.get("role") == "user":
-                    user_messages.append(msg.get("content", ""))
+                    # Convert dict to UniversalMessage for consistency
+                    universal_msg = UniversalMessage(
+                        role=msg.get("role", "user"),
+                        content=msg.get("content", "")
+                    )
+                    user_messages.append(universal_msg)
 
-        return " ".join(user_messages) if user_messages else "Hello"
+        if not user_messages:
+            return "Hello"
+        
+        # If no multimodal content, return simple text format for backward compatibility
+        if not has_multimodal:
+            text_contents = []
+            for msg in user_messages:
+                if isinstance(msg.content, str):
+                    text_contents.append(msg.content)
+            return " ".join(text_contents) if text_contents else "Hello"
+        
+        # Handle multimodal content - return ADK Content object
+        try:
+            from google.genai import types
+            
+            # Convert all user messages to ADK parts format
+            all_parts = []
+            
+            for msg in user_messages:
+                adk_message = self.event_converter.convert_universal_message_to_adk(msg)
+                if adk_message and "parts" in adk_message:
+                    for part_dict in adk_message["parts"]:
+                        if "text" in part_dict:
+                            all_parts.append(types.Part(text=part_dict["text"]))
+                        elif "inline_data" in part_dict:
+                            # Create ADK Blob for image data
+                            blob = types.Blob(
+                                mime_type=part_dict["inline_data"]["mime_type"],
+                                data=part_dict["inline_data"]["data"]
+                            )
+                            all_parts.append(types.Part(inline_data=blob))
+            
+            if all_parts:
+                return types.Content(role="user", parts=all_parts)
+            else:
+                return "Hello"
+                
+        except ImportError as e:
+            self.logger.warning(f"ADK types not available for multimodal content: {e}")
+            # Fallback to text-only
+            text_contents = []
+            for msg in user_messages:
+                if isinstance(msg.content, str):
+                    text_contents.append(msg.content)
+                elif isinstance(msg.content, list):
+                    # Extract text parts only as fallback
+                    for part in msg.content:
+                        if hasattr(part, 'text') and part.text:
+                            text_contents.append(part.text)
+            return " ".join(text_contents) if text_contents else "Hello"
+        except Exception as e:
+            self.logger.error(f"Failed to convert multimodal content: {e}")
+            return "Hello"
 
     def _convert_adk_response_to_task_result(
         self, adk_response, task_id: str

@@ -28,7 +28,14 @@ load_dotenv(".env.test")
 
 from aether_frame.bootstrap import create_ai_assistant, health_check_system, create_system_components
 from aether_frame.config.settings import Settings
-from aether_frame.contracts import TaskRequest, UniversalMessage, TaskStatus, AgentConfig
+from aether_frame.contracts import (
+    TaskRequest,
+    UniversalMessage,
+    TaskStatus,
+    AgentConfig,
+    ContentPart,
+    ImageReference,
+)
 
 
 class CompleteE2ETestSuite:
@@ -55,6 +62,16 @@ class CompleteE2ETestSuite:
                 "provider": "deepseek",
                 "api_key_env": "DEEPSEEK_API_KEY",
                 "base_url": "https://api.deepseek.com/v1"
+            },
+            "qwen-vl-plus": {
+                "provider": "dashscope",
+                "api_key_env": "QWEN_API_KEY",
+                "base_url": "QWEN_BASE_URL"
+            },
+            "dashscope/qwen-vl-plus": {
+                "provider": "dashscope",
+                "api_key_env": "QWEN_API_KEY",
+                "base_url": "QWEN_BASE_URL"
             },
             "gpt-4o": {
                 "provider": "openai",
@@ -241,7 +258,28 @@ class CompleteE2ETestSuite:
         if task_request.messages:
             self.logger.debug(f"Messages Count: {len(task_request.messages)}")
             for i, msg in enumerate(task_request.messages):
-                self.logger.debug(f"Message {i+1}: [{msg.role}] {msg.content[:100]}{'...' if len(msg.content) > 100 else ''}")
+                if isinstance(msg.content, str):
+                    preview = msg.content[:100] + ("..." if len(msg.content) > 100 else "")
+                elif isinstance(msg.content, list):
+                    part_summaries = []
+                    for part in msg.content:
+                        if isinstance(part, ContentPart):
+                            if part.text:
+                                summary = part.text[:30] + ("..." if len(part.text) > 30 else "")
+                                part_summaries.append(f"text:{summary}")
+                            elif part.image_reference:
+                                part_summaries.append("image:base64")
+                            elif part.function_call:
+                                part_summaries.append(f"function:{part.function_call.tool_name}")
+                            else:
+                                part_summaries.append("content-part")
+                        else:
+                            part_summaries.append(str(part))
+                    preview = " | ".join(part_summaries)
+                else:
+                    preview = str(msg.content)
+
+                self.logger.debug(f"Message {i+1}: [{msg.role}] {preview}")
                 if msg.metadata:
                     self.logger.debug(f"Message {i+1} metadata: {msg.metadata}")
         
@@ -397,6 +435,143 @@ class CompleteE2ETestSuite:
                 "timestamp": datetime.now().isoformat(),
             }
             
+            self.test_results.append(test_result)
+            return False
+
+    async def test_multimodal_image_analysis(self, model: str = None):
+        """Test multimodal image analysis with detailed logging."""
+        test_case = "multimodal_image_analysis"
+        model_name = model or self.settings.default_model
+        self.logger.info(f"\n🧪 TEST CASE: {test_case} - Model: {model_name}")
+        self.logger.info("├── FLOW: Text + Image → ADK → LiteLLM → Model → Response")
+
+        start_time = datetime.now()
+
+        tiny_png_base64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
+        )
+        image_ref = ImageReference.from_base64(
+            f"data:image/png;base64,{tiny_png_base64}", image_format="png"
+        )
+
+        multimodal_message = UniversalMessage(
+            role="user",
+            content=[
+                ContentPart(text="请简要描述这张图片的颜色。"),
+                ContentPart(image_reference=image_ref),
+            ],
+            metadata={"test_case": test_case, "expects_image": True},
+        )
+
+        task_request = TaskRequest(
+            task_id=f"e2e_multimodal_{int(start_time.timestamp())}",
+            task_type="chat",
+            description="Multimodal image analysis smoke test",
+            messages=[multimodal_message],
+            agent_config=AgentConfig(
+                agent_type="vision_assistant",
+                system_prompt="你是一个多模态视觉助手，善于分析图像内容。",
+                model_config={
+                    "model": model_name,
+                    "temperature": 0.2,
+                    "max_tokens": 800,
+                },
+                framework_config={
+                    "provider": "deepseek" if "deepseek" in model_name else "openai"
+                },
+            ),
+            metadata={
+                "test_framework": "adk_complete_e2e",
+                "framework_type": "adk",
+                "test_suite": "complete_e2e",
+                "test_case": test_case,
+                "preferred_model": model_name,
+                "timestamp": start_time.isoformat(),
+                "expects_multimodal": True,
+            },
+        )
+
+        self.log_request_details(task_request, test_case, model_name)
+
+        try:
+            result = await self.assistant.process_request(task_request)
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            self.log_response_details(result, test_case, execution_time, model_name)
+
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            if result.status == TaskStatus.SUCCESS and result.messages:
+                self.performance_metrics["successful_requests"] += 1
+
+                response_text = result.messages[0].content if result.messages else ""
+                recognized_color = any(
+                    keyword in response_text.lower()
+                    for keyword in ["red", "green", "blue", "yellow", "色"]
+                )
+
+                test_result = {
+                    "test_case": test_case,
+                    "task_id": task_request.task_id,
+                    "model": model_name,
+                    "status": "success",
+                    "execution_time": execution_time,
+                    "response_length": len(response_text),
+                    "recognized_color": recognized_color,
+                    "error_message": None,
+                    "metadata": result.metadata,
+                    "timestamp": datetime.now().isoformat(),
+                    "response_preview": response_text[:200]
+                    + ("..." if len(response_text) > 200 else ""),
+                }
+
+                self.test_results.append(test_result)
+                if recognized_color:
+                    self.logger.info(f"✅ {test_case} PASSED - Model described image content")
+                else:
+                    self.logger.warning(
+                        f"⚠️ {test_case} PASSED BUT COLOR NOT DETECTED - Review response"
+                    )
+                return True
+
+            else:
+                self.performance_metrics["failed_requests"] += 1
+
+                test_result = {
+                    "test_case": test_case,
+                    "task_id": task_request.task_id,
+                    "model": model_name,
+                    "status": "failed",
+                    "execution_time": execution_time,
+                    "error_message": result.error_message
+                    if result.status != TaskStatus.SUCCESS
+                    else "No response returned",
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+                self.test_results.append(test_result)
+                self.logger.error(f"❌ {test_case} FAILED - {test_result['error_message']}")
+                return False
+
+        except Exception as e:
+            execution_time = (datetime.now() - start_time).total_seconds()
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["failed_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            self.logger.error(f"❌ {test_case} EXCEPTION - {str(e)}")
+
+            test_result = {
+                "test_case": test_case,
+                "task_id": task_request.task_id,
+                "model": model_name,
+                "status": "exception",
+                "execution_time": execution_time,
+                "error_message": str(e),
+                "timestamp": datetime.now().isoformat(),
+            }
+
             self.test_results.append(test_result)
             return False
 
@@ -737,8 +912,9 @@ class CompleteE2ETestSuite:
         for model in self.test_models:
             self.logger.info(f"   └── Model: {model}")
             self.logger.info("       ├── Test 1: Simple Conversation")
-            self.logger.info("       ├── Test 2: Tool Usage Request")
-            self.logger.info("       └── Test 3: Complex Conversation")
+            self.logger.info("       ├── Test 2: Multimodal Image Analysis")
+            self.logger.info("       ├── Test 3: Tool Usage Request")
+            self.logger.info("       └── Test 4: Complex Conversation")
         self.logger.info("5. Report Generation & Summary")
         self.logger.info("=" * 80)
         
@@ -777,25 +953,35 @@ class CompleteE2ETestSuite:
                 else:
                     self.logger.error(f"❌ [{model}] Test 1 COMPLETED: Simple Conversation - FAILED")
                 
-                # Test 2: Tool usage
-                self.logger.info(f"\n📋 [{model}] Starting Test 2: Tool Usage...")
-                result2 = await self.test_tool_usage_request(model)
-                model_results.append(("tool_usage_request", result2))
+                # Test 2: Multimodal image analysis
+                self.logger.info(f"\n📋 [{model}] Starting Test 2: Multimodal Image Analysis...")
+                result2 = await self.test_multimodal_image_analysis(model)
+                model_results.append(("multimodal_image_analysis", result2))
                 
                 if result2:
-                    self.logger.info(f"✅ [{model}] Test 2 COMPLETED: Tool Usage - SUCCESS")
+                    self.logger.info(f"✅ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - SUCCESS")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 2 COMPLETED: Tool Usage - FAILED")
+                    self.logger.error(f"❌ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - FAILED")
                 
-                # Test 3: Complex conversation
-                self.logger.info(f"\n📋 [{model}] Starting Test 3: Complex Conversation...")
-                result3 = await self.test_complex_conversation(model)
-                model_results.append(("complex_conversation", result3))
+                # Test 3: Tool usage
+                self.logger.info(f"\n📋 [{model}] Starting Test 3: Tool Usage...")
+                result3 = await self.test_tool_usage_request(model)
+                model_results.append(("tool_usage_request", result3))
                 
                 if result3:
-                    self.logger.info(f"✅ [{model}] Test 3 COMPLETED: Complex Conversation - SUCCESS")
+                    self.logger.info(f"✅ [{model}] Test 3 COMPLETED: Tool Usage - SUCCESS")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 3 COMPLETED: Complex Conversation - FAILED")
+                    self.logger.error(f"❌ [{model}] Test 3 COMPLETED: Tool Usage - FAILED")
+                
+                # Test 4: Complex conversation
+                self.logger.info(f"\n📋 [{model}] Starting Test 4: Complex Conversation...")
+                result4 = await self.test_complex_conversation(model)
+                model_results.append(("complex_conversation", result4))
+                
+                if result4:
+                    self.logger.info(f"✅ [{model}] Test 4 COMPLETED: Complex Conversation - SUCCESS")
+                else:
+                    self.logger.error(f"❌ [{model}] Test 4 COMPLETED: Complex Conversation - FAILED")
                 
                 # Calculate model success rate
                 model_success_count = sum(1 for _, success in model_results if success)

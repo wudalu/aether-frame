@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     deepseek_max_tokens: int = Field(default=4096, env="DEEPSEEK_MAX_TOKENS")
     deepseek_temperature: float = Field(default=0.7, env="DEEPSEEK_TEMPERATURE")
 
+    # Qwen / DashScope configuration
+    qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
+    qwen_base_url: Optional[str] = Field(default=None, env="QWEN_BASE_URL")
+    qwen_model: str = Field(default="qwen-vl-plus", env="QWEN_MODEL")
+
     # Azure OpenAI configuration - Using LiteLLM standard environment variable names
     azure_api_key: Optional[str] = Field(default=None, env="AZURE_API_KEY")
     azure_api_base: str = Field(default="", env="AZURE_API_BASE")

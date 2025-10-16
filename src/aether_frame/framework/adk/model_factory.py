@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """ADK Model Factory for custom model handling."""
 
+import os
 from typing import Any, Union
 
 
@@ -71,7 +72,6 @@ class AdkModelFactory:
         if model_lower.startswith("azure/") or "azure-" in model_lower:
             try:
                 from google.adk.models.lite_llm import LiteLlm
-                import os
                 
                 # Set Azure environment variables if settings provided
                 if settings:
@@ -92,6 +92,43 @@ class AdkModelFactory:
                 # LiteLLM not available, fallback to string
                 return model_identifier
         
+        # Handle Qwen / DashScope models
+        if "qwen" in model_lower or "dashscope" in model_lower:
+            try:
+                from google.adk.models.lite_llm import LiteLlm
+
+                api_key = None
+                base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                if settings:
+                    api_key = getattr(settings, "qwen_api_key", None)
+                    base_url = getattr(settings, "qwen_base_url", None) or base_url
+
+                # Fall back to environment variables commonly used with DashScope
+                if not api_key:
+                    api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+                if os.getenv("QWEN_BASE_URL"):
+                    base_url = os.getenv("QWEN_BASE_URL")
+                elif os.getenv("DASHSCOPE_BASE_URL"):
+                    base_url = os.getenv("DASHSCOPE_BASE_URL")
+
+                if api_key:
+                    os.environ.setdefault("DASHSCOPE_API_KEY", api_key)
+
+                if model_lower.startswith("dashscope/"):
+                    qwen_model = model_identifier
+                else:
+                    qwen_model = f"dashscope/{model_identifier}"
+
+                extra_args = {}
+                if api_key:
+                    extra_args["api_key"] = api_key
+                if base_url:
+                    extra_args["api_base"] = base_url
+
+                return LiteLlm(model=qwen_model, **extra_args)
+            except ImportError:
+                return model_identifier
+
         # For Gemini and other ADK-native models, return as-is
         if any(prefix in model_lower for prefix in ["gemini", "projects/", "model-optimizer"]):
             return model_identifier
@@ -116,7 +153,8 @@ class AdkModelFactory:
             any(model in model_lower for model in [
                 "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
             ]) or
-            model_lower.startswith("azure/") or "azure-" in model_lower
+            model_lower.startswith("azure/") or "azure-" in model_lower or
+            "qwen" in model_lower or "dashscope" in model_lower
         )
     
     @staticmethod
@@ -144,5 +182,8 @@ class AdkModelFactory:
             return True
         # Gemini supports streaming natively through ADK
         if "gemini" in model_lower:
+            return True
+        # DashScope/Qwen models support streaming via LiteLLM
+        if "qwen" in model_lower or "dashscope" in model_lower:
             return True
         return False
