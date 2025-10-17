@@ -22,12 +22,13 @@ class RunnerManager:
     4. Agent configs with same hash can share Runners
     """
 
-    def __init__(self, settings: Settings = None, session_manager=None, agent_runner_mapping=None):
+    def __init__(self, settings: Settings = None, session_manager=None, agent_runner_mapping=None, agent_cleanup_callback=None):
         """Initialize runner manager."""
         self.logger = logging.getLogger(__name__)
         self.settings = settings or Settings()
         self.session_manager = session_manager  # SessionManager instance for creating session services
         self.agent_runner_mapping = agent_runner_mapping  # External agent_id -> runner_id mapping
+        self.agent_cleanup_callback = agent_cleanup_callback  # Optional callback executed when runner is cleaned
         
         # Core storage
         self.runners = {}  # runner_id -> RunnerContext
@@ -35,20 +36,7 @@ class RunnerManager:
         self.config_to_runner = {}  # config_hash -> runner_id
         
         # Runner availability check
-        self._adk_available = False
-        self._check_adk_availability()
-
-    def _check_adk_availability(self):
-        """Check if ADK dependencies are available."""
-        try:
-            from google.adk.runners import Runner
-            from google.adk.sessions import InMemorySessionService
-            self._adk_available = True
-            self.logger.info("✅ ADK dependencies verified - RunnerManager ready")
-        except ImportError as e:
-            self.logger.warning(f"❌ ADK not available - RunnerManager in mock mode: {e}")
-            self._adk_available = False
-
+        self.logger.info("RunnerManager initialized")
     def _hash_config(self, agent_config: AgentConfig) -> str:
         """Generate hash for agent configuration to enable Runner reuse."""
         config_dict = {
@@ -150,19 +138,6 @@ class RunnerManager:
         """
         runner_id = f"{self.settings.runner_id_prefix}_{uuid4().hex[:12]}"
         
-        if not self._adk_available:
-            # Mock mode for testing without ADK
-            self.runners[runner_id] = {
-                "runner": None,  # Mock runner
-                "session_service": None,  # Mock session service
-                "agent_config": agent_config,
-                "config_hash": config_hash,
-                "sessions": {},  # session_id -> mock_session
-                "created_at": "mock_time"
-            }
-            self.logger.info(f"Created mock Runner {runner_id} - ADK not available")
-            return runner_id
-        
         try:
             from google.adk.runners import Runner
             
@@ -193,9 +168,9 @@ class RunnerManager:
                 "agent_config": agent_config,
                 "config_hash": config_hash,
                 "sessions": {},  # session_id -> adk_session
+                "session_user_ids": {},  # session_id -> user_id
                 "created_at": "datetime_now",  # TODO: actual datetime
                 "app_name": self.settings.default_app_name,  # Store app_name for session operations
-                "user_id": self.settings.default_user_id,  # Default user_id, will be updated when creating sessions
             }
             
             self.logger.info(f"Created ADK Runner {runner_id} with dedicated SessionService")
@@ -225,35 +200,26 @@ class RunnerManager:
         
         # H5: Use external session_id if provided, otherwise generate
         session_id = external_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
+        user_id = None
+        app_name = self.settings.default_app_name  # App name can use config default
         
-        if not self._adk_available:
-            # Mock session
-            runner_context["sessions"][session_id] = {"mock": True}
-            self.logger.info(f"Created mock Session {session_id} in Runner {runner_id} - ADK not available")
-            self.session_to_runner[session_id] = runner_id
-            return session_id
+        if task_request and task_request.user_context:
+            # Use UserContext's method which handles fallbacks properly
+            user_id = task_request.user_context.get_adk_user_id()
+            self.logger.info(f"Extracted user_id from task_request: {user_id}")
+        else:
+            self.logger.warning(f"No user_context in task_request: {task_request}")
+        
+        # Only use config default as absolute fallback if no user context provided
+        if not user_id:
+            user_id = self.settings.default_user_id
+            self.logger.info(f"Using default user_id: {user_id}")
+        
+        self.logger.info(f"Creating ADK session with app_name={app_name}, user_id={user_id}, session_id={session_id}")
         
         try:
             session_service = runner_context["session_service"]
-            
-            # Extract user context from task_request - MUST come from request, not defaults
-            user_id = None
-            app_name = self.settings.default_app_name  # App name can use config default
-            
-            if task_request and task_request.user_context:
-                # Use UserContext's method which handles fallbacks properly
-                user_id = task_request.user_context.get_adk_user_id()
-                self.logger.info(f"Extracted user_id from task_request: {user_id}")
-            else:
-                self.logger.warning(f"No user_context in task_request: {task_request}")
-            
-            # Only use config default as absolute fallback if no user context provided
-            if not user_id:
-                user_id = self.settings.default_user_id
-                self.logger.info(f"Using default user_id: {user_id}")
-            
-            self.logger.info(f"Creating ADK session with app_name={app_name}, user_id={user_id}, session_id={session_id}")
-            
+                        
             # Create ADK Session in the Runner's SessionService with context
             adk_session = await session_service.create_session(
                 app_name=app_name,  # Use consistent app_name that matches Runner
@@ -263,9 +229,7 @@ class RunnerManager:
             
             # Store session reference
             runner_context["sessions"][session_id] = adk_session
-            
-            # Update runner context with the user_id used for this session
-            runner_context["user_id"] = user_id
+            runner_context.setdefault("session_user_ids", {})[session_id] = user_id
             self.session_to_runner[session_id] = runner_id
             
             self.logger.info(f"Created ADK Session {session_id} in Runner {runner_id}")
@@ -339,24 +303,46 @@ class RunnerManager:
             for session_id in session_ids:
                 if session_id in self.session_to_runner:
                     del self.session_to_runner[session_id]
+                session_user_map = runner_context.get("session_user_ids")
+                if session_user_map and session_id in session_user_map:
+                    del session_user_map[session_id]
             
             # Cleanup Runner resources
-            if self._adk_available and runner_context["runner"]:
-                runner = runner_context["runner"]
-                if hasattr(runner, "shutdown"):
-                    await runner.shutdown()
-                    
-                session_service = runner_context["session_service"]
-                if hasattr(session_service, "shutdown"):
-                    await session_service.shutdown()
+            runner = runner_context.get("runner")
+            if runner and hasattr(runner, "shutdown"):
+                await runner.shutdown()
+                
+            session_service = runner_context.get("session_service")
+            if session_service and hasattr(session_service, "shutdown"):
+                await session_service.shutdown()
             
             # Remove from config mapping
             config_hash = runner_context["config_hash"]
             if config_hash in self.config_to_runner:
                 del self.config_to_runner[config_hash]
             
+            # Remove any agent mapping pointing to this runner
+            agents_to_cleanup = []
+            if self.agent_runner_mapping:
+                stale_agents = [
+                    agent_id
+                    for agent_id, mapped_runner in self.agent_runner_mapping.items()
+                    if mapped_runner == runner_id
+                ]
+                for agent_id in stale_agents:
+                    del self.agent_runner_mapping[agent_id]
+                agents_to_cleanup = stale_agents
+            
             # Remove runner context
             del self.runners[runner_id]
+
+            # Trigger agent cleanup callback if provided
+            if agents_to_cleanup and self.agent_cleanup_callback:
+                for agent_id in agents_to_cleanup:
+                    try:
+                        await self.agent_cleanup_callback(agent_id)
+                    except Exception as exc:
+                        self.logger.warning(f"Agent cleanup callback failed for {agent_id}: {exc}")
             
             self.logger.info(f"Successfully cleaned up Runner {runner_id}")
             return True
@@ -371,7 +357,6 @@ class RunnerManager:
             "total_runners": len(self.runners),
             "total_sessions": len(self.session_to_runner),
             "total_configs": len(self.config_to_runner),
-            "adk_available": self._adk_available,
             "runners": [
                 {
                     "runner_id": rid,
@@ -409,7 +394,7 @@ class RunnerManager:
             adk_session = runner_context["sessions"][session_id]
             
             # If this is a real ADK session (not mock), delete through SessionService
-            if self._adk_available and session_service and not isinstance(adk_session, dict):
+            if session_service and not isinstance(adk_session, dict):
                 # Use the correct ADK API: session_service.delete_session(app_name, user_id, session_id)
                 app_name = adk_session.app_name
                 user_id = adk_session.user_id
@@ -424,6 +409,9 @@ class RunnerManager:
             
             # Remove session from runner's sessions dict
             del runner_context["sessions"][session_id]
+            session_user_map = runner_context.get("session_user_ids")
+            if session_user_map and session_id in session_user_map:
+                del session_user_map[session_id]
             
             # Remove from global session mapping
             if session_id in self.session_to_runner:

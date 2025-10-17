@@ -70,10 +70,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from .runner_manager import RunnerManager
         self.runner_manager = RunnerManager(
             session_manager=self.adk_session_manager,
-            agent_runner_mapping=self._agent_runners
+            agent_runner_mapping=self._agent_runners,
+            agent_cleanup_callback=self._handle_agent_cleanup
         )
         
-        self._adk_available = False  # Initialize availability flag
         self.logger = logging.getLogger(__name__)
 
     @property
@@ -104,6 +104,55 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
             return self.runner_manager.settings.domain_agent_id_prefix
         return "temp_domain_agent"
+
+    async def _handle_agent_cleanup(self, agent_id: str) -> None:
+        """Handle cleanup for agents tied 1:1 with runners."""
+        if not agent_id:
+            return
+
+        self.logger.info(f"Cleaning up agent {agent_id} due to runner teardown")
+
+        agent_config = self.agent_manager._agent_configs.get(agent_id)
+        config_hash = None
+        if agent_config:
+            try:
+                config_hash = self.runner_manager.compute_config_hash(agent_config)
+            except Exception as exc:
+                self.logger.warning(f"Failed to compute config hash for agent {agent_id}: {exc}")
+                config_hash = None
+
+        # Remove agent-to-runner mapping
+        if agent_id in self._agent_runners:
+            del self._agent_runners[agent_id]
+
+        # Remove session tracking
+        if agent_id in self._agent_sessions:
+            del self._agent_sessions[agent_id]
+
+        # Remove from config hash mapping
+        if config_hash and config_hash in self._config_agents:
+            self._config_agents[config_hash] = [
+                existing_agent for existing_agent in self._config_agents[config_hash]
+                if existing_agent != agent_id
+            ]
+            if not self._config_agents[config_hash]:
+                del self._config_agents[config_hash]
+        else:
+            # Fallback: remove from any config list containing this agent
+            for hash_key in list(self._config_agents.keys()):
+                if agent_id in self._config_agents[hash_key]:
+                    self._config_agents[hash_key] = [
+                        existing_agent for existing_agent in self._config_agents[hash_key]
+                        if existing_agent != agent_id
+                    ]
+                    if not self._config_agents[hash_key]:
+                        del self._config_agents[hash_key]
+
+        # Delegate to AgentManager for actual domain agent cleanup
+        try:
+            await self.agent_manager.cleanup_agent(agent_id)
+        except Exception as exc:
+            self.logger.warning(f"AgentManager cleanup failed for {agent_id}: {exc}")
 
     # === Core Interface Methods ===
 
@@ -138,8 +187,6 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
 
-            # ADK is available
-            self._adk_available = True
             self._initialized = True
             self.logger.info("ADK dependencies verified - Runner and InMemorySessionService available")
 
@@ -194,9 +241,12 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from ...contracts import RuntimeContext
         from datetime import datetime
         
+        session_user_map = runner_context_dict.get("session_user_ids", {}) if runner_context_dict else {}
+        resolved_user_id = session_user_map.get(session_id, self._get_default_user_id())
+        
         runtime_context = RuntimeContext(
             session_id=session_id,
-            user_id=runner_context_dict.get("user_id", self._get_default_user_id()),
+            user_id=resolved_user_id,
             framework_type=FrameworkType.ADK,
             agent_id=agent_id,
             agent_config=agent_config,
@@ -752,7 +802,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Returns:
             bool: True if adapter is ready for execution
         """
-        return self._initialized and self._adk_available
+        return self._initialized
 
     # FIXME: As originally planned, this should return configuration details
     async def get_capabilities(self) -> List[str]:

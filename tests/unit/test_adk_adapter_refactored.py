@@ -250,20 +250,25 @@ class TestAdkFrameworkAdapterRefactored:
     @pytest.mark.asyncio
     async def test_initialize_with_strong_dependency_checking(self, adk_adapter):
         """Test initialization with strong ADK dependency checking."""
+        pytest.importorskip("google.adk.runners")
         # ADK initialization should succeed or fail completely
         await adk_adapter.initialize()
 
         assert adk_adapter._initialized
-        # ADK should be available if initialization succeeded
-        assert adk_adapter._adk_available
 
     @pytest.mark.asyncio
     async def test_initialize_failure_raises_exception(self, adk_adapter):
         """Test that ADK initialization failure raises RuntimeError."""
-        with patch(
-            "src.aether_frame.framework.adk.adk_adapter.InMemorySessionService",
-            side_effect=ImportError("ADK not found"),
-        ):
+        import builtins
+
+        original_import = builtins.__import__
+
+        def failing_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name.startswith("google.adk"):
+                raise ImportError("ADK not found")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=failing_import):
             with pytest.raises(RuntimeError, match="ADK framework is required"):
                 await adk_adapter.initialize()
 
@@ -274,7 +279,6 @@ class TestAdkFrameworkAdapterRefactored:
 
         # Mock initialized state
         adk_adapter._initialized = True
-        adk_adapter._adk_available = True
 
         assert adk_adapter.is_ready()
 
@@ -305,6 +309,7 @@ class TestAdkFrameworkAdapterRefactored:
         assert health["active_sessions"] == 0
 
         # After initialization
+        pytest.importorskip("google.adk.runners")
         await adk_adapter.initialize()
         health = await adk_adapter.health_check()
         assert health["status"] == "healthy"

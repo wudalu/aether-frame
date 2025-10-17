@@ -311,7 +311,11 @@ class AdkSessionManager:
             
             # Get app_name and user_id from runner context
             app_name = runner_context.get("app_name")
-            user_id = runner_context.get("user_id")
+            session_user_map = runner_context.get("session_user_ids", {})
+            user_id = session_user_map.get(session_id)
+            if not user_id:
+                session_obj_cached = runner_context.get("sessions", {}).get(session_id)
+                user_id = getattr(session_obj_cached, "user_id", None)
             
             if not app_name or not user_id:
                 self.logger.warning(f"Missing app_name({app_name}) or user_id({user_id}) in runner context")
@@ -462,7 +466,11 @@ class AdkSessionManager:
             
             # Get app_name and user_id
             app_name = runner_context.get("app_name")
-            user_id = runner_context.get("user_id")
+            session_user_map = runner_context.get("session_user_ids", {})
+            user_id = session_user_map.get(session_id)
+            if not user_id:
+                session_obj_cached = runner_context.get("sessions", {}).get(session_id)
+                user_id = getattr(session_obj_cached, "user_id", None)
             
             if not app_name or not user_id:
                 self.logger.warning(f"Missing app_name({app_name}) or user_id({user_id}) for history injection")

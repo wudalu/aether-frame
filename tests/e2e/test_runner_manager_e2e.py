@@ -203,7 +203,6 @@ class TestRunnerManagerE2E:
         assert stats["total_runners"] == 3
         assert stats["total_sessions"] == 3
         assert stats["total_configs"] == 3
-        assert "adk_available" in stats
         assert len(stats["runners"]) == 3
         
         # Verify runner details in stats

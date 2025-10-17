@@ -36,7 +36,6 @@ class TestAdkFrameworkAdapterRuntimeChecks:
         # No need to mock AgentManager, adapter handles sessions directly
         # Mock initialized state (simulating bootstrap initialization)
         adapter._initialized = True
-        adapter._adk_available = True
 
         return adapter
 
