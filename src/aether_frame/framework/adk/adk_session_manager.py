@@ -79,11 +79,34 @@ class AdkSessionManager:
         elif current_active_agent == target_agent_id:
             # === Same agent ===
             if chat_session.active_adk_session_id:
+                session_id = chat_session.active_adk_session_id
+                runner_context = await runner_manager.get_runner_by_session(session_id)
+                session_exists = (
+                    runner_context is not None
+                    and session_id in runner_context.get("sessions", {})
+                )
+                if not session_exists:
+                    self.logger.warning(
+                        "Active session %s for agent %s not found in runner. "
+                        "Recreating session for chat_session=%s",
+                        session_id,
+                        target_agent_id,
+                        chat_session.chat_session_id,
+                    )
+                    # Remove stale mapping if present
+                    if session_id in runner_manager.session_to_runner:
+                        del runner_manager.session_to_runner[session_id]
+                    chat_session.active_adk_session_id = None
+                    chat_session.active_runner_id = None
+                    return await self._create_session_for_agent(
+                        chat_session, target_agent_id, user_id, task_request, runner_manager
+                    )
+
                 # Existing session, continue conversation
                 chat_session.last_activity = datetime.now()
                 
                 return CoordinationResult(
-                    adk_session_id=chat_session.active_adk_session_id, 
+                    adk_session_id=session_id, 
                     switch_occurred=False
                 )
             else:

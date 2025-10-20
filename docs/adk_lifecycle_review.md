@@ -8,8 +8,8 @@
 1. **Runner 清理未同步更新 Agent 映射**：`cleanup_runner`（`runner_manager.py:322-360`）销毁 runner 后未回收 `AdkFrameworkAdapter` 中的 `agent_id -> runner_id` 映射（见 `adk_adapter.py:61-188`），导致用户再次切回该 agent 时 `get_runner_for_agent` 抛错。
 2. **历史迁移使用错误 user_id**：`_extract_chat_history`（`adk_session_manager.py:312-328`）读取 `runner_context["user_id"]`，而 `_create_session_in_runner`（`runner_manager.py:240-269`）会在每次建会话时覆盖该字段，多会话并存时后续历史迁移会用到错误的 user_id。
 3. **缓存会话未校验实际存在**：`coordinate_chat_session` 在“同一 agent”路径只返回缓存的 `active_adk_session_id`（`adk_session_manager.py:76-122`），若外层已经清理了 session（例如通过 RunnerManager API 或后台任务），会返回指向失效 session 的 ID，后续执行将直接失败。
-4. **文档与实现存在复用策略差异**：设计文档强调“不复用 session”，但 `_create_runtime_context_for_new_agent` 与 `_select_agent_for_config`（`adk_adapter.py:247-339`）复用了 agent 和 runner，且 `session_manager` 仍假定单活会话模型，造成清理策略与复用策略不一致。
-5. **会话清理入口未落地**：`cleanup_chat_session`（`adk_session_manager.py:265-277`）尚无调用入口，实际生命周期缺少“聊天结束”触发点，Runner/Session 资源可能长期存活。
+4. **复用策略需体系化支撑**：当前实现已明确支持 Agent/Runner 复用（例如 `_select_agent_for_config` 复用 agent/runner），后续需更新设计文档，对齐“受控复用 + 主动清理”的策略并补齐配套机制。
+5. **Runner/Agent/Session 清理入口未落地**：`cleanup_chat_session`（`adk_session_manager.py:265-277`）尚无调用入口；Runner、Agent 的主动回收策略仍缺失，长期运行可能导致资源堆积。
 
 ## 销毁策略现状梳理
 

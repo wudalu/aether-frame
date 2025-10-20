@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(".env.test")
 
 from aether_frame.bootstrap import create_ai_assistant, health_check_system, create_system_components
+from aether_frame.config.logging import setup_logging as configure_app_logging
 from aether_frame.config.settings import Settings
 from aether_frame.contracts import (
     TaskRequest,
@@ -113,12 +114,11 @@ class CompleteE2ETestSuite:
         else:
             # Default to DeepSeek if no specific models requested
             self.test_models = ["deepseek-chat"]
-        
-        # Setup logging
-        self.setup_logging()
-        
         # Test configuration
         self.settings = Settings()
+
+        # Setup logging (both global system log and test-specific log)
+        self.setup_logging()
         self.assistant = None
         self.test_user_context = UserContext(user_id="complete_e2e_user")
         
@@ -173,7 +173,8 @@ class CompleteE2ETestSuite:
         user_context: UserContext,
         model_config: Optional[Dict[str, Any]] = None,
         available_tools: Optional[List[str]] = None,
-    ) -> Tuple[str, str]:
+        business_chat_session_id: Optional[str] = None,
+    ) -> Tuple[str, Optional[str]]:
         """Create an agent and obtain business chat session id."""
         creation_metadata = dict(creation_metadata or {})
         metadata = {
@@ -186,8 +187,8 @@ class CompleteE2ETestSuite:
         }
         metadata.update(creation_metadata)
 
-        business_chat_session_id = metadata.get("chat_session_id") or f"chat_session_{uuid4().hex[:12]}"
-        metadata.setdefault("chat_session_id", business_chat_session_id)
+        if business_chat_session_id:
+            metadata.setdefault("chat_session_id", business_chat_session_id)
 
         resolved_model_config = model_config.copy() if model_config else {
             "model": model_name,
@@ -231,7 +232,7 @@ class CompleteE2ETestSuite:
         self.logger.info(
             f"Agent created successfully - agent_id={agent_id}, chat_session_id={business_chat_session_id}"
         )
-        return agent_id, business_chat_session_id
+        return agent_id, business_chat_session_id or creation_result.session_id
 
     async def _run_conversation_test(
         self,
@@ -256,12 +257,7 @@ class CompleteE2ETestSuite:
 
         initial_message = messages[0] if messages else None
 
-        business_chat_session_id = (
-            conversation_metadata.get("chat_session_id")
-            or creation_metadata.get("chat_session_id")
-            or f"chat_session_{uuid4().hex[:12]}"
-        )
-        creation_metadata.setdefault("chat_session_id", business_chat_session_id)
+        business_chat_session_id = conversation_metadata.get("chat_session_id") or f"chat_session_{uuid4().hex[:12]}"
         conversation_metadata.setdefault("chat_session_id", business_chat_session_id)
 
         agent_id, _ = await self._create_agent_and_session(
@@ -393,6 +389,23 @@ class CompleteE2ETestSuite:
 
     def setup_logging(self):
         """Setup detailed logging for the test suite."""
+        # Configure global logging so that framework components emit to configured file/format
+        try:
+            configure_app_logging(
+                level=self.settings.log_level,
+                log_format=self.settings.log_format,
+                log_file_path=self.settings.log_file_path,
+            )
+            logging.getLogger().info(
+                "Global logging configured for complete E2E suite",
+                extra={"log_file_path": self.settings.log_file_path},
+            )
+        except Exception as exc:
+            logging.basicConfig(level=logging.INFO)
+            logging.getLogger(self.test_name).warning(
+                "Failed to configure global logging; falling back to basic config: %s", exc
+            )
+        
         # Create logs directory
         self.log_dir = Path("logs")
         self.log_dir.mkdir(exist_ok=True)
@@ -720,7 +733,6 @@ class CompleteE2ETestSuite:
 
         initial_metadata = {
             "test_case": test_case,
-            "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
         }
 
         first_agent_id, first_chat_id = await self._create_agent_and_session(
@@ -750,7 +762,6 @@ class CompleteE2ETestSuite:
 
         second_metadata = {
             "test_case": test_case,
-            "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
         }
 
         second_agent_id, second_chat_id = await self._create_agent_and_session(
@@ -789,7 +800,6 @@ class CompleteE2ETestSuite:
 
             overflow_metadata = {
                 "test_case": test_case,
-                "chat_session_id": f"reuse_session_{uuid4().hex[:10]}",
                 "trigger": "threshold_overflow",
             }
 

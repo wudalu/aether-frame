@@ -4,7 +4,7 @@
 
 Multi-Framework Agent System with ADK Primary Implementation - Backend Architecture Design with Framework Abstraction Layer
 
-This architecture supports multiple agent frameworks (ADK, AutoGen, LangGraph) through a unified abstraction layer, enabling framework switching without application logic changes. **Current implementation focuses on ADK as the primary framework**, with the system featuring a flexible execution engine that supports agent lifecycle management, session persistence, and multi-turn conversations.
+This architecture supports multiple agent frameworks (ADK, AutoGen, LangGraph) through a unified abstraction layer, enabling framework switching without application logic changes. **Current implementation focuses on ADK as the primary framework**, featuring a flexible execution engine that supports agent lifecycle management, session persistence, and multi-turn conversations. For ADK we adopt a **controlled reuse** model: agents/runners built for a given configuration can be reused across requests, business clients keep the same `chat_session_id` to maintain context, and cleanup hooks are available to reclaim runners/agents when sessions go idle or switch.
 
 **Implementation Status:**
 - ✅ **Phase 1 Complete**: ADK integration with full agent lifecycle and session management

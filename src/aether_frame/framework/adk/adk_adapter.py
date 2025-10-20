@@ -104,6 +104,12 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
             return self.runner_manager.settings.domain_agent_id_prefix
         return "temp_domain_agent"
+    
+    async def cleanup_chat_session(self, chat_session_id: str) -> bool:
+        """Cleanup chat session resources via session manager entrypoint."""
+        if not chat_session_id:
+            return False
+        return await self.adk_session_manager.cleanup_chat_session(chat_session_id, self.runner_manager)
 
     async def _handle_agent_cleanup(self, agent_id: str) -> None:
         """Handle cleanup for agents tied 1:1 with runners."""
@@ -536,14 +542,55 @@ class AdkFrameworkAdapter(FrameworkAdapter):
     async def _handle_agent_creation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
         """Handle agent creation mode (original Pattern 3)."""
         from ...contracts import RuntimeContext
-        
-        runtime_context = await self._create_runtime_context_for_new_agent(task_request)
-        
+
+        agent_type = getattr(task_request.agent_config, "agent_type", None) if task_request.agent_config else None
+        model_name = None
+        if task_request.agent_config and getattr(task_request.agent_config, "model_config", None):
+            model_name = task_request.agent_config.model_config.get("model")
+        message_count = len(task_request.messages) if task_request.messages else 0
+
+        if self.logger.isEnabledFor(logging.DEBUG):
+            message_previews = []
+            if task_request.messages:
+                for idx, msg in enumerate(task_request.messages, start=1):
+                    content = getattr(msg, "content", "")
+                    if isinstance(content, str):
+                        preview = content[:200] + ("..." if len(content) > 200 else "")
+                    else:
+                        preview = str(content)
+                    message_previews.append({"index": idx, "role": msg.role, "preview": preview})
+            self.logger.debug(
+                "Agent creation request details",
+                extra={
+                    "task_id": task_request.task_id,
+                    "message_previews": message_previews,
+                },
+            )
+
+        self.logger.info(
+            "Agent creation request received",
+            extra={
+                "task_id": task_request.task_id,
+                "agent_type": agent_type,
+                "model": model_name,
+                "message_count": message_count,
+            },
+        )
+
+        try:
+            runtime_context = await self._create_runtime_context_for_new_agent(task_request)
+        except Exception:
+            self.logger.exception(
+                "Failed to create runtime context for agent creation",
+                extra={"task_id": task_request.task_id},
+            )
+            raise
+
         # Update activity timestamp
         runtime_context.update_activity()
         
         business_chat_session_id = runtime_context.metadata.get("business_chat_session_id")
-        
+
         # Do not create an ADK session during agent creation; return a success placeholder
         result = TaskResult(
             task_id=task_request.task_id,
@@ -574,24 +621,86 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if business_chat_session_id:
             result.metadata["chat_session_id"] = business_chat_session_id
         
-        self.logger.info(f"Agent creation completed - task_id: "
-                        f"{task_request.task_id}, agent_id: "
-                        f"{runtime_context.agent_id}, session_id: "
-                        f"{runtime_context.session_id}")
+        if self.logger.isEnabledFor(logging.DEBUG):
+            response_preview = None
+            if result.messages:
+                response_preview = result.messages[0].content
+            self.logger.debug(
+                "Agent creation response details",
+                extra={
+                    "task_id": task_request.task_id,
+                    "agent_id": runtime_context.agent_id,
+                    "business_session_id": business_chat_session_id,
+                    "response_preview": response_preview[:200] + ("..." if response_preview and len(response_preview) > 200 else "") if isinstance(response_preview, str) else response_preview,
+                    "metadata": result.metadata,
+                },
+            )
+
+        self.logger.info(
+            "Agent creation completed",
+            extra={
+                "task_id": task_request.task_id,
+                "agent_id": runtime_context.agent_id,
+                "business_session_id": business_chat_session_id,
+                "execution_id": runtime_context.execution_id,
+            },
+        )
         return result
 
     async def _handle_conversation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
         """Handle conversation mode with SessionManager coordination."""
         from ...contracts import RuntimeContext
         
-        # === SessionManager Coordination ===
-        coordination_result = await self.adk_session_manager.coordinate_chat_session(
-            chat_session_id=task_request.session_id,
-            target_agent_id=task_request.agent_id,
-            user_id=task_request.user_context.get_adk_user_id(),
-            task_request=task_request,
-            runner_manager=self.runner_manager
+        business_session_id = task_request.session_id
+        if self.logger.isEnabledFor(logging.DEBUG):
+            conversation_messages = []
+            if task_request.messages:
+                for idx, msg in enumerate(task_request.messages, start=1):
+                    content = getattr(msg, "content", "")
+                    if isinstance(content, str):
+                        preview = content[:500] + ("..." if len(content) > 500 else "")
+                    else:
+                        preview = str(content)
+                    conversation_messages.append({"index": idx, "role": msg.role, "preview": preview})
+            self.logger.debug(
+                "Conversation request details",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": business_session_id,
+                    "agent_id": task_request.agent_id,
+                    "messages": conversation_messages,
+                },
+            )
+
+        self.logger.info(
+            "Conversation request received",
+            extra={
+                "task_id": task_request.task_id,
+                "agent_id": task_request.agent_id,
+                "chat_session_id": business_session_id,
+                "message_count": len(task_request.messages) if task_request.messages else 0,
+            },
         )
+        
+        # === SessionManager Coordination ===
+        try:
+            coordination_result = await self.adk_session_manager.coordinate_chat_session(
+                chat_session_id=task_request.session_id,
+                target_agent_id=task_request.agent_id,
+                user_id=task_request.user_context.get_adk_user_id(),
+                task_request=task_request,
+                runner_manager=self.runner_manager
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Session coordination failed",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": business_session_id,
+                    "agent_id": task_request.agent_id,
+                },
+            )
+            raise
         
         # Replace chat_session_id with adk_session_id
         original_session_id = task_request.session_id
@@ -603,16 +712,63 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                            f"{coordination_result.previous_agent_id} -> "
                            f"{coordination_result.new_agent_id}, "
                            f"adk_session={coordination_result.adk_session_id}")
+        else:
+            self.logger.info(
+                "Session coordination result",
+                extra={
+                    "chat_session_id": original_session_id,
+                    "agent_id": task_request.agent_id,
+                    "adk_session_id": coordination_result.adk_session_id,
+                    "switch_occurred": coordination_result.switch_occurred,
+                },
+            )
         
         # Execute conversation (original Pattern 1 logic)
-        runtime_context = await self._create_runtime_context_for_existing_session(task_request)
+        try:
+            runtime_context = await self._create_runtime_context_for_existing_session(task_request)
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to create runtime context for conversation",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": original_session_id,
+                    "adk_session_id": coordination_result.adk_session_id,
+                    "agent_id": task_request.agent_id,
+                },
+            )
+            raise
         
         # Update activity timestamp
         runtime_context.update_activity()
+        pattern = runtime_context.metadata.get("pattern")
+        self.logger.info(
+            "Runtime context prepared",
+            extra={
+                "chat_session_id": original_session_id,
+                "adk_session_id": runtime_context.session_id,
+                "agent_id": runtime_context.agent_id,
+                "runner_id": runtime_context.runner_id,
+                "pattern": pattern,
+            },
+        )
         
         # Execute task through domain agent with RuntimeContext
         domain_agent = runtime_context.metadata.get("domain_agent")
-        result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
+        try:
+            result = await self._execute_with_domain_agent(task_request, runtime_context, domain_agent)
+        except Exception:
+            # _execute_with_domain_agent already logs details; add business session context here
+            self.logger.exception(
+                "Domain agent execution raised exception",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": original_session_id,
+                    "adk_session_id": runtime_context.session_id,
+                    "agent_id": runtime_context.agent_id,
+                    "pattern": runtime_context.metadata.get("pattern"),
+                },
+            )
+            raise
         
         # Ensure session_id and agent_id are included in result
         # IMPORTANT: Return original_session_id (business chat_session_id) not ADK session_id
@@ -629,10 +785,47 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             "pattern": "conversation"
         })
         
-        self.logger.info(f"Conversation completed - task_id: "
-                        f"{task_request.task_id}, agent_id: "
-                        f"{runtime_context.agent_id}, session_id: "
-                        f"{runtime_context.session_id}")
+        if self.logger.isEnabledFor(logging.DEBUG):
+            response_preview = None
+            if result.messages:
+                response_preview = result.messages[0].content
+            self.logger.debug(
+                "Conversation response details",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": original_session_id,
+                    "adk_session_id": runtime_context.session_id,
+                    "agent_id": runtime_context.agent_id,
+                    "status": result.status.value if hasattr(result.status, "value") else result.status,
+                    "response_preview": response_preview[:500] + ("..." if response_preview and len(response_preview) > 500 else "") if isinstance(response_preview, str) else response_preview,
+                    "metadata": result.metadata,
+                },
+            )
+
+        self.logger.info(
+            "Conversation completed",
+            extra={
+                "task_id": task_request.task_id,
+                "chat_session_id": original_session_id,
+                "adk_session_id": runtime_context.session_id,
+                "agent_id": runtime_context.agent_id,
+                "pattern": runtime_context.metadata.get("pattern"),
+                "status": result.status.value if hasattr(result.status, "value") else result.status,
+                "response_count": len(result.messages) if result.messages else 0,
+            },
+        )
+        if result.status != TaskStatus.SUCCESS:
+            self.logger.warning(
+                "Conversation finished with non-success status",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": original_session_id,
+                    "adk_session_id": runtime_context.session_id,
+                    "agent_id": runtime_context.agent_id,
+                    "status": result.status.value if hasattr(result.status, "value") else result.status,
+                    "error_message": result.error_message,
+                },
+            )
         return result
 
 

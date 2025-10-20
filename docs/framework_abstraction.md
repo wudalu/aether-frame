@@ -16,7 +16,7 @@ The design follows a **layered contract approach**, starting with ADK-compatible
 ## Design Goals
 
 - **ADK-First Implementation**: Complete ADK integration with extensibility for future frameworks
-- **Session-Based Architecture**: Support persistent multi-turn conversations with agent_id + session_id model
+- **Session-Based Architecture with Controlled Reuse**: Support persistent multi-turn conversations using `agent_id + session_id`,允许复用同配置 Agent/Runner，并通过生命周期钩子实现 idle 清理
 - **Framework Agnostic Contracts**: Unified data structures that work consistently across different frameworks
 - **Progressive Abstraction**: Evolution from ADK-specific to universal data contracts without breaking changes
 - **Layered Architecture**: Clear separation following the established system architecture layers
