@@ -1209,6 +1209,12 @@ python tests/tools/mcp/test_toolservice_integration.py
 python tests/tools/mcp/run_comprehensive_tests.py
 ```
 
+## Current Status & Next Steps
+
+- **现状复盘**：`RunnerManager._build_adk_agent()` 在创建 ADK agent 时仍然传入 `tools=[]`，所以 “create agent” 请求阶段尚未真正加载 MCP 工具；只有后续携带 `TaskRequest.available_tools` 的任务才会触发 `_create_adk_agent(available_tools)` 重建 agent。
+- **设计差异**：这与本文前述“创建 agent 时即确定工具集”的目标不符，原因是 `agent_config.available_tools` 尚未在初始化阶段解析为 `UniversalTool` / `FunctionTool`。
+- **后续计划**：待修复项——将 ToolService / ToolResolver 注入 `RunnerManager`，在 `_build_adk_agent()` 中解析 `AgentConfig.available_tools` 并转换成 ADK `FunctionTool`，确保 agent 首次创建时就具备完整工具列表。明日开始推进此改动。
+
 ## Summary and Best Practices 🎯
 
 ### Key Design Decisions Confirmed

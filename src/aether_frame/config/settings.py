@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # Session management
     session_timeout: int = 3600
     session_storage: str = "redis"
+    session_idle_timeout_seconds: int = 0  # Disabled by default
+    session_idle_check_interval_seconds: int = 300
+    runner_idle_timeout_seconds: int = 43200  # 12 hours by default
+    agent_idle_timeout_seconds: int = 43200  # 12 hours by default
 
     # Observability settings
     enable_metrics: bool = True

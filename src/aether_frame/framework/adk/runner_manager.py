@@ -2,6 +2,7 @@
 """ADK Runner Manager - Correct Session and Runner Management."""
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 import hashlib
@@ -161,6 +162,8 @@ class RunnerManager:
                 session_service=session_service  # Key: binding relationship
             )
             
+            now = datetime.now()
+
             # Store Runner context
             self.runners[runner_id] = {
                 "runner": runner,
@@ -169,8 +172,10 @@ class RunnerManager:
                 "config_hash": config_hash,
                 "sessions": {},  # session_id -> adk_session
                 "session_user_ids": {},  # session_id -> user_id
-                "created_at": "datetime_now",  # TODO: actual datetime
+                "created_at": now,
+                "last_activity": now,
                 "app_name": self.settings.default_app_name,  # Store app_name for session operations
+                "user_id": self.settings.default_user_id,
             }
             
             self.logger.info(f"Created ADK Runner {runner_id} with dedicated SessionService")
@@ -179,6 +184,12 @@ class RunnerManager:
         except Exception as e:
             self.logger.error(f"Failed to create Runner {runner_id}: {str(e)}")
             raise RuntimeError(f"Runner creation failed: {str(e)}")
+
+    def mark_runner_activity(self, runner_id: str) -> None:
+        """Update last_activity timestamp for the runner if it exists."""
+        context = self.runners.get(runner_id)
+        if context:
+            context["last_activity"] = datetime.now()
 
     async def _create_session_in_runner(self, runner_id: str, task_request = None, external_session_id: str = None) -> str:
         """
@@ -230,6 +241,7 @@ class RunnerManager:
             # Store session reference
             runner_context["sessions"][session_id] = adk_session
             runner_context.setdefault("session_user_ids", {})[session_id] = user_id
+            runner_context["last_activity"] = datetime.now()
             self.session_to_runner[session_id] = runner_id
             
             self.logger.info(f"Created ADK Session {session_id} in Runner {runner_id}")
@@ -362,7 +374,8 @@ class RunnerManager:
                     "runner_id": rid,
                     "config_hash": ctx["config_hash"],
                     "session_count": len(ctx["sessions"]),
-                    "created_at": ctx["created_at"]
+                    "created_at": ctx["created_at"].isoformat() if isinstance(ctx.get("created_at"), datetime) else ctx.get("created_at"),
+                    "last_activity": ctx["last_activity"].isoformat() if isinstance(ctx.get("last_activity"), datetime) else ctx.get("last_activity"),
                 }
                 for rid, ctx in self.runners.items()
             ]
@@ -416,6 +429,8 @@ class RunnerManager:
             # Remove from global session mapping
             if session_id in self.session_to_runner:
                 del self.session_to_runner[session_id]
+
+            runner_context["last_activity"] = datetime.now()
             
             self.logger.info(f"Removed session {session_id} from runner {runner_id}")
             return True

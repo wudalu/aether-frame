@@ -109,7 +109,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         """Cleanup chat session resources via session manager entrypoint."""
         if not chat_session_id:
             return False
-        return await self.adk_session_manager.cleanup_chat_session(chat_session_id, self.runner_manager)
+        return await self.adk_session_manager.cleanup_chat_session(
+            chat_session_id,
+            self.runner_manager,
+            agent_manager=self.agent_manager,
+        )
 
     async def _handle_agent_cleanup(self, agent_id: str) -> None:
         """Handle cleanup for agents tied 1:1 with runners."""
@@ -187,6 +191,12 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             self.runner_manager.settings = settings
             self.logger.info(f"Updated RunnerManager settings without rebuild to preserve data")
 
+        # Start idle cleanup watcher when settings available
+        try:
+            self.adk_session_manager.start_idle_cleanup(self.runner_manager, self.agent_manager, settings)
+        except Exception as exc:
+            self.logger.warning(f"Failed to start idle cleanup watcher: {exc}")
+
         # Strong dependency check - ADK must be available
         try:
             # Test ADK availability by importing required components
@@ -222,7 +232,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             domain_agent = self.agent_manager._agents.get(agent_id)
             if not domain_agent:
                 raise self.ExecutionError(f"Agent {agent_id} not found", task_request)
-            
+
             # Get runner_id from agent mapping
             runner_id = self._agent_runners.get(agent_id)
             if not runner_id:
@@ -232,7 +242,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             runner_context_dict = self.runner_manager.runners.get(runner_id)
             if not runner_context_dict:
                 raise self.ExecutionError(f"Runner {runner_id} not found", task_request)
-            
+
+            metadata = self.agent_manager._agent_metadata.get(agent_id)
+            if metadata is not None:
+                metadata["last_activity"] = datetime.now()
+
             return domain_agent, runner_id, runner_context_dict
             
         except self.ExecutionError:
@@ -407,6 +421,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 f"Reusing agent {agent_id} with runner {runner_id} for config hash {config_hash}"
             )
 
+            self.runner_manager.mark_runner_activity(runner_id)
+
             runtime_context = self._create_runtime_context_from_data(
                 task_request,
                 session_id,
@@ -460,6 +476,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
             runner_context_dict = self.runner_manager.runners[runner_id]
             adk_session = runner_context_dict["sessions"].get(session_id)
+
+            self.runner_manager.mark_runner_activity(runner_id)
 
             self.logger.info(
                 f"✅ Pattern 3: Created new agent {agent_id} with dedicated runner {runner_id} and session {session_id}"
@@ -588,6 +606,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
         # Update activity timestamp
         runtime_context.update_activity()
+        self.runner_manager.mark_runner_activity(runtime_context.runner_id)
         
         business_chat_session_id = runtime_context.metadata.get("business_chat_session_id")
 
@@ -1021,9 +1040,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
     async def shutdown(self):
         """Shutdown ADK framework adapter and RunnerManager."""
+        await self.adk_session_manager.stop_idle_cleanup()
         # Cleanup RunnerManager sessions
         if hasattr(self.runner_manager, 'cleanup_all'):
             await self.runner_manager.cleanup_all()
-        
+
         # No global session service to cleanup (each session has its own)
         self._initialized = False

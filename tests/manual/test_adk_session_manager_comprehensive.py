@@ -353,7 +353,8 @@ class AdkSessionManagerTest:
             if self.session_manager and self.chat_session_id:
                 success = await self.session_manager.cleanup_chat_session(
                     self.chat_session_id, 
-                    self.adapter.runner_manager
+                    self.adapter.runner_manager,
+                    agent_manager=self.adapter.agent_manager,
                 )
                 print(f"   Chat session cleanup: {'✅ success' if success else '❌ failed'}")
             
