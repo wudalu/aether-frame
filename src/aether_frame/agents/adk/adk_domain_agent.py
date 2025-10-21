@@ -347,12 +347,23 @@ class AdkDomainAgent(DomainAgent):
             return result
 
         except Exception as e:
+            error_type = type(e).__name__
+            error_message = f"ADK domain agent execution failed ({error_type}): {str(e)}"
+            self.logger.error(
+                f"ADK domain agent execution failed - agent_id: {self.agent_id}, error: {error_message}"
+            )
             error_result = TaskResult(
                 task_id=agent_request.task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"ADK execution failed: {str(e)}",
+                error_message=error_message,
                 created_at=datetime.now(),
-                metadata={"framework": "adk", "agent_id": self.agent_id},
+                session_id=agent_request.session_id or self.runtime_context.get("session_id"),
+                metadata={
+                    "framework": "adk",
+                    "agent_id": self.agent_id,
+                    "error_stage": "adk_domain_agent.execute",
+                    "error_type": error_type,
+                },
             )
 
             # Error handling hooks
@@ -521,11 +532,27 @@ class AdkDomainAgent(DomainAgent):
         session_id = agent_request.session_id or self.runtime_context.get("session_id")
 
         if not runner or not session_id:
+            missing_parts = []
+            if not runner:
+                missing_parts.append("runner")
+            if not session_id:
+                missing_parts.append("session_id")
+            detail = ", ".join(missing_parts) if missing_parts else "runtime context"
+            error_message = f"ADK runtime context not available ({detail} missing)"
+            self.logger.error(
+                f"ADK runtime context missing - agent_id: {self.agent_id}, missing: {missing_parts or ['unknown']}"
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message="ADK runtime context not available",
-                metadata={"framework": "adk", "agent_id": self.agent_id},
+                error_message=error_message,
+                session_id=session_id,
+                metadata={
+                    "framework": "adk",
+                    "agent_id": self.agent_id,
+                    "error_stage": "adk_domain_agent.runtime_context",
+                    "missing_components": missing_parts,
+                },
             )
 
         try:
@@ -543,11 +570,22 @@ class AdkDomainAgent(DomainAgent):
             )
 
         except Exception as e:
+            error_type = type(e).__name__
+            error_message = f"ADK runner execution failed ({error_type}): {str(e)}"
+            self.logger.error(
+                f"ADK runner execution failed - agent_id: {self.agent_id}, session_id: {session_id}, error: {error_message}"
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"ADK execution error: {str(e)}",
-                metadata={"framework": "adk", "agent_id": self.agent_id},
+                error_message=error_message,
+                session_id=session_id,
+                metadata={
+                    "framework": "adk",
+                    "agent_id": self.agent_id,
+                    "error_stage": "adk_domain_agent.runner_execution",
+                    "error_type": error_type,
+                },
             )
 
     async def _run_adk_with_runner_and_agent(
@@ -821,4 +859,3 @@ class AdkDomainAgent(DomainAgent):
                 pass
 
         return (error_stream(), ErrorCommunicator())
-

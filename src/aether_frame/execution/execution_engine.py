@@ -51,12 +51,22 @@ class ExecutionEngine:
         if not (task_request.agent_id or task_request.session_id or task_request.agent_config):
             error_msg = "TaskRequest must have either agent_id (existing agent), session_id (existing session), or agent_config (new session)"
             self.logger.error(f"Context missing - {error_msg}")
+            provided_context = {
+                "agent_id": task_request.agent_id,
+                "session_id": task_request.session_id,
+                "has_agent_config": bool(task_request.agent_config),
+            }
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_msg,
+                metadata={
+                    "error_stage": "execution_engine.validate_context",
+                    "provided_context": provided_context,
+                },
             )
             
+        strategy = None  # Track strategy for better error reporting
         try:
             # Route task to determine execution strategy
             strategy = await self.task_router.route_task(task_request)
@@ -74,6 +84,10 @@ class ExecutionEngine:
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=error_msg,
+                    metadata={
+                        "error_stage": "execution_engine.get_adapter",
+                        "framework": strategy.framework_type.value,
+                    },
                     session_id=task_request.session_id,
                     agent_id=task_request.agent_id,
                 )
@@ -87,13 +101,25 @@ class ExecutionEngine:
             return result
 
         except Exception as e:
-            self.logger.error(f"Task execution failed - task_id: {task_request.task_id}, error: {str(e)}")
+            error_type = type(e).__name__
+            error_msg = f"Execution engine failed ({error_type}): {str(e)}"
+            self.logger.error(f"Task execution failed - task_id: {task_request.task_id}, error: {error_msg}")
+            framework_type = None
+            try:
+                framework_type = strategy.framework_type.value  # type: ignore[name-defined]
+            except Exception:
+                framework_type = None
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"Execution failed: {str(e)}",
+                error_message=error_msg,
                 session_id=task_request.session_id,
                 agent_id=task_request.agent_id,
+                metadata={
+                    "error_stage": "execution_engine.execute_task",
+                    "error_type": error_type,
+                    "framework": framework_type,
+                },
             )
 
     async def execute_task_live(

@@ -225,6 +225,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             self.message = message
             self.task_request = task_request
     
+    def _derive_request_mode(self, task_request: TaskRequest) -> str:
+        """Infer request mode for clearer diagnostics."""
+        if task_request.agent_config and not task_request.agent_id:
+            return "agent_creation"
+        if task_request.agent_id and task_request.session_id:
+            return "conversation_existing_session"
+        if task_request.agent_id and not task_request.session_id:
+            return "agent_only"
+        if task_request.session_id and not task_request.agent_id:
+            return "session_only"
+        return "unknown"
+    
     def _get_agent_and_runner(self, agent_id: str, task_request: TaskRequest):
         """Get domain agent and runner for given agent_id. Raises ExecutionError if not found."""
         try:
@@ -521,6 +533,28 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         try:
             # === Creation Mode - agent_config provided ===
             if task_request.agent_config and not task_request.agent_id:
+                if task_request.messages:
+                    self.logger.warning(
+                        "Agent creation request included chat messages; instructing client to use two-step flow",
+                        extra={
+                            "task_id": task_request.task_id,
+                            "message_count": len(task_request.messages),
+                        },
+                    )
+                    return TaskResult(
+                        task_id=task_request.task_id,
+                        status=TaskStatus.ERROR,
+                        error_message=(
+                            "Agent creation must be completed before sending chat messages. "
+                            "Create the agent first, then start a conversation by calling the "
+                            "chat endpoint with that agent_id and your chat_session_id."
+                        ),
+                        metadata={
+                            "error_stage": "adk_adapter.validate_request",
+                            "request_mode": "agent_creation_with_messages",
+                            "message_count": len(task_request.messages),
+                        },
+                    )
                 return await self._handle_agent_creation(task_request, strategy)
             
             # === Conversation Mode - agent_id + session_id provided ===
@@ -529,32 +563,62 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             
             # === Invalid request ===
             else:
+                provided_context = {
+                    "agent_id": task_request.agent_id,
+                    "session_id": task_request.session_id,
+                    "has_agent_config": bool(task_request.agent_config),
+                }
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
-                    error_message="Invalid request: must provide either agent_config "\
-                         "(creation) or agent_id+session_id (conversation)",
+                    error_message=(
+                        "Invalid ADK task request: provide agent_config for new agent creation "
+                        "or agent_id+session_id for conversation reuse."
+                    ),
                     agent_id=task_request.agent_id,
+                    metadata={
+                        "error_stage": "adk_adapter.validate_request",
+                        "request_mode": self._derive_request_mode(task_request),
+                        "provided_context": provided_context,
+                    },
                 )
 
         except self.ExecutionError as e:
             # Handle our custom execution errors
-            self.logger.error(f"ADK execution error - task_id: {task_request.task_id}, error: {e.message}")
+            request_mode = self._derive_request_mode(task_request)
+            error_message = f"ADK execution error ({request_mode}): {e.message}"
+            self.logger.error(f"ADK execution error - task_id: {task_request.task_id}, mode: {request_mode}, error: {e.message}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=e.message,
+                error_message=error_message,
                 session_id=getattr(e.task_request, 'session_id', None),
                 agent_id=getattr(e.task_request, 'agent_id', None),
+                metadata={
+                    "error_stage": "adk_adapter.execute_task",
+                    "error_type": type(e).__name__,
+                    "request_mode": request_mode,
+                    "session_id": getattr(e.task_request, "session_id", None),
+                },
             )
         except Exception as e:
-            self.logger.error(f"ADK task execution failed - task_id: {task_request.task_id}, error: {str(e)}")
+            error_type = type(e).__name__
+            request_mode = self._derive_request_mode(task_request)
+            error_message = f"ADK execution failed ({request_mode}, {error_type}): {str(e)}"
+            self.logger.error(f"ADK task execution failed - task_id: {task_request.task_id}, mode: {request_mode}, error: {error_message}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"ADK execution failed: {str(e)}",
+                error_message=error_message,
                 session_id=task_request.session_id,  # Keep original session_id if any
                 agent_id=task_request.agent_id,  # Keep original agent_id if any
+                metadata={
+                    "error_stage": "adk_adapter.execute_task",
+                    "error_type": error_type,
+                    "request_mode": request_mode,
+                    "session_id": task_request.session_id,
+                    "agent_id": task_request.agent_id,
+                },
             )
 
     async def _handle_agent_creation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
@@ -887,13 +951,26 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return result
             
         except Exception as e:
-            self.logger.error(f"Domain agent execution failed - session_id: {runtime_context.session_id}, error: {str(e)}")
+            error_type = type(e).__name__
+            request_mode = self._derive_request_mode(task_request)
+            error_message = f"Domain agent execution failed ({error_type}): {str(e)}"
+            self.logger.error(
+                f"Domain agent execution failed - session_id: {runtime_context.session_id}, mode: {request_mode}, error: {error_message}"
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"Domain agent execution failed: {str(e)}",
+                error_message=error_message,
                 session_id=runtime_context.session_id,
-                agent_id=runtime_context.agent_id
+                agent_id=runtime_context.agent_id,
+                metadata={
+                    "framework": "adk",
+                    "agent_id": runtime_context.agent_id,
+                    "error_stage": "adk_adapter.domain_agent",
+                    "error_type": error_type,
+                    "request_mode": request_mode,
+                    "session_id": runtime_context.session_id,
+                },
             )
 
     async def _create_domain_agent_for_config(

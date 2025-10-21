@@ -14,6 +14,7 @@ from src.aether_frame.contracts import (
     TaskRequest,
     TaskResult,
     TaskStatus,
+    TaskComplexity,
 )
 from src.aether_frame.execution.task_router import ExecutionStrategy
 from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
@@ -225,7 +226,10 @@ def sample_task_request():
         user_context=None,
         session_context=None,
         execution_context=ExecutionContext(
-            execution_id="exec_001", execution_mode="sync", trace_id="trace_001"
+            execution_id="exec_001",
+            execution_mode="sync",
+            trace_id="trace_001",
+            framework_type=FrameworkType.ADK,
         ),
     )
 
@@ -233,7 +237,13 @@ def sample_task_request():
 @pytest.fixture
 def sample_execution_strategy():
     """Create sample execution strategy."""
-    return ExecutionStrategy(framework_type=FrameworkType.ADK, execution_mode="sync")
+    return ExecutionStrategy(
+        framework_type=FrameworkType.ADK,
+        task_complexity=TaskComplexity.MODERATE,
+        execution_config={},
+        runtime_options={},
+        execution_mode="sync",
+    )
 
 
 class TestAdkFrameworkAdapterRefactored:
@@ -449,10 +459,12 @@ class TestAdkFrameworkAdapterRefactored:
     ):
         """Test task execution failure."""
         await adk_adapter.initialize()
+        sample_task_request.agent_id = "agent_123"
+        sample_task_request.session_id = "session_456"
 
         with patch.object(
             adk_adapter,
-            "_get_or_create_session_agent",
+            "_handle_conversation",
             side_effect=Exception("Test error"),
         ):
             result = await adk_adapter.execute_task(
@@ -463,7 +475,9 @@ class TestAdkFrameworkAdapterRefactored:
             assert result.task_id == "test_task_001"
             assert result.status == TaskStatus.ERROR
             assert "ADK execution failed" in result.error_message
-            assert "session_id" in result.metadata
+            assert result.session_id == "session_456"
+            assert result.agent_id == "agent_123"
+            assert result.metadata.get("request_mode") == "conversation_existing_session"
 
     @pytest.mark.asyncio
     async def test_execute_task_live_session_based_success(
@@ -480,7 +494,9 @@ class TestAdkFrameworkAdapterRefactored:
         mock_agent.execute_live.return_value = (mock_event_stream, mock_communicator)
 
         execution_context = ExecutionContext(
-            execution_id="test_exec", execution_mode="live"
+            execution_id="test_exec",
+            execution_mode="live",
+            framework_type=FrameworkType.ADK,
         )
 
         with patch.object(
@@ -501,7 +517,9 @@ class TestAdkFrameworkAdapterRefactored:
         await adk_adapter.initialize()
 
         execution_context = ExecutionContext(
-            execution_id="test_exec", execution_mode="live"
+            execution_id="test_exec",
+            execution_mode="live",
+            framework_type=FrameworkType.ADK,
         )
 
         with patch.object(

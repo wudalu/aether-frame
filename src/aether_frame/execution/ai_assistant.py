@@ -64,13 +64,22 @@ class AIAssistant:
         try:
             # Validate the request
             if not self._validate_request(task_request):
-                error_msg = "Invalid task request"
                 validation_errors = self._get_validation_errors(task_request)
+                error_msg = (
+                    "Invalid task request: missing "
+                    + ", ".join(validation_errors)
+                    if validation_errors
+                    else "Invalid task request: unknown validation failure"
+                )
                 self.logger.error(f"Request validation failed - task_id: {task_request.task_id}, errors: {validation_errors}")
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=error_msg,
+                    metadata={
+                        "error_stage": "ai_assistant.validate_request",
+                        "validation_errors": validation_errors,
+                    },
                 )
             
             self.logger.info(f"Request validation passed - task_id: {task_request.task_id}")
@@ -82,11 +91,17 @@ class AIAssistant:
             return result
 
         except Exception as e:
-            self.logger.error(f"AI Assistant processing failed - task_id: {task_request.task_id}, error: {str(e)}")
+            error_type = type(e).__name__
+            error_msg = f"Processing failed in ai_assistant.process_request ({error_type}): {str(e)}"
+            self.logger.error(f"AI Assistant processing failed - task_id: {task_request.task_id}, error: {error_msg}")
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"Processing failed: {str(e)}",
+                error_message=error_msg,
+                metadata={
+                    "error_stage": "ai_assistant.process_request",
+                    "error_type": error_type,
+                },
             )
 
     async def start_live_session(
