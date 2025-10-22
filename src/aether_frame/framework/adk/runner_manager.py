@@ -8,6 +8,11 @@ from uuid import uuid4
 import hashlib
 import json
 
+try:
+    from google.adk.memory import InMemoryMemoryService  # type: ignore
+except ImportError:
+    InMemoryMemoryService = None  # type: ignore[assignment]
+
 from ...contracts import AgentConfig
 from ...config.settings import Settings
 
@@ -155,12 +160,26 @@ class RunnerManager:
                 adk_agent = await self._build_adk_agent(agent_config)
             # External agent provided, use it directly
             
-            # Create Runner bound to SessionService with consistent app_name
-            runner = Runner(
-                agent=adk_agent,
-                app_name=self.settings.default_app_name,  # Use configurable app_name for both Runner and sessions
-                session_service=session_service  # Key: binding relationship
-            )
+            memory_service = None
+            if InMemoryMemoryService:
+                try:
+                    memory_service = InMemoryMemoryService()
+                    self.logger.debug("Initialized InMemoryMemoryService for runner %s", runner_id)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to initialize InMemoryMemoryService: %s", exc
+                    )
+                    memory_service = None
+
+            runner_kwargs = {
+                "agent": adk_agent,
+                "app_name": self.settings.default_app_name,
+                "session_service": session_service,
+            }
+            if memory_service is not None:
+                runner_kwargs["memory_service"] = memory_service
+
+            runner = Runner(**runner_kwargs)
             
             now = datetime.now()
 
@@ -176,6 +195,7 @@ class RunnerManager:
                 "last_activity": now,
                 "app_name": self.settings.default_app_name,  # Store app_name for session operations
                 "user_id": self.settings.default_user_id,
+                "memory_service": memory_service,
             }
             
             self.logger.info(f"Created ADK Runner {runner_id} with dedicated SessionService")

@@ -3,9 +3,9 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Set
 
-from ...contracts import TaskRequest
+from ...contracts import KnowledgeSource, TaskRequest
 
 
 @dataclass
@@ -19,6 +19,8 @@ class ChatSessionInfo:
     active_agent_id: Optional[str] = None
     active_adk_session_id: Optional[str] = None  
     active_runner_id: Optional[str] = None
+    available_knowledge: List[KnowledgeSource] = field(default_factory=list)
+    synced_knowledge_sources: Set[str] = field(default_factory=set)
     
     # Metadata
     created_at: datetime = field(default_factory=datetime.now)

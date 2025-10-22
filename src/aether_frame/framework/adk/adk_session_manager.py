@@ -2,12 +2,19 @@
 """ADK-specific session management."""
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from ...contracts import TaskRequest
+try:
+    from google.adk.memory import MemoryEntry  # type: ignore
+except ImportError:
+    MemoryEntry = None  # type: ignore[assignment]
+
+from ...contracts import KnowledgeSource, TaskRequest
 from .adk_session_models import ChatSessionInfo, CoordinationResult
 
 DEFAULT_RUNNER_IDLE_TIMEOUT_SECONDS = 12 * 60 * 60  # 12 hours
@@ -395,6 +402,12 @@ class AdkSessionManager:
         # Get or create chat session mapping
         chat_session = self.get_or_create_chat_session(chat_session_id, user_id)
         
+        # Persist knowledge sources on the chat session for reuse
+        if task_request.available_knowledge:
+            chat_session.available_knowledge = list(task_request.available_knowledge)
+        elif chat_session.available_knowledge:
+            task_request.available_knowledge = list(chat_session.available_knowledge)
+        
         # Check if agent switch is needed
         current_active_agent = chat_session.active_agent_id
         
@@ -402,9 +415,17 @@ class AdkSessionManager:
             # === First-time agent binding ===
             self.logger.info(f"First-time agent binding: binding agent {target_agent_id} for chat_session={chat_session_id}")
             chat_session.active_agent_id = target_agent_id
-            return await self._create_session_for_agent(
+            coordination_result = await self._create_session_for_agent(
                 chat_session, target_agent_id, user_id, task_request, runner_manager
             )
+            await self._sync_knowledge_to_memory(
+                chat_session,
+                task_request,
+                runner_manager,
+                session_id=coordination_result.adk_session_id,
+                user_id=user_id,
+            )
+            return coordination_result
         
         elif current_active_agent == target_agent_id:
             # === Same agent ===
@@ -435,23 +456,47 @@ class AdkSessionManager:
                 # Existing session, continue conversation
                 chat_session.last_activity = datetime.now()
                 
-                return CoordinationResult(
+                coordination_result = CoordinationResult(
                     adk_session_id=session_id, 
                     switch_occurred=False
                 )
+                await self._sync_knowledge_to_memory(
+                    chat_session,
+                    task_request,
+                    runner_manager,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+                return coordination_result
             else:
                 # Same agent but no session - create new session
                 self.logger.info(f"Same agent {target_agent_id} but no session, creating new session for chat_session={chat_session_id}")
-                return await self._create_session_for_agent(
+                coordination_result = await self._create_session_for_agent(
                     chat_session, target_agent_id, user_id, task_request, runner_manager
                 )
+                await self._sync_knowledge_to_memory(
+                    chat_session,
+                    task_request,
+                    runner_manager,
+                    session_id=coordination_result.adk_session_id,
+                    user_id=user_id,
+                )
+                return coordination_result
         
         else:
             # === Agent switch detected ===
             self.logger.info(f"Agent switch detected: {current_active_agent} -> {target_agent_id} for chat_session={chat_session_id}")
-            return await self._switch_agent_session(
+            coordination_result = await self._switch_agent_session(
                 chat_session, target_agent_id, user_id, task_request, runner_manager
             )
+            await self._sync_knowledge_to_memory(
+                chat_session,
+                task_request,
+                runner_manager,
+                session_id=coordination_result.adk_session_id,
+                user_id=user_id,
+            )
+            return coordination_result
 
     async def _switch_agent_session(
         self,
@@ -501,12 +546,20 @@ class AdkSessionManager:
         chat_session.last_switch_at = datetime.now()
         chat_session.last_activity = datetime.now()
         
-        return CoordinationResult(
+        coordination_result = CoordinationResult(
             adk_session_id=new_adk_session_id, 
             switch_occurred=True,
             previous_agent_id=previous_agent_id,
             new_agent_id=target_agent_id
         )
+        await self._sync_knowledge_to_memory(
+            chat_session,
+            task_request,
+            runner_manager,
+            session_id=new_adk_session_id,
+            user_id=user_id,
+        )
+        return coordination_result
     
     async def _create_session_for_agent(
         self,
@@ -536,11 +589,19 @@ class AdkSessionManager:
         chat_session.active_runner_id = runner_id
         chat_session.last_activity = datetime.now()
         
-        return CoordinationResult(
+        coordination_result = CoordinationResult(
             adk_session_id=new_adk_session_id, 
             switch_occurred=False,
             new_agent_id=target_agent_id
         )
+        await self._sync_knowledge_to_memory(
+            chat_session,
+            task_request,
+            runner_manager,
+            session_id=new_adk_session_id,
+            user_id=user_id,
+        )
+        return coordination_result
     
     def _mark_session_cleared(self, chat_session_id: str, reason: str) -> None:
         """Track that a chat session was cleared to surface meaningful errors later."""
@@ -548,6 +609,111 @@ class AdkSessionManager:
             "cleared_at": datetime.now(),
             "reason": reason,
         }
+
+    async def _sync_knowledge_to_memory(
+        self,
+        chat_session: ChatSessionInfo,
+        task_request: TaskRequest,
+        runner_manager,
+        session_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Persist new knowledge sources into the attached memory service."""
+        knowledge_sources: List[KnowledgeSource] = (
+            task_request.available_knowledge or chat_session.available_knowledge
+        )
+        if not knowledge_sources:
+            return
+
+        runner_id = chat_session.active_runner_id
+        if not runner_id:
+            return
+
+        runner_context = runner_manager.runners.get(runner_id)
+        if not runner_context:
+            return
+
+        memory_service = runner_context.get("memory_service")
+        if not memory_service:
+            return
+
+        synced_names = chat_session.synced_knowledge_sources
+        new_sources = [
+            source
+            for source in knowledge_sources
+            if source and source.name and source.name not in synced_names
+        ]
+        if not new_sources:
+            return
+
+        app_name = runner_context.get("app_name", runner_manager.settings.default_app_name)
+        resolved_user_id = (
+            runner_context.get("session_user_ids", {}).get(session_id) if session_id else None
+        )
+        if not resolved_user_id:
+            resolved_user_id = user_id or runner_context.get("user_id")
+        if not resolved_user_id and task_request.user_context:
+            resolved_user_id = task_request.user_context.get_adk_user_id()
+        if not resolved_user_id:
+            resolved_user_id = runner_manager.settings.default_user_id
+
+        for source in new_sources:
+            entry = self._build_memory_entry(source)
+            if not entry:
+                continue
+            try:
+                try:
+                    store_call = memory_service.store_memory(  # type: ignore[attr-defined]
+                        app_name=app_name,
+                        user_id=resolved_user_id,
+                        entry=entry,
+                    )
+                except TypeError:
+                    store_call = memory_service.store_memory(app_name, resolved_user_id, entry)
+                if inspect.isawaitable(store_call):
+                    await store_call  # type: ignore[func-returns-value]
+                synced_names.add(source.name)
+                self.logger.debug(
+                    "Stored knowledge source '%s' in memory for chat_session=%s",
+                    source.name,
+                    chat_session.chat_session_id,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to store knowledge source '%s' in memory: %s",
+                    source.name,
+                    exc,
+                )
+
+    def _build_memory_entry(self, source: KnowledgeSource):
+        """Create a MemoryEntry (or compatible fallback) from a KnowledgeSource."""
+        description_parts = []
+        if source.description:
+            description_parts.append(source.description)
+        if source.location:
+            description_parts.append(f"Location: {source.location}")
+        text = "\n".join(description_parts) if description_parts else source.name
+
+        metadata = dict(source.metadata or {})
+        metadata.setdefault("source_type", source.source_type)
+        if source.location:
+            metadata.setdefault("location", source.location)
+
+        if MemoryEntry is not None:
+            try:
+                return MemoryEntry(
+                    title=source.name,
+                    text=text,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                self.logger.debug(
+                    "Failed to instantiate MemoryEntry for '%s': %s",
+                    source.name,
+                    exc,
+                )
+
+        return SimpleNamespace(title=source.name, text=text, metadata=metadata)
 
     def get_or_create_chat_session(self, chat_session_id: str, user_id: str) -> ChatSessionInfo:
         """Get existing or create new chat session info."""
@@ -671,6 +837,8 @@ class AdkSessionManager:
         chat_session.active_agent_id = None
         chat_session.active_adk_session_id = None
         chat_session.active_runner_id = None
+        chat_session.available_knowledge.clear()
+        chat_session.synced_knowledge_sources.clear()
     
     async def cleanup_chat_session(self, chat_session_id: str, runner_manager, agent_manager=None) -> bool:
         """Cleanup a chat session and its associated ADK resources."""

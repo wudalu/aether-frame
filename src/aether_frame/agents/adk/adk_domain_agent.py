@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """ADK Domain Agent Implementation."""
 
+import inspect
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from ...contracts import (
     AgentRequest,
@@ -556,8 +557,31 @@ class AdkDomainAgent(DomainAgent):
             )
 
         try:
+            messages_for_execution = list(task_request.messages or [])
+            latest_query = self._extract_user_query(task_request.messages)
+            memory_snippets = await self._retrieve_memory_snippets(
+                latest_query, session_id=session_id
+            )
+            if memory_snippets:
+                knowledge_message = "\n\n".join(memory_snippets)
+                messages_for_execution.append(
+                    UniversalMessage(
+                        role="user",
+                        content=f"[Retrieved Knowledge]\n{knowledge_message}",
+                        metadata={
+                            "source": "memory_service",
+                            "snippet_count": len(memory_snippets),
+                        },
+                    )
+                )
+                self.logger.debug(
+                    "Appended %d memory snippets to conversation for session %s",
+                    len(memory_snippets),
+                    session_id,
+                )
+
             # Convert our message format to ADK format
-            adk_content = self._convert_messages_to_adk_content(task_request.messages)
+            adk_content = self._convert_messages_to_adk_content(messages_for_execution)
 
             # Execute using ADK Runner with proper ADK agent creation
             adk_response = await self._run_adk_with_runner_and_agent(
@@ -703,6 +727,76 @@ class AdkDomainAgent(DomainAgent):
             return f"Mock ADK processed: {adk_content}"
         except Exception as e:
             raise RuntimeError(f"ADK Runner execution failed: {str(e)}")
+
+    def _extract_user_query(
+        self, messages: Optional[List[UniversalMessage]]
+    ) -> Optional[str]:
+        """Get the latest user-authored text content to use as a memory query."""
+        if not messages:
+            return None
+
+        for message in reversed(messages):
+            if isinstance(message, UniversalMessage) and message.role == "user":
+                if isinstance(message.content, str):
+                    return message.content
+            elif isinstance(message, dict) and message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+        return None
+
+    async def _retrieve_memory_snippets(
+        self, query: Optional[str], session_id: str
+    ) -> List[str]:
+        """Retrieve knowledge snippets from the runner memory service."""
+        if not query:
+            return []
+
+        runner_context = self.runtime_context.get("runner_context") or {}
+        memory_service = runner_context.get("memory_service")
+        if not memory_service:
+            return []
+
+        app_name = runner_context.get("app_name") or self.runtime_context.get("app_name") or "aether-frame"
+        user_id = (
+            runner_context.get("session_user_ids", {}).get(session_id)
+            or self.runtime_context.get("user_id")
+            or "anonymous"
+        )
+
+        try:
+            try:
+                search_call = memory_service.search_memory(  # type: ignore[attr-defined]
+                    app_name=app_name,
+                    user_id=user_id,
+                    query=query,
+                )
+            except TypeError:
+                search_call = memory_service.search_memory(app_name, user_id, query)
+
+            search_results = await search_call if inspect.isawaitable(search_call) else search_call
+        except Exception as exc:
+            self.logger.debug(
+                "Memory search failed for session %s: %s", session_id, exc
+            )
+            return []
+
+        entries = getattr(search_results, "results", None) or getattr(search_results, "entries", None)
+        if not entries:
+            return []
+
+        snippets: List[str] = []
+        for entry in entries:
+            text = getattr(entry, "text", None) or getattr(entry, "content", None)
+            if not text:
+                continue
+            text_value = str(text).strip()
+            if text_value:
+                snippets.append(text_value)
+            if len(snippets) >= 3:
+                break
+
+        return snippets
 
     # === Format Conversion Methods ===
 

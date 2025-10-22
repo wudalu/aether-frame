@@ -294,6 +294,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             "domain_agent": domain_agent,
             "pattern": pattern
         })
+        if task_request.available_knowledge:
+            runtime_context.metadata["available_knowledge"] = list(task_request.available_knowledge)
+        if task_request.execution_context and not task_request.execution_context.available_knowledge:
+            task_request.execution_context.available_knowledge = list(task_request.available_knowledge)
         return runtime_context
     
     async def _create_runtime_context_for_existing_session(self, task_request: TaskRequest) -> "RuntimeContext":

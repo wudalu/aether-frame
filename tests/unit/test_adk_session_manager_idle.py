@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from aether_frame.contracts import KnowledgeSource, TaskRequest, UserContext
 from aether_frame.framework.adk.adk_session_manager import (
     AdkSessionManager,
     SessionClearedError,
@@ -54,6 +55,17 @@ class StubAgentManager:
         self._agent_metadata.pop(agent_id, None)
         self._agents.pop(agent_id, None)
         return True
+
+
+class StubMemoryService:
+    def __init__(self):
+        self.store_calls = []
+
+    async def store_memory(self, *args, **kwargs):
+        self.store_calls.append({"args": args, "kwargs": kwargs})
+
+    async def search_memory(self, *args, **kwargs):
+        return SimpleNamespace(results=[])
 
 
 @pytest.mark.asyncio
@@ -256,3 +268,114 @@ async def test_cleanup_chat_session_destroys_runner_when_last_session_removed():
 
     assert runner_manager.removed_sessions == [(runner_id, "adk-final")]
     assert runner_manager.cleaned == [runner_id]
+
+
+class KnowledgeRunnerManagerStub:
+    def __init__(self):
+        self.agent_runner_mapping = {"agent-knowledge": "runner-knowledge"}
+        self.session_to_runner = {}
+        self.memory_service = StubMemoryService()
+        self.settings = SimpleNamespace(
+            default_app_name="test-app",
+            default_user_id="user-knowledge",
+        )
+        self.runners = {
+            "runner-knowledge": {
+                "sessions": {},
+                "session_user_ids": {},
+                "memory_service": self.memory_service,
+                "app_name": "test-app",
+                "user_id": "user-knowledge",
+            }
+        }
+
+    async def get_runner_for_agent(self, agent_id: str) -> str:
+        return self.agent_runner_mapping[agent_id]
+
+    async def _create_session_in_runner(self, runner_id: str, task_request=None, external_session_id: str = None) -> str:
+        session_id = external_session_id or "stub-session"
+        runner_context = self.runners.setdefault(
+            runner_id,
+            {
+                "sessions": {},
+                "session_user_ids": {},
+                "memory_service": self.memory_service,
+                "app_name": "test-app",
+                "user_id": "user-knowledge",
+            },
+        )
+        runner_context["sessions"][session_id] = object()
+        if task_request and task_request.user_context:
+            runner_context["session_user_ids"][session_id] = task_request.user_context.get_adk_user_id()
+        self.session_to_runner[session_id] = runner_id
+        return session_id
+
+    async def get_runner_by_session(self, session_id: str):
+        runner_id = self.session_to_runner.get(session_id)
+        if not runner_id:
+            return None
+        return self.runners.get(runner_id)
+
+
+@pytest.mark.asyncio
+async def test_coordinate_chat_session_persists_and_hydrates_knowledge():
+    manager = AdkSessionManager()
+    runner_manager = KnowledgeRunnerManagerStub()
+
+    knowledge_sources = [
+        KnowledgeSource(
+            name="docs",
+            source_type="vector_store",
+            location="memory://docs",
+            description="Primary documentation store",
+        )
+    ]
+
+    initial_request = TaskRequest(
+        task_id="task-1",
+        task_type="chat",
+        description="Initial turn",
+        agent_id="agent-knowledge",
+        session_id="chat-session",
+        user_context=UserContext(user_id="user-knowledge"),
+        available_knowledge=knowledge_sources,
+    )
+
+    result = await manager.coordinate_chat_session(
+        chat_session_id=initial_request.session_id,
+        target_agent_id=initial_request.agent_id,
+        user_id=initial_request.user_context.get_adk_user_id(),
+        task_request=initial_request,
+        runner_manager=runner_manager,
+    )
+
+    chat_session = manager.chat_sessions[initial_request.session_id]
+    assert chat_session.available_knowledge == knowledge_sources
+    assert result.adk_session_id in runner_manager.session_to_runner
+    assert "docs" in chat_session.synced_knowledge_sources
+    assert len(runner_manager.memory_service.store_calls) == 1
+    first_call = runner_manager.memory_service.store_calls[0]
+    stored_entry = first_call["kwargs"].get("entry") if first_call["kwargs"] else first_call["args"][2]
+    assert getattr(stored_entry, "title", None) == "docs"
+
+    followup_request = TaskRequest(
+        task_id="task-2",
+        task_type="chat",
+        description="Follow-up turn",
+        agent_id="agent-knowledge",
+        session_id="chat-session",
+        user_context=UserContext(user_id="user-knowledge"),
+        available_knowledge=[],
+    )
+
+    await manager.coordinate_chat_session(
+        chat_session_id=followup_request.session_id,
+        target_agent_id=followup_request.agent_id,
+        user_id=followup_request.user_context.get_adk_user_id(),
+        task_request=followup_request,
+        runner_manager=runner_manager,
+    )
+
+    assert followup_request.available_knowledge == knowledge_sources
+    assert followup_request.available_knowledge is not chat_session.available_knowledge
+    assert len(runner_manager.memory_service.store_calls) == 1
