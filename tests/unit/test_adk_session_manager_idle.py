@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aether_frame.contracts import KnowledgeSource, TaskRequest, UserContext
+from aether_frame.contracts import FileReference, KnowledgeSource, TaskRequest, UserContext
 from aether_frame.framework.adk.adk_session_manager import (
     AdkSessionManager,
     SessionClearedError,
@@ -339,6 +339,7 @@ async def test_coordinate_chat_session_persists_and_hydrates_knowledge():
         session_id="chat-session",
         user_context=UserContext(user_id="user-knowledge"),
         available_knowledge=knowledge_sources,
+        attachments=[FileReference(file_path="temp/report.pdf", file_type="application/pdf", file_size=2048)],
     )
 
     result = await manager.coordinate_chat_session(

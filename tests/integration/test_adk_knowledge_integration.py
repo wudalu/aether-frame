@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from aether_frame.agents.adk.adk_domain_agent import AdkDomainAgent
-from aether_frame.contracts import AgentRequest, KnowledgeSource, TaskRequest, TaskStatus, UniversalMessage, UserContext
+from aether_frame.contracts import AgentRequest, FileReference, KnowledgeSource, TaskRequest, TaskStatus, UniversalMessage, UserContext
 from aether_frame.framework.adk.adk_session_manager import AdkSessionManager
 
 
@@ -86,6 +86,13 @@ async def test_adk_knowledge_flow_integration(monkeypatch):
         session_id="business-session",
         user_context=UserContext(user_id="user-knowledge"),
         available_knowledge=knowledge,
+        attachments=[
+            FileReference(
+                file_path="uploads/design.docx",
+                file_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                metadata={"name": "design.docx"},
+            )
+        ],
     )
 
     coordination = await session_manager.coordinate_chat_session(
@@ -97,7 +104,7 @@ async def test_adk_knowledge_flow_integration(monkeypatch):
     )
 
     assert coordination.adk_session_id in runner_manager.session_to_runner
-    assert memory_service.store_calls, "Knowledge should be written to memory service"
+    assert len(memory_service.store_calls) == 1, "Only knowledge should be stored"
 
     captured_adk_content = {}
 
@@ -126,11 +133,21 @@ async def test_adk_knowledge_flow_integration(monkeypatch):
         session_id=task_request_initial.session_id,
         user_context=UserContext(user_id="user-knowledge"),
         messages=[UniversalMessage(role="user", content="Tell me about docs again.")],
+        attachments=[
+            FileReference(
+                file_path="uploads/design.docx",
+                file_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                metadata={"name": "design.docx"},
+            )
+        ],
     )
 
     agent_request = AgentRequest(task_request=followup_request)
     result = await agent._execute_with_adk_runner(agent_request)
 
     assert memory_service.search_calls, "Domain agent should query memory service"
-    assert "[Retrieved Knowledge]" in captured_adk_content["content"]
+    parts = getattr(captured_adk_content["content"], "parts", [])
+    text_payload = "\n".join(getattr(part, "text", "") for part in parts)
+    assert "[Retrieved Knowledge]" in text_payload
+    assert "[Attachment]" in text_payload
     assert result.status == TaskStatus.SUCCESS

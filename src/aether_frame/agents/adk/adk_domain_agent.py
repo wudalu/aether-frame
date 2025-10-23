@@ -7,7 +7,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ...contracts import (
+    ContentPart,
     AgentRequest,
+    FileReference,
     LiveExecutionResult,
     TaskResult,
     TaskStatus,
@@ -580,6 +582,12 @@ class AdkDomainAgent(DomainAgent):
                     session_id,
                 )
 
+            attachment_messages = self._build_attachment_messages(
+                task_request.attachments
+            )
+            if attachment_messages:
+                messages_for_execution.extend(attachment_messages)
+
             # Convert our message format to ADK format
             adk_content = self._convert_messages_to_adk_content(messages_for_execution)
 
@@ -797,6 +805,38 @@ class AdkDomainAgent(DomainAgent):
                 break
 
         return snippets
+
+    def _build_attachment_messages(
+        self, attachments: Optional[List[FileReference]]
+    ) -> List[UniversalMessage]:
+        if not attachments:
+            return []
+
+        messages: List[UniversalMessage] = []
+        for attachment in attachments:
+            summary = self._summarise_attachment(attachment)
+            messages.append(
+                UniversalMessage(
+                    role="user",
+                    content=[
+                        ContentPart(
+                            text=summary,
+                            file_reference=attachment,
+                        )
+                    ],
+                    metadata={"source": "attachment"},
+                )
+            )
+        return messages
+
+    def _summarise_attachment(self, attachment: FileReference) -> str:
+        details = [attachment.file_path or attachment.metadata.get("name", "attachment")]
+        if attachment.file_type:
+            details.append(f"type={attachment.file_type}")
+        size = attachment.file_size or attachment.metadata.get("size")
+        if size:
+            details.append(f"size={size}")
+        return f"[Attachment] {' | '.join(details)}"
 
     # === Format Conversion Methods ===
 

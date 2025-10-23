@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from aether_frame.agents.adk.adk_domain_agent import AdkDomainAgent
-from aether_frame.contracts import AgentRequest, TaskRequest, UniversalMessage
+from aether_frame.contracts import AgentRequest, FileReference, TaskRequest, UniversalMessage
 
 
 class MemoryServiceStub:
@@ -51,6 +51,14 @@ async def test_execute_with_adk_runner_appends_memory_snippets(monkeypatch):
         task_type="chat",
         description="desc",
         messages=[UniversalMessage(role="user", content="Tell me about docs.")],
+        attachments=[
+            FileReference(
+                file_path="reports/summary.pdf",
+                file_type="application/pdf",
+                file_size=4096,
+                metadata={"name": "summary.pdf"},
+            )
+        ],
     )
     agent_request = AgentRequest(task_request=task_request)
 
@@ -58,4 +66,10 @@ async def test_execute_with_adk_runner_appends_memory_snippets(monkeypatch):
 
     assert memory_service.queries, "memory search should be triggered"
     assert "Snippet A" in result.messages[0].content
-    assert "[Retrieved Knowledge]" in agent._captured_adk_content
+    part_texts = [
+        getattr(part, "text", "")
+        for part in getattr(agent._captured_adk_content, "parts", [])
+    ]
+    combined = "\n".join(part_texts)
+    assert "[Retrieved Knowledge]" in combined
+    assert "[Attachment]" in combined

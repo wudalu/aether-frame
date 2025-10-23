@@ -8,6 +8,7 @@ from aether_frame.contracts import (
     AgentConfig,
     ExecutionConfig,
     ExecutionContext,
+    FileReference,
     KnowledgeSource,
     SessionContext,
     TaskRequest,
@@ -60,6 +61,7 @@ class TaskRequestBuilder:
         execution_context: Optional[ExecutionContext] = None,
         messages: Optional[List[UniversalMessage]] = None,
         available_knowledge: Optional[List[KnowledgeSource]] = None,
+        attachments: Optional[List[FileReference]] = None,
         execution_config: Optional[ExecutionConfig] = None,
         metadata: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
@@ -118,6 +120,7 @@ class TaskRequestBuilder:
             messages=messages or [],
             available_tools=available_tools,
             available_knowledge=available_knowledge or [],
+             attachments=attachments or [],
             execution_config=execution_config,
             metadata=metadata or {},
             session_id=session_id,
@@ -163,6 +166,7 @@ class TaskRequestBuilder:
             available_tools=available_tools,
             messages=kwargs.get('messages', []),
             available_knowledge=kwargs.get('available_knowledge', []),
+            attachments=kwargs.get('attachments', []),
             metadata=kwargs.get('metadata', {}),
             **kwargs
         )

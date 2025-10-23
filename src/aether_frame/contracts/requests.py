@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .configs import AgentConfig, ExecutionConfig
 from .contexts import (
+    FileReference,
     ExecutionContext,
     KnowledgeSource,
     SessionContext,
@@ -29,6 +30,7 @@ class TaskRequest:
     messages: List[UniversalMessage] = field(default_factory=list)
     available_tools: List[UniversalTool] = field(default_factory=list)
     available_knowledge: List[KnowledgeSource] = field(default_factory=list)
+    attachments: List[FileReference] = field(default_factory=list)
     execution_config: Optional[ExecutionConfig] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     

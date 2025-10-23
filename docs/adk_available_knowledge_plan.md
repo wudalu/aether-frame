@@ -54,3 +54,4 @@
 - `AdkSessionManager.coordinate_chat_session` (`src/aether_frame/framework/adk/adk_session_manager.py`): syncs `available_knowledge` into runner memory via `_sync_knowledge_to_memory`, deduplicating with `ChatSessionInfo.synced_knowledge_sources`.
 - `AdkDomainAgent._execute_with_adk_runner` (`src/aether_frame/agents/adk/adk_domain_agent.py`): retrieves snippets before execution using `_retrieve_memory_snippets` and appends them to outbound messages.
 - Tests (`tests/unit/test_adk_session_manager_idle.py`, `tests/unit/test_adk_domain_agent_memory.py`, `tests/integration/test_adk_knowledge_integration.py`): cover storage, dedupe, retrieval, and end-to-end flow.
+- Short-lived attachments and their handling are documented in `docs/adk_ephemeral_file_handling.md`.

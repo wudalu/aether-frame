@@ -203,6 +203,7 @@ class TestADKCompatibility:
         assert len(task_request.messages) == 1
         assert len(task_request.available_tools) == 1
         assert len(task_request.available_knowledge) == 1
+        assert task_request.attachments == []
 
 
 class TestComplexMessages:
