@@ -503,18 +503,20 @@ async def _load_mcp_tools(self):
 
 #### Configuration Example
 ```python
-{
-    "tool_service": {
-        "enable_mcp": True,
-        "mcp_servers": [
-            {
-                "name": "local_server",
-                "endpoint": "http://localhost:8002/mcp",
-                "timeout": 30
-            }
-        ]
-    }
-}
+from aether_frame.config.settings import Settings
+
+settings = Settings(
+    enable_mcp_tools=True,
+    mcp_servers=[
+        {
+            "name": "local_server",
+            "endpoint": "http://localhost:8002/mcp",
+            "timeout": 30,
+        }
+    ],
+)
+
+# Bootstrap injects these values into ToolService.initialize()
 ```
 
 ### Common Pitfalls and Solutions
@@ -698,20 +700,103 @@ For standard MCP servers that follow the protocol, integration is straightforwar
 
 #### 1. Update Configuration
 
-Add your server to the system configuration:
+Enable MCP support via `Settings` (Pydantic). The framework reads values from
+environment variables or your `.env` file:
+
+```bash
+# .env or shell exports
+ENABLE_MCP_TOOLS=true
+MCP_SERVERS='[
+  {
+    "name": "my_new_server",
+    "endpoint": "http://localhost:8003/mcp",
+    "timeout": 30,
+    "headers": {
+      "Authorization": "Bearer your-token",
+      "Custom-Header": "value"
+    }
+  }
+]'
+```
+
+> `MCP_SERVERS` expects a JSON array; each object maps directly to
+> `MCPServerConfig` (`name`, `endpoint`, optional `headers`/`timeout`).
+
+#### 1.1 Inject per-request authentication context
+
+Server-level headers above work for static API keys. When you need user/session
+scoped tokens, populate the execution request so `ToolService` can relay them:
 
 ```python
-# In your config file (e.g., config/development.yaml)
-tool_service:
-  enable_mcp: true
-  mcp_servers:
-    - name: "my_new_server"           # Unique identifier for tool namespacing
-      endpoint: "http://localhost:8003/mcp"  # Server endpoint
-      timeout: 30                     # Optional: request timeout (default: 30s)
-      headers:                        # Optional: custom headers
-        Authorization: "Bearer your-token"
-        Custom-Header: "value"
+from aether_frame.contracts import TaskRequest, ToolRequest, UniversalTool, UserContext
+
+task_request = TaskRequest(
+    task_id="cust-42",
+    task_type="conversation",
+    description="Use customer-specific MCP tools",
+    user_context=UserContext(
+        user_id="user-123",
+        session_token="session-token-for-mcp"
+    ),
+    metadata={
+        # Default headers for all tools in this task
+        "mcp_headers": {"Authorization": "Bearer task-scope-token"}
+    },
+    available_tools=[
+        UniversalTool(
+            name="research.search",
+            namespace="research",
+            description="Search knowledge base",
+            metadata={
+                # Optional override for this particular tool
+                "mcp_headers": {"Authorization": "Bearer tool-scope-token"}
+            }
+        )
+    ]
+)
+
+# When the agent actually invokes the tool, it can also add call-specific headers:
+tool_request = ToolRequest(
+    tool_name="research.search",
+    tool_namespace="research",
+    parameters={"query": "latest pricing"},
+    metadata={
+        "mcp_headers": {"X-Customer-ID": "customer-789"}
+    }
+)
 ```
+
+During execution the ADK adapter copies `TaskRequest` context into each
+`ToolRequest`. `MCPTool` then merges the headers with the following precedence:
+
+1. `ToolRequest.metadata["mcp_headers"]` (call-specific)
+2. `UniversalTool.metadata["mcp_headers"]` (tool-specific)
+3. `TaskRequest.metadata["mcp_headers"]` (task default)
+4. Derived headers from `UserContext` / `SessionContext` / `ExecutionContext`
+   (`X-AF-User-ID`, `X-AF-Session-ID`, etc.)
+5. Static `MCPServerConfig.headers`
+
+This guarantees per-user or per-call tokens reach the MCP server without writing
+custom plumbing for each adapter.
+
+#### 1.2 Verify with automated tests
+
+Two repository tests cover the authentication and streaming flow end to end:
+
+| Test | What it verifies |
+|------|------------------|
+| `tests/unit/test_adk_domain_agent_tool_request.py` | The ADK domain agent copies `TaskRequest` metadata/contexts into each `ToolRequest`, so `mcp_headers`, `UserContext`, and session IDs survive until the MCP layer. |
+| `tests/e2e/test_mcp_real_server_e2e.py` | Boots the real streaming MCP server (`tests/tools/mcp/real_streaming_server.py`), initialises `ToolService`, exercises header propagation via `inspect_request_context`, and confirms streaming output from `real_time_data_stream`. |
+
+To run the e2e test locally:
+
+```bash
+source .venv/bin/activate
+pip install mcp fastmcp
+pytest tests/e2e/test_mcp_real_server_e2e.py
+```
+
+The test spins up the server as a subprocess, so real HTTP/SSE traffic is generated; if the assertions pass, you know headers and streaming are wired correctly through `ToolService → AdkDomainAgent → MCPClient`.
 
 #### 2. Restart the System
 
@@ -754,30 +839,35 @@ python tools.py test-tool my_new_server.tool_name
 
 #### Environment-Specific Configuration
 
-```python
-# Development environment
-development:
-  tool_service:
-    mcp_servers:
-      - name: "local_dev_tools"
-        endpoint: "http://localhost:8000/mcp"
-        
-# Production environment  
-production:
-  tool_service:
-    mcp_servers:
-      - name: "prod_research_tools"
-        endpoint: "https://research-api.company.com/mcp"
-        headers:
-          Authorization: "${RESEARCH_API_TOKEN}"  # Environment variable
-          
-# Testing environment
-testing:
-  tool_service:
-    mcp_servers:
-      - name: "mock_server"
-        endpoint: "http://test-server:8080/mcp"
-        timeout: 10  # Shorter timeout for tests
+Because `Settings` is environment-driven, simply vary the values per deployment.
+For example, in `.env.development`:
+
+```env
+ENABLE_MCP_TOOLS=true
+MCP_SERVERS='[
+  {"name": "local_dev_tools", "endpoint": "http://localhost:8000/mcp"}
+]'
+```
+
+And in production shell exports (CI/secret manager preferred):
+
+```bash
+export ENABLE_MCP_TOOLS=true
+export MCP_SERVERS='[
+  {
+    "name": "prod_research_tools",
+    "endpoint": "https://research-api.company.com/mcp",
+    "headers": {"Authorization": "'"$RESEARCH_API_TOKEN"'"}
+  }
+]'
+```
+
+For tests, override with shorter timeouts:
+
+```bash
+export MCP_SERVERS='[
+  {"name": "mock_server", "endpoint": "http://test-server:8080/mcp", "timeout": 10}
+]'
 ```
 
 ### Tool Naming and Discovery

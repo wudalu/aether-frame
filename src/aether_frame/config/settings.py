@@ -1,6 +1,6 @@
 """Application settings using Pydantic V2 style configuration."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     enable_tool_service: bool = True
     enable_mcp_tools: bool = False
     enable_adk_native_tools: bool = False
+    mcp_servers: List[Dict[str, Any]] = Field(default_factory=list)
 
     # Framework preferences
     preferred_frameworks: List[str] = Field(default_factory=lambda: ["adk"])

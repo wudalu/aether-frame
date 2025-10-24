@@ -307,10 +307,10 @@ class TestMCPClientToolExecution:
         result = await client.call_tool("search", {"query": "test"})
         
         assert result == "Search results: Found 5 items"
-        mock_session.call_tool.assert_called_once_with(
-            name="search",
-            arguments={"query": "test"}
-        )
+        mock_session.call_tool.assert_called_once()
+        call_args = mock_session.call_tool.call_args
+        assert call_args.args == ("search", {"query": "test"})
+        assert "progress_callback" in call_args.kwargs
     
     @pytest.mark.asyncio
     async def test_tool_call_server_error(self) -> None:

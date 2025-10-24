@@ -3,7 +3,6 @@
 
 import pytest
 from unittest.mock import AsyncMock, patch
-from datetime import datetime
 
 from aether_frame.tools.mcp.tool_wrapper import MCPTool
 from aether_frame.tools.mcp.client import MCPClient, MCPConnectionError, MCPToolError
@@ -67,7 +66,10 @@ class TestMCPToolCore:
             assert result.status == ToolStatus.SUCCESS
             assert result.result_data == "Test result"
             assert result.tool_name == "test_server.test_tool"
-            mock_client.call_tool.assert_called_once_with("test_tool", {"param": "value"})
+            mock_client.call_tool.assert_awaited_once()
+            call_args = mock_client.call_tool.call_args
+            assert call_args.args == ("test_tool", {"param": "value"})
+            assert call_args.kwargs.get("extra_headers") is None
     
     @pytest.mark.asyncio
     async def test_execute_connection_error(self) -> None:
@@ -134,6 +136,10 @@ class TestMCPToolCore:
             assert chunks[0].content == "chunk1"
             assert chunks[1].chunk_type == TaskChunkType.COMPLETE
             assert chunks[1].is_final is True
+            mock_client.call_tool_stream.assert_awaited_once()
+            stream_call = mock_client.call_tool_stream.call_args
+            assert stream_call.args == ("test_tool", {})
+            assert stream_call.kwargs.get("extra_headers") is None
     
     @pytest.mark.asyncio
     async def test_tool_schema(self) -> None:

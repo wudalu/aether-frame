@@ -2,8 +2,7 @@
 """Test suite for MCPTool wrapper implementation."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime
+from unittest.mock import AsyncMock, patch
 from typing import Any, Dict
 
 from aether_frame.tools.mcp.tool_wrapper import MCPTool
@@ -13,6 +12,7 @@ from aether_frame.contracts import ToolRequest, ToolResult
 from aether_frame.contracts.responses import ToolStatus
 from aether_frame.contracts.streaming import TaskStreamChunk
 from aether_frame.contracts.enums import TaskChunkType
+from aether_frame.contracts.contexts import UserContext, UserPermissions
 
 
 class TestMCPToolWrapper:
@@ -81,7 +81,10 @@ class TestMCPToolWrapper:
             assert result.metadata["mcp_server"] == "test_server"
             
             # Verify client was called correctly
-            mock_client.call_tool.assert_called_once_with("search", {"query": "test search"})
+            mock_client.call_tool.assert_awaited_once()
+            call_args = mock_client.call_tool.call_args
+            assert call_args.args == ("search", {"query": "test search"})
+            assert call_args.kwargs.get("extra_headers") is None
     
     @pytest.mark.asyncio
     async def test_execute_connection_error(self) -> None:
@@ -194,13 +197,116 @@ class TestMCPToolWrapper:
         assert chunks[0].is_final is False
         assert chunks[0].sequence_id == 0
         assert chunks[0].metadata["mcp_server"] == "test_server"
+        mock_client.call_tool_stream.assert_awaited_once()
+        stream_call = mock_client.call_tool_stream.call_args
+        assert stream_call.args == ("search", {"query": "streaming test"})
+        assert stream_call.kwargs.get("extra_headers") is None
         
         # Check last chunk
         assert chunks[2].chunk_type == TaskChunkType.COMPLETE
         assert chunks[2].is_final is True
-        
-        # Verify client was called correctly
-        mock_client.call_tool_stream.assert_called_once_with("search", {"query": "streaming test"})
+
+    @pytest.mark.asyncio
+    async def test_execute_includes_metadata_headers(self) -> None:
+        """Headers from metadata should be forwarded to MCP client."""
+        config = MCPServerConfig(name="test_server", endpoint="http://localhost:8000/mcp")
+        mock_client = MCPClient(config)
+        mock_client.call_tool = AsyncMock(return_value="ok")
+
+        with patch.object(mock_client, "is_connected", True):
+            tool = MCPTool(
+                mcp_client=mock_client,
+                tool_name="search",
+                tool_description="Search tool",
+                tool_schema={},
+                namespace="test_server",
+            )
+
+            tool_request = ToolRequest(
+                tool_name="test_server.search",
+                parameters={"query": "metadata"},
+                metadata={"mcp_headers": {"Authorization": "Bearer token-123"}},
+            )
+
+            await tool.execute(tool_request)
+
+            mock_client.call_tool.assert_awaited_once()
+            call_args = mock_client.call_tool.call_args
+            assert call_args.kwargs.get("extra_headers") == {"Authorization": "Bearer token-123"}
+
+    @pytest.mark.asyncio
+    async def test_execute_builds_user_context_headers(self) -> None:
+        """User context should map to authentication headers when not provided explicitly."""
+        config = MCPServerConfig(name="test_server", endpoint="http://localhost:8000/mcp")
+        mock_client = MCPClient(config)
+        mock_client.call_tool = AsyncMock(return_value="ok")
+
+        with patch.object(mock_client, "is_connected", True):
+            tool = MCPTool(
+                mcp_client=mock_client,
+                tool_name="search",
+                tool_description="Search tool",
+                tool_schema={},
+                namespace="test_server",
+            )
+
+            user_context = UserContext(
+                user_id="user-123",
+                user_name="alice",
+                session_token="token-xyz",
+                permissions=UserPermissions(permissions=["tools.read", "tools.write"]),
+            )
+
+            tool_request = ToolRequest(
+                tool_name="test_server.search",
+                parameters={"query": "metadata"},
+                user_context=user_context,
+                session_id="session-456",
+            )
+
+            await tool.execute(tool_request)
+
+            mock_client.call_tool.assert_awaited_once()
+            headers = mock_client.call_tool.call_args.kwargs.get("extra_headers")
+            assert headers is not None
+            assert headers["X-AF-User-ID"] == "user-123"
+            assert headers["X-AF-User-Name"] == "alice"
+            assert headers["X-AF-Session-Token"] == "token-xyz"
+            assert headers["X-AF-Session-ID"] == "session-456"
+            assert headers["X-AF-Permissions"] == "tools.read,tools.write"
+
+    @pytest.mark.asyncio
+    async def test_execute_stream_includes_metadata_headers(self) -> None:
+        """Streaming execution should forward headers as well."""
+        config = MCPServerConfig(name="test_server", endpoint="http://localhost:8000/mcp")
+        mock_client = MCPClient(config)
+        async def mock_stream():
+            yield {"type": "complete", "content": "done", "is_final": True}
+        mock_client.call_tool_stream = AsyncMock(return_value=mock_stream())
+
+        with patch.object(mock_client, "is_connected", True):
+            tool = MCPTool(
+                mcp_client=mock_client,
+                tool_name="search",
+                tool_description="Search tool",
+                tool_schema={},
+                namespace="test_server",
+            )
+
+            tool_request = ToolRequest(
+                tool_name="test_server.search",
+                parameters={},
+                metadata={"mcp_headers": {"X-Custom": "123"}},
+            )
+
+            chunks = []
+            async for chunk in tool.execute_stream(tool_request):
+                chunks.append(chunk)
+
+            assert chunks[-1].is_final is True
+        mock_client.call_tool_stream.assert_awaited_once()
+        call_args = mock_client.call_tool_stream.call_args
+        assert call_args.kwargs.get("extra_headers") == {"X-Custom": "123"}
     
     @pytest.mark.asyncio
     async def test_execute_stream_connection_error(self) -> None:
@@ -339,7 +445,10 @@ class TestMCPToolWrapper:
         assert result.result_data == "No params result"
         
         # Client should have been called with empty dict
-        mock_client.call_tool.assert_called_once_with("ping", {})
+        mock_client.call_tool.assert_awaited_once()
+        call_args = mock_client.call_tool.call_args
+        assert call_args.args == ("ping", {})
+        assert call_args.kwargs.get("extra_headers") is None
 
 
 if __name__ == "__main__":

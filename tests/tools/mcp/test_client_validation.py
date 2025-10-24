@@ -132,7 +132,10 @@ class TestMCPClientBasicValidation:
         result = await client.call_tool("search", {"query": "test"})
         
         assert result == "Search results: Found 5 items"
-        mock_session.call_tool.assert_called_once_with("search", {"query": "test"})
+        mock_session.call_tool.assert_called_once()
+        args, kwargs = mock_session.call_tool.call_args
+        assert args == ("search", {"query": "test"})
+        assert "progress_callback" in kwargs
     
     @pytest.mark.asyncio
     async def test_streaming_tool_execution(self) -> None:
@@ -165,6 +168,10 @@ class TestMCPClientBasicValidation:
         assert chunks[0]["content"] == "Streaming result data"
         assert chunks[0]["is_final"] is True
         assert chunks[0]["tool_name"] == "search"
+        mock_session.call_tool.assert_called_once()
+        args, kwargs = mock_session.call_tool.call_args
+        assert args == ("search", {"query": "test"})
+        assert "progress_callback" in kwargs
     
     @pytest.mark.asyncio
     async def test_error_handling(self) -> None:

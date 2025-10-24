@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """Tool Service - Unified tool execution interface."""
 
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from ..contracts import ToolRequest, ToolResult, ToolStatus
+from ..contracts.enums import TaskChunkType
+from ..contracts.streaming import TaskStreamChunk
 from .base.tool import Tool
 
 
@@ -21,6 +24,7 @@ class ToolService:
         self._tools: Dict[str, Tool] = {}
         self._tool_namespaces: Dict[str, List[str]] = {}
         self._initialized = False
+        self._logger = logging.getLogger(__name__)
 
     async def initialize(self, config: Optional[Dict[str, Any]] = None):
         """
@@ -205,6 +209,138 @@ class ToolService:
         if tool:
             return await tool.get_capabilities()
         return []
+
+    async def execute_tool_stream(
+        self, tool_request: ToolRequest
+    ) -> AsyncIterator[TaskStreamChunk]:
+        """
+        Execute a tool with streaming response support.
+
+        If the target tool implements streaming, delegate directly; otherwise
+        execute the tool synchronously and emit a single response chunk.
+
+        Args:
+            tool_request: Request containing tool name and parameters
+
+        Yields:
+            TaskStreamChunk instances produced during tool execution
+        """
+        if tool_request.tool_namespace:
+            full_name = f"{tool_request.tool_namespace}.{tool_request.tool_name}"
+        else:
+            full_name = tool_request.tool_name
+
+        tool = self._tools.get(full_name)
+        if not tool:
+            yield TaskStreamChunk(
+                task_id=f"tool_execution_{full_name}",
+                chunk_type=TaskChunkType.ERROR,
+                sequence_id=0,
+                content=f"Tool {full_name} not found",
+                is_final=True,
+                metadata={
+                    "tool_name": tool_request.tool_name,
+                    "tool_namespace": tool_request.tool_namespace,
+                    "status": ToolStatus.NOT_FOUND.value,
+                },
+            )
+            return
+
+        if tool_request.parameters is None:
+            tool_request.parameters = {}
+        parameters = tool_request.parameters
+
+        # Validate parameters prior to execution, mirroring execute_tool
+        if not await tool.validate_parameters(parameters):
+            yield TaskStreamChunk(
+                task_id=f"tool_execution_{full_name}",
+                chunk_type=TaskChunkType.ERROR,
+                sequence_id=0,
+                content="Invalid tool parameters",
+                is_final=True,
+                metadata={
+                    "tool_name": full_name,
+                    "tool_namespace": tool.namespace,
+                    "status": ToolStatus.ERROR.value,
+                },
+            )
+            return
+
+        stream_callable = getattr(tool, "execute_stream", None)
+        if callable(stream_callable):
+            try:
+                async for chunk in stream_callable(tool_request):
+                    self._logger.debug(
+                        "ToolService streaming chunk", extra={
+                            "tool": full_name,
+                            "chunk_type": getattr(chunk, "chunk_type", None),
+                            "sequence_id": getattr(chunk, "sequence_id", None),
+                            "is_final": getattr(chunk, "is_final", False),
+                        }
+                    )
+                    yield chunk
+                return
+            except NotImplementedError:
+                # Fall back to synchronous execution
+                pass
+            except Exception as exc:
+                self._logger.error(
+                    "Tool streaming execution failed",
+                    extra={
+                        "tool": full_name,
+                        "error": str(exc),
+                    },
+                )
+                yield TaskStreamChunk(
+                    task_id=f"tool_execution_{full_name}",
+                    chunk_type=TaskChunkType.ERROR,
+                    sequence_id=0,
+                    content=f"Streaming execution failed: {exc}",
+                    is_final=True,
+                    metadata={
+                        "tool_name": full_name,
+                        "tool_namespace": tool.namespace,
+                        "status": ToolStatus.ERROR.value,
+                    },
+                )
+                return
+
+        # Fall back to synchronous execution path
+        result = await self.execute_tool(tool_request)
+        self._logger.debug(
+            "ToolService streaming fallback to sync result",
+            extra={
+                "tool": full_name,
+                "status": result.status.value,
+            },
+        )
+        is_success = result.status == ToolStatus.SUCCESS
+        content = (
+            result.result_data
+            if is_success
+            else result.error_message or "Tool execution failed"
+        )
+        chunk_type = TaskChunkType.RESPONSE if is_success else TaskChunkType.ERROR
+
+        metadata: Dict[str, Any] = {
+            "tool_name": result.tool_name or full_name,
+            "tool_namespace": result.tool_namespace or tool.namespace,
+            "status": result.status.value,
+            "fallback_to_sync": True,
+        }
+        if result.metadata:
+            metadata["tool_metadata"] = result.metadata
+        if result.execution_time is not None:
+            metadata["execution_time"] = result.execution_time
+
+        yield TaskStreamChunk(
+            task_id=f"tool_execution_{result.tool_name or full_name}",
+            chunk_type=chunk_type,
+            sequence_id=0,
+            content=content if content is not None else "",
+            is_final=True,
+            metadata=metadata,
+        )
 
     async def health_check(self) -> Dict[str, Any]:
         """

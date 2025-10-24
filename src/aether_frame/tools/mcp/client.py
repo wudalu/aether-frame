@@ -4,7 +4,7 @@
 import asyncio
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
-from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -130,26 +130,7 @@ class MCPClient:
             return
         
         try:
-            # Create streamable HTTP client connection
-            self._stream_context = streamablehttp_client(
-                url=self.config.endpoint,
-                headers=self.config.headers,
-                timeout=self.config.timeout
-            )
-            
-            # Enter the context and get streams
-            read_stream, write_stream, _ = await self._stream_context.__aenter__()
-            
-            # Create client session WITH notification handler
-            self._session_context = ClientSession(
-                read_stream, 
-                write_stream,
-                message_handler=self._notification_handler  # This is the key!
-            )
-            self._session = await self._session_context.__aenter__()
-            
-            # Initialize the session
-            await self._session.initialize()
+            await self._open_persistent_session()
             
             self._connected = True
             print(f"✅ Connected to MCP server with notification handling enabled")
@@ -181,6 +162,55 @@ class MCPClient:
         
         self._session = None
         self._connected = False
+    
+    async def _open_persistent_session(self) -> None:
+        """Open persistent session using base configuration headers."""
+        self._stream_context = streamablehttp_client(
+            url=self.config.endpoint,
+            headers=self.config.headers,
+            timeout=self.config.timeout
+        )
+        read_stream, write_stream, _ = await self._stream_context.__aenter__()
+        self._session_context = ClientSession(
+            read_stream,
+            write_stream,
+            message_handler=self._notification_handler
+        )
+        self._session = await self._session_context.__aenter__()
+        await self._session.initialize()
+
+    async def _ensure_persistent_connection(self) -> None:
+        """Ensure persistent connection is established."""
+        if not self._connected or not self._session:
+            await self.connect()
+
+    @asynccontextmanager
+    async def _session_scope(self, extra_headers: Optional[Dict[str, str]] = None):
+        """Context manager yielding session with merged headers."""
+        if extra_headers:
+            merged_headers = dict(self.config.headers)
+            merged_headers.update({str(k): str(v) for k, v in extra_headers.items()})
+            temp_stream_context = streamablehttp_client(
+                url=self.config.endpoint,
+                headers=merged_headers,
+                timeout=self.config.timeout
+            )
+            read_stream, write_stream, _ = await temp_stream_context.__aenter__()
+            temp_session_context = ClientSession(
+                read_stream,
+                write_stream,
+                message_handler=self._notification_handler
+            )
+            temp_session = await temp_session_context.__aenter__()
+            await temp_session.initialize()
+            try:
+                yield temp_session
+            finally:
+                await temp_session_context.__aexit__(None, None, None)
+                await temp_stream_context.__aexit__(None, None, None)
+        else:
+            await self._ensure_persistent_connection()
+            yield self._session
     
     async def discover_tools(self, cursor: Optional[str] = None) -> List[UniversalTool]:
         """Discover available tools from MCP server.
@@ -240,7 +270,12 @@ class MCPClient:
             }
         )
     
-    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Dict[str, Any],
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
         """Execute tool synchronously by collecting streaming result.
         
         This method now internally uses call_tool_stream and collects the final result,
@@ -259,7 +294,9 @@ class MCPClient:
         """
         try:
             final_result = None
-            async for chunk in self.call_tool_stream(name, arguments):
+            async for chunk in self.call_tool_stream(
+                name, arguments, extra_headers=extra_headers
+            ):
                 if chunk.get("type") == "complete_result" and chunk.get("is_final"):
                     final_result = chunk.get("content")
                     break
@@ -282,7 +319,8 @@ class MCPClient:
     async def call_tool_stream(
         self, 
         name: str, 
-        arguments: Dict[str, Any]
+        arguments: Dict[str, Any],
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Execute tool with REAL streaming via progress notifications.
         
@@ -341,37 +379,38 @@ class MCPClient:
                     await queue.put(progress_event)
                     print(f"✅ Progress via callback: {progress}/{total} - {message}")
             
-            # Execute tool with official progress_callback parameter
-            tool_task = asyncio.create_task(
-                self._session.call_tool(
-                    name, 
-                    arguments,
-                    progress_callback=progress_callback  # Official MCP SDK parameter!
-                )
-            )
-            
-            # Monitor for progress events and tool completion
-            while not tool_task.done():
-                try:
-                    # Wait for progress event with short timeout
-                    progress_event = await asyncio.wait_for(
-                        progress_queue.get(), 
-                        timeout=0.1
+            async with self._session_scope(extra_headers=extra_headers) as session:
+                # Execute tool with official progress_callback parameter
+                tool_task = asyncio.create_task(
+                    session.call_tool(
+                        name,
+                        arguments,
+                        progress_callback=progress_callback  # Official MCP SDK parameter!
                     )
-                    
-                    if progress_event is None:
-                        # End signal
-                        break
-                    
-                    # Yield real-time progress event
-                    yield progress_event
-                    
-                except asyncio.TimeoutError:
-                    # No progress event, continue monitoring
-                    continue
-            
-            # Get the final result
-            result = await tool_task
+                )
+                
+                # Monitor for progress events and tool completion
+                while not tool_task.done():
+                    try:
+                        # Wait for progress event with short timeout
+                        progress_event = await asyncio.wait_for(
+                            progress_queue.get(), 
+                            timeout=0.1
+                        )
+                        
+                        if progress_event is None:
+                            # End signal
+                            break
+                        
+                        # Yield real-time progress event
+                        yield progress_event
+                        
+                    except asyncio.TimeoutError:
+                        # No progress event, continue monitoring
+                        continue
+                
+                # Get the final result
+                result = await tool_task
             end_time = time.time()
             
             # Yield any remaining progress events

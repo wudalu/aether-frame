@@ -206,6 +206,64 @@ async def simulated_file_processing(file_count: int = 3, ctx: Context[ServerSess
     return "\n".join(results)
 
 
+@mcp.tool()
+async def inspect_request_context(ctx: Context[ServerSession, None] = None) -> dict:
+    """Return request headers and session metadata for debugging/auth verification."""
+    headers: dict = {}
+    session_metadata = {}
+    request_context = {}
+    transport_attrs = []
+    
+    if ctx is not None:
+        if ctx.request_context is not None:
+            try:
+                request_context = ctx.request_context.model_dump()
+            except Exception:
+                request_context = {}
+
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            transport = getattr(session, "transport", None)
+            if transport is not None:
+                try:
+                    transport_attrs = [attr for attr in dir(transport) if not attr.startswith("_")]
+                except Exception:
+                    transport_attrs = []
+                for attr in (
+                    "headers",
+                    "request_headers",
+                    "extra_headers",
+                    "_headers",
+                    "_request_headers",
+                ):
+                    value = getattr(transport, attr, None)
+                    if isinstance(value, dict):
+                        headers.update({str(k): str(v) for k, v in value.items()})
+                client = getattr(transport, "_client", None)
+                if client is not None:
+                    client_headers = getattr(client, "headers", None)
+                    if isinstance(client_headers, dict):
+                        headers.update({str(k): str(v) for k, v in client_headers.items()})
+                scope = getattr(transport, "_scope", None)
+                if isinstance(scope, dict):
+                    scope_headers = scope.get("headers") or []
+                    for key_bytes, value_bytes in scope_headers:
+                        try:
+                            key_str = key_bytes.decode("latin-1")
+                            value_str = value_bytes.decode("latin-1")
+                            headers[key_str] = value_str
+                        except Exception:
+                            continue
+            session_metadata = getattr(session, "metadata", {}) or {}
+    
+    return {
+        "headers": headers,
+        "metadata": session_metadata,
+        "request_context": request_context,
+        "transport_attrs": transport_attrs,
+    }
+
+
 if __name__ == "__main__":
     print("🌊 Starting Real Streaming MCP Server with Progress Reporting...")
     print("📡 This server uses MCP's progress reporting for true streaming")
@@ -215,6 +273,7 @@ if __name__ == "__main__":
     print("  - progressive_search: Search with progress updates")
     print("  - long_computation: Long computation with step-by-step progress")
     print("  - simulated_file_processing: File processing with progress")
+    print("  - inspect_request_context: Inspect request headers/metadata")
     
     # Configure server settings
     mcp.settings.host = "localhost"

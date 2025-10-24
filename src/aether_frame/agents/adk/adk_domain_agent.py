@@ -3,6 +3,7 @@
 
 import inspect
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,7 @@ class AdkDomainAgent(DomainAgent):
         self.hooks = AdkAgentHooks(self)
         self.event_converter = AdkEventConverter()
         self._tools_initialized = False  # Track if tools have been initialized
+        self._active_task_request = None  # Track current TaskRequest context
 
     # === Core Interface Methods ===
 
@@ -188,18 +190,10 @@ class AdkDomainAgent(DomainAgent):
                         async def async_adk_tool(**kwargs):
                             """ADK native async tool function."""
 
-                            # Create ToolRequest
-                            from ...contracts import ToolRequest
-                            tool_request = ToolRequest(
-                                tool_name=(
-                                    tool.name.split('.')[-1]
-                                    if '.' in tool.name else tool.name
-                                ),
-                                tool_namespace=tool.namespace,
+                            # Create ToolRequest with contextual metadata
+                            tool_request = self._prepare_tool_request(
+                                tool=tool,
                                 parameters=kwargs,
-                                session_id=self.runtime_context.get(
-                                    "session_id"
-                                )
                             )
 
                             # Direct await - no asyncio.run or
@@ -286,6 +280,51 @@ class AdkDomainAgent(DomainAgent):
         except Exception as e:
             self.logger.error(f"Failed to convert UniversalTools to ADK: {e}")
             return []
+
+    def _prepare_tool_request(self, tool, parameters: Dict[str, Any]):
+        """Build ToolRequest populated with contextual metadata for MCP tooling."""
+        from ...contracts import ToolRequest
+
+        task_request = self._active_task_request
+
+        user_context = getattr(task_request, "user_context", None) if task_request else None
+        session_context = getattr(task_request, "session_context", None) if task_request else None
+        execution_context = getattr(task_request, "execution_context", None) if task_request else None
+
+        metadata: Dict[str, Any] = {}
+        if task_request and getattr(task_request, "metadata", None):
+            metadata.update(deepcopy(task_request.metadata))
+
+        tool_metadata = getattr(tool, "metadata", None)
+        if tool_metadata:
+            metadata.setdefault("tool_metadata", deepcopy(tool_metadata))
+            if isinstance(tool_metadata, dict) and "mcp_headers" in tool_metadata:
+                base_headers = metadata.get("mcp_headers", {}).copy()
+                tool_headers = deepcopy(tool_metadata["mcp_headers"])
+                base_headers.update(tool_headers)
+                metadata["mcp_headers"] = base_headers
+
+        session_id = None
+        if isinstance(self.runtime_context, dict):
+            session_id = self.runtime_context.get("session_id")
+        if not session_id and session_context:
+            session_id = session_context.session_id
+        if not session_id and task_request:
+            session_id = task_request.session_id
+
+        return ToolRequest(
+            tool_name=(
+                tool.name.split('.')[-1]
+                if '.' in tool.name else tool.name
+            ),
+            tool_namespace=tool.namespace,
+            parameters=parameters,
+            session_id=session_id,
+            user_context=user_context,
+            session_context=session_context,
+            execution_context=execution_context,
+            metadata=metadata,
+        )
     
     async def update_tools(self, available_tools):
         """
@@ -315,6 +354,9 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             TaskResult: The result of task execution
         """
+        previous_task_request = self._active_task_request
+        self._active_task_request = agent_request.task_request
+
         try:
             start_time = datetime.now()
 
@@ -371,6 +413,8 @@ class AdkDomainAgent(DomainAgent):
             await self.hooks.on_error(agent_request, e)
 
             return error_result
+        finally:
+            self._active_task_request = previous_task_request
 
     async def execute_live(self, task_request) -> LiveExecutionResult:
         """
@@ -382,6 +426,9 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             LiveExecutionResult: Tuple of (event_stream, communicator)
         """
+        previous_task_request = self._active_task_request
+        self._active_task_request = task_request
+
         try:
             # Get runtime components provided by adapter
             runner = self.runtime_context.get("runner")
@@ -455,6 +502,8 @@ class AdkDomainAgent(DomainAgent):
             return self._create_error_live_result(
                 task_request.task_id, f"ADK live execution setup failed: {str(e)}"
             )
+        finally:
+            self._active_task_request = previous_task_request
 
     async def get_state(self) -> Dict[str, Any]:
         """Get current agent state."""

@@ -67,6 +67,9 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
                 ),
                 "enable_builtin": True,
             }
+            mcp_servers = getattr(settings, "mcp_servers", [])
+            if mcp_servers:
+                tool_config["mcp_servers"] = mcp_servers
             await tool_service.initialize(tool_config)
             logger.info(f"Tool Service initialized - config: {tool_config}")
         else:

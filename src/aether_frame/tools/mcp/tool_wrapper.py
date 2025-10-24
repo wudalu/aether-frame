@@ -10,6 +10,7 @@ from aether_frame.contracts.responses import ToolStatus
 from aether_frame.contracts.enums import TaskChunkType
 from aether_frame.contracts.streaming import TaskStreamChunk
 from aether_frame.tools.mcp.client import MCPClient, MCPConnectionError, MCPToolError
+from aether_frame.contracts.contexts import ExecutionContext, SessionContext, UserContext
 
 
 class MCPTool(Tool):
@@ -76,11 +77,16 @@ class MCPTool(Tool):
             if not self.mcp_client.is_connected:
                 raise MCPConnectionError("MCP client is not connected")
             
-            # Extract parameters from tool request
+            # Extract parameters and authentication headers from tool request
             parameters = tool_request.parameters or {}
+            extra_headers = self._build_request_headers(tool_request)
             
             # Call the MCP tool using the original name (without namespace)
-            result = await self.mcp_client.call_tool(self.original_tool_name, parameters)
+            result = await self.mcp_client.call_tool(
+                self.original_tool_name,
+                parameters,
+                extra_headers=extra_headers or None,
+            )
             
             # Create tool result
             return ToolResult(
@@ -144,13 +150,18 @@ class MCPTool(Tool):
             if not self.mcp_client.is_connected:
                 raise MCPConnectionError("MCP client is not connected")
             
-            # Extract parameters from tool request
+            # Extract parameters and authentication headers from tool request
             parameters = tool_request.parameters or {}
+            extra_headers = self._build_request_headers(tool_request)
             
             sequence_id = 0
             
             # Stream from MCP client with enhanced streaming
-            async for chunk in self.mcp_client.call_tool_stream(self.original_tool_name, parameters):
+            async for chunk in self.mcp_client.call_tool_stream(
+                self.original_tool_name,
+                parameters,
+                extra_headers=extra_headers or None,
+            ):
                 
                 # Determine chunk type from MCP response
                 chunk_type_mapping = {
@@ -272,7 +283,13 @@ class MCPTool(Tool):
         
         MCP tools cleanup is handled by the MCP client.
         """
-        # MCP tool cleanup is managed by the client
+        try:
+            if self.mcp_client.is_connected:
+                await self.mcp_client.disconnect()
+        except Exception:
+            # Swallow cleanup errors to avoid masking shutdown issues
+            pass
+
         self._initialized = False
     
     async def get_capabilities(self) -> List[str]:
@@ -311,6 +328,58 @@ class MCPTool(Tool):
             mcp_health["issues"] = ["MCP client not connected"]
         
         return mcp_health
+
+    def _build_request_headers(self, tool_request: ToolRequest) -> Dict[str, str]:
+        """Construct per-request headers for MCP authentication and metadata."""
+        headers: Dict[str, str] = {}
+        
+        # 1. Explicit metadata overrides
+        metadata_headers = None
+        if tool_request.metadata and isinstance(tool_request.metadata, dict):
+            metadata_headers = tool_request.metadata.get("mcp_headers")
+        if isinstance(metadata_headers, dict):
+            for key, value in metadata_headers.items():
+                if value is None:
+                    continue
+                headers[str(key)] = str(value)
+        
+        # 2. Task/session identifiers
+        if tool_request.session_id and "X-AF-Session-ID" not in headers:
+            headers["X-AF-Session-ID"] = str(tool_request.session_id)
+        
+        session_context = tool_request.session_context
+        if isinstance(session_context, SessionContext):
+            if session_context.session_id and "X-AF-Session-ID" not in headers:
+                headers["X-AF-Session-ID"] = str(session_context.session_id)
+            if session_context.conversation_id and "X-AF-Conversation-ID" not in headers:
+                headers["X-AF-Conversation-ID"] = str(session_context.conversation_id)
+        
+        execution_context = tool_request.execution_context
+        if isinstance(execution_context, ExecutionContext):
+            if execution_context.execution_id and "X-AF-Execution-ID" not in headers:
+                headers["X-AF-Execution-ID"] = str(execution_context.execution_id)
+            if execution_context.trace_id and "X-AF-Trace-ID" not in headers:
+                headers["X-AF-Trace-ID"] = str(execution_context.trace_id)
+        
+        # 3. User context (for downstream authorization)
+        user_context = tool_request.user_context
+        if isinstance(user_context, UserContext):
+            if user_context.user_id and "X-AF-User-ID" not in headers:
+                headers["X-AF-User-ID"] = str(user_context.user_id)
+            if user_context.user_name and "X-AF-User-Name" not in headers:
+                headers["X-AF-User-Name"] = str(user_context.user_name)
+            if user_context.session_token and "X-AF-Session-Token" not in headers:
+                headers["X-AF-Session-Token"] = str(user_context.session_token)
+            if (
+                user_context.permissions
+                and user_context.permissions.permissions
+                and "X-AF-Permissions" not in headers
+            ):
+                headers["X-AF-Permissions"] = ",".join(
+                    str(permission) for permission in user_context.permissions.permissions
+                )
+        
+        return headers
     
     @property
     def supports_streaming(self) -> bool:

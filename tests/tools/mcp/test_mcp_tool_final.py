@@ -70,7 +70,10 @@ class TestMCPToolFinal:
         
         assert result.status == ToolStatus.SUCCESS
         assert result.result_data == "Test result"
-        mock_client.call_tool.assert_called_once_with("test_tool", {"param": "value"})
+        mock_client.call_tool.assert_awaited_once()
+        call_args = mock_client.call_tool.call_args
+        assert call_args.args == ("test_tool", {"param": "value"})
+        assert call_args.kwargs.get("extra_headers") is None
     
     @pytest.mark.asyncio
     async def test_execute_connection_error(self) -> None:
