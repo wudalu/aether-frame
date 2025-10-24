@@ -20,6 +20,7 @@ from ...contracts import (
 from ...execution.task_router import ExecutionStrategy
 from ..base.framework_adapter import FrameworkAdapter
 from .live_communicator import AdkLiveCommunicator
+from ...tools.resolver import ToolResolver, ToolNotFoundError
 
 if TYPE_CHECKING:
     # ADK imports for type checking only
@@ -1019,6 +1020,35 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         
         # Initialize domain agent
         await domain_agent.initialize()
+
+        tool_names = getattr(agent_config, "available_tools", []) or []
+        tool_service = getattr(self, "_tool_service", None)
+        if tool_names:
+            if not tool_service:
+                self.logger.warning(
+                    "ToolService not configured; skipping available_tools while creating domain agent"
+                )
+            else:
+                try:
+                    resolver = ToolResolver(tool_service)
+                    universal_tools = await resolver.resolve_tools(tool_names)
+                    if universal_tools:
+                        await domain_agent.update_tools(universal_tools)
+                        self.logger.info(
+                            "Initialized domain agent with %d tools from AgentConfig",
+                            len(universal_tools),
+                        )
+                except ToolNotFoundError as exc:
+                    self.logger.error(
+                        "Failed to resolve tools %s for agent initialization: %s",
+                        tool_names,
+                        exc,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.error(
+                        "Error attaching available tools during agent initialization: %s",
+                        exc,
+                    )
         
         return domain_agent
 

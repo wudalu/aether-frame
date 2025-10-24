@@ -17,6 +17,7 @@ from ...contracts import (
 from ..base.domain_agent import DomainAgent
 from .adk_agent_hooks import AdkAgentHooks
 from .adk_event_converter import AdkEventConverter
+from .tool_conversion import build_adk_agent, create_function_tools
 
 
 class AdkDomainAgent(DomainAgent):
@@ -74,43 +75,25 @@ class AdkDomainAgent(DomainAgent):
     
     async def _create_adk_agent(self, available_tools=None):
         """Create ADK agent instance for session execution within domain agent scope."""
-        try:
-            from google.adk import Agent
-            
-            # Get model configuration from user config or environment defaults
-            model_identifier = self._get_model_configuration()
-            
-            # Use factory to create appropriate model instance
-            from ...framework.adk.model_factory import AdkModelFactory
-            model = AdkModelFactory.create_model(model_identifier, self._get_settings())
-            
-            # Get tools - either from parameter or default empty list
-            if available_tools:
-                tools = self._convert_universal_tools_to_adk(available_tools)
-                self.logger.info(f"Creating ADK agent with {len(tools)} tools from available_tools")
-            else:
-                tools = []
-                self.logger.info("Creating ADK agent with empty tool list")
-            
-            # Create the ADK agent with model configuration and tools
-            self.adk_agent = Agent(
-                name=self.config.get("name", self.agent_id),
-                description=self.config.get("description", "ADK Domain Agent"),
-                instruction=self.config.get("system_prompt", "You are a helpful AI assistant."),
-                model=model,
-                tools=tools,
-            )
-            
+        model_identifier = self._get_model_configuration()
+        tool_service = self.runtime_context.get("tool_service")
+        settings = self._get_settings()
+
+        self.adk_agent = build_adk_agent(
+            name=self.config.get("name", self.agent_id),
+            description=self.config.get("description", "ADK Domain Agent"),
+            instruction=self.config.get("system_prompt", "You are a helpful AI assistant."),
+            model_identifier=model_identifier,
+            tool_service=tool_service,
+            universal_tools=available_tools,
+            request_factory=self._prepare_tool_request,
+            settings=settings,
+        )
+
+        if self.adk_agent:
             self.logger.info(f"Created ADK agent: {self.adk_agent.name}")
-            
-        except ImportError as e:
-            # ADK not available - set to None
-            self.logger.warning(f"ADK not available: {str(e)}")
-            self.adk_agent = None
-        except Exception as e:
-            # Log error but don't fail initialization
-            self.logger.error(f"Failed to create ADK agent: {str(e)}")
-            self.adk_agent = None
+        else:
+            raise RuntimeError("Failed to create ADK agent - missing dependencies or configuration")
 
     def _get_model_configuration(self) -> str:
         """Get model configuration from user config or environment defaults."""
@@ -173,113 +156,17 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             List of ADK-compatible async function objects
         """
-        adk_tools = []
-
-        try:
-            tool_service = self.runtime_context.get("tool_service")
-            if not tool_service:
-                self.logger.warning(
-                    "No tool service available for UniversalTool conversion"
-                )
-                return []
-
-            for universal_tool in universal_tools:
-                try:
-                    # Create ADK-compatible async function with closure
-                    def create_async_adk_wrapper(tool):
-                        async def async_adk_tool(**kwargs):
-                            """ADK native async tool function."""
-
-                            # Create ToolRequest with contextual metadata
-                            tool_request = self._prepare_tool_request(
-                                tool=tool,
-                                parameters=kwargs,
-                            )
-
-                            # Direct await - no asyncio.run or
-                            # ThreadPoolExecutor needed!
-                            result = await tool_service.execute_tool(
-                                tool_request
-                            )
-
-                            # Simple result processing
-                            if result and result.status.value == "success":
-                                return {
-                                    "status": "success",
-                                    "result": result.result_data,
-                                    "tool_name": tool.name,
-                                    "namespace": tool.namespace,
-                                    "execution_time": getattr(
-                                        result, 'execution_time', 0
-                                    )
-                                }
-                            else:
-                                return {
-                                    "status": "error",
-                                    "error": (
-                                        result.error_message if result
-                                        else "Tool execution failed"
-                                    ),
-                                    "tool_name": tool.name
-                                }
-
-                        # Set function metadata for ADK
-                        async_adk_tool.__name__ = (
-                            tool.name.split('.')[-1]
-                            if '.' in tool.name else tool.name
-                        )
-                        async_adk_tool.__doc__ = (
-                            tool.description or f"Tool: {tool.name}"
-                        )
-
-                        # Add parameter annotations if available
-                        if (tool.parameters_schema and
-                                isinstance(tool.parameters_schema, dict)):
-                            properties = tool.parameters_schema.get(
-                                'properties', {}
-                            )
-                            annotations = {}
-                            for param_name, param_info in properties.items():
-                                param_type = param_info.get('type', 'str')
-                                if param_type == 'string':
-                                    annotations[param_name] = str
-                                elif param_type == 'integer':
-                                    annotations[param_name] = int
-                                elif param_type == 'boolean':
-                                    annotations[param_name] = bool
-                                elif param_type == 'number':
-                                    annotations[param_name] = float
-
-                            if annotations:
-                                async_adk_tool.__annotations__ = annotations
-
-                        return async_adk_tool
-
-                    # Use ADK's FunctionTool constructor for async functions
-                    from google.adk.tools import FunctionTool
-                    adk_function = FunctionTool(
-                        func=create_async_adk_wrapper(universal_tool)
-                    )
-                    adk_tools.append(adk_function)
-                    self.logger.debug(
-                        f"Created async ADK function for {universal_tool.name}"
-                    )
-
-                except Exception as e:
-                    self.logger.error(
-                        f"Error converting tool {universal_tool.name}: {e}"
-                    )
-                    continue
-
-            self.logger.info(
-                f"Successfully converted {len(adk_tools)} UniversalTools "
-                f"to async ADK functions"
-            )
-            return adk_tools
-
-        except Exception as e:
-            self.logger.error(f"Failed to convert UniversalTools to ADK: {e}")
-            return []
+        tool_service = self.runtime_context.get("tool_service")
+        tools = create_function_tools(
+            tool_service,
+            universal_tools,
+            request_factory=self._prepare_tool_request,
+        )
+        self.logger.info(
+            "Successfully converted %d UniversalTools to async ADK functions",
+            len(tools),
+        )
+        return tools
 
     def _prepare_tool_request(self, tool, parameters: Dict[str, Any]):
         """Build ToolRequest populated with contextual metadata for MCP tooling."""
