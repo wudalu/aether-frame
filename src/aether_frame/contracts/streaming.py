@@ -10,6 +10,8 @@ from .enums import InteractionType, TaskChunkType
 if TYPE_CHECKING:
     pass
 
+DEFAULT_CHUNK_VERSION = "2025-03-01"
+
 
 @dataclass
 class TaskStreamChunk:
@@ -22,6 +24,9 @@ class TaskStreamChunk:
     timestamp: datetime = field(default_factory=datetime.now)
     is_final: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    chunk_kind: Optional[str] = None
+    chunk_version: str = DEFAULT_CHUNK_VERSION
+    interaction_id: Optional[str] = None
 
 
 @dataclass

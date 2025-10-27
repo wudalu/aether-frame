@@ -46,6 +46,7 @@ from .enums import (
 from .requests import AgentRequest, TaskRequest, ToolRequest
 from .responses import AgentResponse, TaskResult, ToolResult
 from .streaming import (
+    DEFAULT_CHUNK_VERSION,
     InteractionRequest,
     InteractionResponse,
     LiveExecutionResult,
@@ -86,6 +87,7 @@ __all__ = [
     "InteractionResponse",
     "LiveSession",
     "LiveExecutionResult",
+    "DEFAULT_CHUNK_VERSION",
     # Enums
     "FrameworkType",
     "TaskStatus",

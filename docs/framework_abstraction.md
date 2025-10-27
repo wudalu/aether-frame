@@ -16,7 +16,7 @@ The design follows a **layered contract approach**, starting with ADK-compatible
 ## Design Goals
 
 - **ADK-First Implementation**: Complete ADK integration with extensibility for future frameworks
-- **Session-Based Architecture with Controlled Reuse**: Support persistent multi-turn conversations using `agent_id + session_id`,允许复用同配置 Agent/Runner，并通过生命周期钩子实现 idle 清理
+- **Session-Based Architecture with Controlled Reuse**: Support persistent multi-turn conversations using `agent_id + session_id`, allow reuse of agents/runners with identical configurations, and perform idle cleanup through lifecycle hooks.
 - **Framework Agnostic Contracts**: Unified data structures that work consistently across different frameworks
 - **Progressive Abstraction**: Evolution from ADK-specific to universal data contracts without breaking changes
 - **Layered Architecture**: Clear separation following the established system architecture layers
@@ -195,6 +195,8 @@ class ExecutionStrategy:
 
 ##### TaskStreamChunk (Real-time Event Streaming)
 ```python
+DEFAULT_CHUNK_VERSION = "2025-03-01"
+
 @dataclass
 class TaskStreamChunk:
     """Streaming execution block for real-time task processing."""
@@ -205,6 +207,9 @@ class TaskStreamChunk:
     timestamp: datetime = field(default_factory=datetime.now)
     is_final: bool = False  # Indicates final event in stream
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional event metadata
+    chunk_kind: Optional[str] = None  # Optional semantic label (e.g., "plan_delta")
+    chunk_version: str = DEFAULT_CHUNK_VERSION  # Schema version for consumers
+    interaction_id: Optional[str] = None  # Correlates to pending approvals/HITL prompts
 ```
 
 ##### InteractionResponse (User Feedback)

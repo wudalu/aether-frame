@@ -2,7 +2,8 @@
 """ADK Event Conversion Logic for Core Agent Layer."""
 
 import logging
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from uuid import uuid4
 
 from ...contracts import TaskChunkType, TaskStreamChunk, UniversalMessage, ContentPart
 from ...framework.adk.multimodal_utils import (
@@ -33,7 +34,8 @@ class AdkEventConverter:
 
     def __init__(self):
         """Initialize the ADK event converter."""
-        pass
+        # Track in-flight tool interactions so results can reference proposals
+        self._pending_tool_interactions: Dict[str, str] = {}
 
     def convert_adk_event_to_chunk(
         self, adk_event: "AdkEvent", task_id: str, sequence_id: int
@@ -53,6 +55,15 @@ class AdkEventConverter:
             TaskStreamChunk if the event should be exposed, None if filtered
         """
         try:
+            metadata: Dict[str, Any] = self._safe_metadata(adk_event)
+
+            # Plan streaming comes first so we do not treat plan text as assistant delta
+            plan_chunk = self._try_convert_plan_event(
+                adk_event, task_id, sequence_id, metadata
+            )
+            if plan_chunk:
+                return plan_chunk
+
             # Handle text content from agent responses
             if (
                 hasattr(adk_event, "content")
@@ -63,6 +74,19 @@ class AdkEventConverter:
             ):
 
                 first_part = adk_event.content.parts[0]
+
+                # Handle tool function call proposals
+                if hasattr(first_part, "function_call") and first_part.function_call:
+                    return self._convert_function_call_event(
+                        task_id, sequence_id, adk_event, first_part.function_call, metadata
+                    )
+
+                # Handle tool execution responses
+                tool_result_chunk = self._try_convert_tool_result(
+                    task_id, sequence_id, adk_event, first_part, metadata
+                )
+                if tool_result_chunk:
+                    return tool_result_chunk
 
                 # Handle text responses
                 if hasattr(first_part, "text") and first_part.text:
@@ -83,23 +107,7 @@ class AdkEventConverter:
                             "author": getattr(adk_event, "author", "agent"),
                             "adk_event_id": getattr(adk_event, "id", ""),
                             "turn_complete": getattr(adk_event, "turn_complete", False),
-                        },
-                    )
-
-                # Handle function calls (tool requests)
-                if hasattr(first_part, "function_call") and first_part.function_call:
-                    return TaskStreamChunk(
-                        task_id=task_id,
-                        chunk_type=TaskChunkType.TOOL_CALL_REQUEST,
-                        sequence_id=sequence_id,
-                        content={
-                            "function_name": first_part.function_call.name,
-                            "arguments": first_part.function_call.args,
-                        },
-                        is_final=False,
-                        metadata={
-                            "author": getattr(adk_event, "author", "agent"),
-                            "requires_approval": True,  # TODO: Make this configurable
+                            **metadata,
                         },
                     )
 
@@ -125,6 +133,7 @@ class AdkEventConverter:
                     metadata={
                         "error_code": adk_event.error_code,
                         "author": getattr(adk_event, "author", "system"),
+                        **metadata,
                     },
                 )
 
@@ -144,6 +153,194 @@ class AdkEventConverter:
                     "original_event": str(adk_event) if adk_event else "None",
                 },
             )
+
+    def _try_convert_plan_event(
+        self,
+        adk_event: "AdkEvent",
+        task_id: str,
+        sequence_id: int,
+        metadata: Dict[str, Any],
+    ) -> Optional[TaskStreamChunk]:
+        """Detect planning events emitted by ADK and convert them to plan chunks."""
+        stage_hint = metadata.get("stage") or metadata.get("category")
+        event_type = getattr(adk_event, "event_type", None)
+
+        is_plan_delta = stage_hint in {"plan", "plan_delta", "planning"} or event_type in {
+            "plan",
+            "plan_delta",
+            "planning",
+        }
+        is_plan_summary = stage_hint in {"plan_summary", "plan_result"} or event_type in {
+            "plan_summary",
+            "plan_result",
+        }
+
+        if not (is_plan_delta or is_plan_summary):
+            return None
+
+        plan_text = metadata.get("plan_text") or getattr(adk_event, "plan", None)
+        if not plan_text:
+            plan_text = self._extract_first_part_text(adk_event)
+
+        if not plan_text:
+            return None
+
+        chunk_type = (
+            TaskChunkType.PLAN_SUMMARY if is_plan_summary else TaskChunkType.PLAN_DELTA
+        )
+        chunk_kind = "plan.summary" if chunk_type == TaskChunkType.PLAN_SUMMARY else "plan.delta"
+
+        staged_metadata = dict(metadata)
+        staged_metadata.setdefault("stage", "plan")
+
+        return TaskStreamChunk(
+            task_id=task_id,
+            chunk_type=chunk_type,
+            sequence_id=sequence_id,
+            content={"text": plan_text},
+            is_final=False,
+            metadata=staged_metadata,
+            chunk_kind=chunk_kind,
+        )
+
+    def _convert_function_call_event(
+        self,
+        task_id: str,
+        sequence_id: int,
+        adk_event: "AdkEvent",
+        function_call: Any,
+        metadata: Dict[str, Any],
+    ) -> TaskStreamChunk:
+        """Convert ADK function call events into tool proposals."""
+        tool_name = getattr(function_call, "name", None) or metadata.get("tool_name")
+        tool_args = getattr(function_call, "args", None) or metadata.get("tool_args")
+
+        interaction_id = metadata.get("interaction_id") or getattr(function_call, "id", None)
+        if not interaction_id:
+            interaction_id = f"tool-{uuid4().hex}"
+
+        tool_call_key = self._derive_tool_call_key(adk_event, function_call, interaction_id)
+        self._pending_tool_interactions[tool_call_key] = interaction_id
+
+        staged_metadata = dict(metadata)
+        staged_metadata.update(
+            {
+                "author": getattr(adk_event, "author", "agent"),
+                "stage": "tool",
+                "tool_name": tool_name,
+                "requires_approval": staged_metadata.get("requires_approval", True),
+            }
+        )
+
+        return TaskStreamChunk(
+            task_id=task_id,
+            chunk_type=TaskChunkType.TOOL_PROPOSAL,
+            sequence_id=sequence_id,
+            content={
+                "tool_name": tool_name,
+                "arguments": tool_args,
+            },
+            is_final=False,
+            metadata=staged_metadata,
+            interaction_id=interaction_id,
+            chunk_kind="tool.proposal",
+        )
+
+    def _try_convert_tool_result(
+        self,
+        task_id: str,
+        sequence_id: int,
+        adk_event: "AdkEvent",
+        first_part: Any,
+        metadata: Dict[str, Any],
+    ) -> Optional[TaskStreamChunk]:
+        """Convert ADK tool result events (function responses)."""
+        response_payload = None
+        tool_name = metadata.get("tool_name")
+        tool_call_key = metadata.get("tool_call_id")
+
+        if hasattr(first_part, "function_response") and first_part.function_response:
+            response_payload = self._normalize_tool_response(first_part.function_response)
+            if isinstance(first_part.function_response, dict):
+                tool_name = first_part.function_response.get("name") or tool_name
+                tool_call_key = first_part.function_response.get("id") or tool_call_key
+            else:
+                tool_name = getattr(first_part.function_response, "name", tool_name)
+                tool_call_key = getattr(first_part.function_response, "id", tool_call_key)
+
+        # Some ADK implementations track tool output via metadata stage
+        stage_hint = metadata.get("stage")
+        if not response_payload and stage_hint in {"tool_result", "tool_response"}:
+            response_payload = metadata.get("tool_result") or metadata.get("tool_output")
+
+        if not response_payload:
+            return None
+
+        if not tool_call_key:
+            tool_call_key = self._derive_tool_call_key(adk_event, first_part, tool_name or "")
+
+        interaction_id = self._pending_tool_interactions.pop(tool_call_key, None)
+
+        staged_metadata = dict(metadata)
+        staged_metadata.update(
+            {
+                "author": getattr(adk_event, "author", "system"),
+                "stage": "tool",
+                "tool_name": tool_name,
+            }
+        )
+
+        return TaskStreamChunk(
+            task_id=task_id,
+            chunk_type=TaskChunkType.TOOL_RESULT,
+            sequence_id=sequence_id,
+            content=response_payload,
+            is_final=False,
+            metadata=staged_metadata,
+            interaction_id=interaction_id,
+            chunk_kind="tool.result",
+        )
+
+    def _safe_metadata(self, adk_event: "AdkEvent") -> Dict[str, Any]:
+        """Return metadata dict for the event without modifying original object."""
+        metadata = getattr(adk_event, "metadata", None)
+        if isinstance(metadata, dict):
+            return dict(metadata)
+        return {}
+
+    def _extract_first_part_text(self, adk_event: "AdkEvent") -> Optional[str]:
+        """Attempt to extract first text part from an ADK event."""
+        try:
+            parts = getattr(adk_event, "content", None)
+            if not parts or not hasattr(parts, "parts") or not parts.parts:
+                return None
+
+            first_part = parts.parts[0]
+            if hasattr(first_part, "text") and first_part.text:
+                return first_part.text
+        except Exception:
+            return None
+        return None
+
+    def _derive_tool_call_key(self, adk_event: "AdkEvent", part: Any, fallback: str) -> str:
+        """Derive a stable key used to correlate tool proposals and results."""
+        if hasattr(part, "id") and part.id:
+            return str(part.id)
+        if hasattr(part, "name") and part.name:
+            return f"{part.name}"
+        if hasattr(adk_event, "id") and adk_event.id:
+            return str(adk_event.id)
+        return fallback
+
+    def _normalize_tool_response(self, response: Any) -> Any:
+        """Normalize ADK function_response payloads to JSON-serialisable structures."""
+        if isinstance(response, dict):
+            return response.get("result") or response
+        result_attr = getattr(response, "result", None)
+        if result_attr is not None:
+            return result_attr
+        # Fall back to string conversion
+        return str(response)
 
     def convert_universal_message_to_adk(self, universal_message: UniversalMessage) -> Optional[dict]:
         """

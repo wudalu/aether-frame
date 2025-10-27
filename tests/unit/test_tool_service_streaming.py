@@ -5,7 +5,7 @@ import pytest
 
 from aether_frame.contracts import ToolRequest, ToolResult, ToolStatus
 from aether_frame.contracts.enums import TaskChunkType
-from aether_frame.contracts.streaming import TaskStreamChunk
+from aether_frame.contracts.streaming import DEFAULT_CHUNK_VERSION, TaskStreamChunk
 from aether_frame.tools.base.tool import Tool
 from aether_frame.tools.service import ToolService
 
@@ -35,6 +35,7 @@ class StreamingTool(Tool):
             sequence_id=0,
             content="stream-chunk-1",
             metadata={"tool_name": self.full_name},
+            chunk_kind="tool.delta",
         )
         yield TaskStreamChunk(
             task_id=f"tool_execution_{self.full_name}",
@@ -43,6 +44,7 @@ class StreamingTool(Tool):
             content="stream-complete",
             is_final=True,
             metadata={"tool_name": self.full_name},
+            chunk_kind="tool.complete",
         )
 
     async def get_schema(self):
@@ -97,6 +99,8 @@ async def test_execute_tool_stream_with_native_streaming():
     assert len(chunks) == 2
     assert chunks[0].chunk_type == TaskChunkType.RESPONSE
     assert chunks[0].content == "stream-chunk-1"
+    assert chunks[0].chunk_kind == "tool.delta"
+    assert chunks[0].chunk_version == DEFAULT_CHUNK_VERSION
     assert chunks[1].chunk_type == TaskChunkType.COMPLETE
     assert chunks[1].is_final is True
 

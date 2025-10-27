@@ -2,11 +2,11 @@
 
 ## Background & Objectives
 
-Our current ADK integration intentionally supports **controlled reuse** of chat sessions、ADK runners、domain agents，以降低重复拉起成本；同时也允许业务层通过 `chat_session_id` 切换 agent。复用策略提升了性能，但也意味着需要配套的主动清理与恢复机制，避免资源占用失控或复用失败。我们需要一个兼顾以下目标的策略：
+Our current ADK integration deliberately supports **controlled reuse** of chat sessions, ADK runners, and domain agents to reduce the cost of repeatedly spinning resources. The product layer can switch agents by supplying a `chat_session_id`. This reuse model boosts performance, but it also demands proactive cleanup and recovery mechanisms so we do not leak resources or encounter reuse failures. We need a strategy that balances the following goals:
 
-- **Continuity** – 在复用模式下仍可保持业务上下文，一次创建的 agent/runner 持续服务同一会话。
-- **Resource control** – 通过 idle 清理等手段及时释放闲置的 runner/agent，避免长期占用。
-- **Predictable recovery** – 当资源被清理或失效后，能快速重建并恢复历史上下文。
+- **Continuity** – Preserve business context while reusing components so the same agent/runner keeps serving the conversation.
+- **Resource control** – Release idle runners/agents promptly via idle cleanup to avoid long-lived resource usage.
+- **Predictable recovery** – Rebuild quickly and restore history when resources are reclaimed or fail unexpectedly.
 
 This document summarizes industry approaches (AWS Bedrock AgentCore, Microsoft Agent Framework, enterprise chatbot platforms) and proposes an MVP plus longer-term roadmap tailored to Aether Frame’s ADK stack.
 
@@ -15,8 +15,8 @@ This document summarizes industry approaches (AWS Bedrock AgentCore, Microsoft A
 
 | Theme | Observations | Relevance |
 | --- | --- | --- |
-| Idle timeout + state summarisation | Amazon Bedrock AgentCore enforces an `idleSessionTimeout` (currently limited to 1 hour) and recommends storing conversation state externally, then re-hydrating the agent by loading summaries when the session restarts.<sup>[1](#ref1)</sup> | 与我们的复用策略类似：需要在释放 runner 之前安全保存上下文，以便随后复用/恢复。 |
-| Persistent “memory” tiers | Bedrock AgentCore Memory distinguishes **短期**（单次会话内）和 **长期**（跨会话的偏好/摘要）。<sup>[2](#ref2)</sup> | 提醒我们在复用模型下，也需要明确哪些内容随会话复用、哪些需要持久化并在重建时注入。 |
+| Idle timeout + state summarisation | Amazon Bedrock AgentCore enforces an `idleSessionTimeout` (currently limited to 1 hour) and recommends storing conversation state externally, then re-hydrating the agent by loading summaries when the session restarts.<sup>[1](#ref1)</sup> | Mirrors our reuse approach: capture context safely before releasing a runner so we can reuse or restore it later. |
+| Persistent “memory” tiers | Bedrock AgentCore Memory distinguishes **short-term** (within the current session) and **long-term** (cross-session preferences/summaries).<sup>[2](#ref2)</sup> | Highlights the need to decide which data travels with the session and which must be persisted and re-injected during reconstruction. |
 | Two-level retention windows | Many SaaS support bots (ServiceNow, Zendesk) apply a short idle window for expensive resources (live runner), and a longer retention window for conversational artifacts (history, metadata). | Reinforces a split between “resource lifetime” and “context lifetime.” |
 | Manual lifecycle hooks + automation | Enterprise bots expose “close conversation” APIs but rely on automation (cron jobs, usage-based policies) to invoke them, because users rarely terminate chats themselves. | Justifies adding explicit cleanup endpoints plus background sweeps. |
 
@@ -29,22 +29,22 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
 
 ### Functional scope
 1. **Idle eviction & cleanup (Runner/Agent/Session)**
-   - 定时扫描 `ChatSessionInfo.last_activity`（可复用现有字段），针对超出阈值（如 30 分钟）的业务会话：
-     1. 记录原始 transcript（可作为后续摘要输入，MVP 阶段允许暂存原文）。
-     2. 调用 `cleanup_chat_session` 触发 session/runnner/agent 一体化销毁。
-     3. 将清理结果写入结构化日志，便于审计。
-   - 提供配置项控制 idle 超时及是否开启清理。
+   - Periodically scan `ChatSessionInfo.last_activity` (existing field). For sessions that exceed the threshold (e.g., 30 minutes):
+     1. Persist the raw transcript (can feed the summariser later; raw storage is acceptable for MVP).
+     2. Call `cleanup_chat_session` to tear down the session, runner, and agent together.
+     3. Emit structured logs describing the cleanup for auditing purposes.
+   - Provide configuration to control the idle timeout and whether cleanup is enabled.
 
-2. **受控复用（当期）+ 预留恢复接口**
-   - 继续沿用“Agent/Runner 可复用”的策略，要求业务层维持同一 `chat_session_id`，并在复用前校验 runner/agent 状态。
-   - Idle 清理后暂不自动重建；下一次请求若触发“未找到 session”，业务可判断是否调用预留恢复入口。
-   - 预留恢复 API（目前为空实现），为后续补充历史注入、Runner 重建等能力做准备。
+2. **Controlled reuse (current model) + placeholder recovery hook**
+   - Continue reusing agents/runners when the business layer keeps the same `chat_session_id`, validating runner/agent health before reuse.
+   - After idle cleanup we do not auto-rebuild; when the next request sees “session not found,” business logic can decide whether to invoke the recovery endpoint.
+   - Provide a stub recovery API that future work can extend with history injection and runner recreation.
 
-3. **可观测性（MVP 范围）**
-   - 已增强的 DEBUG 日志基础上，补充 idle 清理相关日志与指标打点（如清理原因、 idle 时长、重建耗时）。
-   - 记录业务 `chat_session_id`、内部 `adk_session_id` 与 `agent_id` 的关键生命周期事件，方便排查复用问题。
+3. **Observability (MVP scope)**
+   - Extend existing DEBUG logging with idle cleanup metrics (reason, idle duration, rebuild latency).
+   - Record key lifecycle events for `chat_session_id`, internal `adk_session_id`, and `agent_id` to simplify troubleshooting.
 
-> 摘要与长期存储仍作为后续增强（可在 Phase 2 处理），MVP 先确保资源可控释放与复用稳定。
+> Summaries and long-term storage remain future enhancements (Phase 2). The MVP focuses on controllable cleanup and stable reuse.
 
 ### Effort & Dependencies
 
