@@ -183,10 +183,14 @@ class ToolResolver:
         parts = tool_name.split('.')
         namespace = parts[0] if len(parts) > 1 else "builtin"
         
+        parameters_schema = getattr(tool_instance, 'parameters_schema', None)
+        if parameters_schema is None:
+            parameters_schema = getattr(tool_instance, 'tool_schema', {})
+
         return UniversalTool(
             name=tool_name,
             description=getattr(tool_instance, 'description', f"Tool: {tool_name}"),
-            parameters_schema=getattr(tool_instance, 'parameters_schema', {}),
+            parameters_schema=parameters_schema,
             namespace=namespace,
             supports_streaming=getattr(tool_instance, 'supports_streaming', False),
             metadata={

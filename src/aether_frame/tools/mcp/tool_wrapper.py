@@ -50,6 +50,7 @@ class MCPTool(Tool):
         self.original_tool_name = tool_name
         self.tool_description = tool_description
         self.tool_schema = tool_schema
+        self.parameters_schema = tool_schema
         self._initialized = True  # MCP tools are initialized when created
     
     async def initialize(self, config: Optional[Dict[str, Any]] = None):
