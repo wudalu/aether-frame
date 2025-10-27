@@ -779,64 +779,6 @@ During execution the ADK adapter copies `TaskRequest` context into each
 This guarantees per-user or per-call tokens reach the MCP server without writing
 custom plumbing for each adapter.
 
-#### 1.2 Multi-tool servers
-
-A single MCP server can expose multiple tools. Example (`tests/tools/mcp/real_streaming_server.py`):
-
-```python
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.session import ServerSession
-
-mcp = FastMCP("real-streaming-server")
-
-@mcp.tool()
-async def real_time_data_stream(duration: int = 5, ctx: Context[ServerSession, None] = None) -> str:
-    ...
-
-@mcp.tool()
-async def progressive_search(query: str, max_results: int = 5, ctx: Context[ServerSession, None] = None) -> str:
-    ...
-
-@mcp.tool()
-async def inspect_request_context(ctx: Context[ServerSession, None] = None) -> dict:
-    ...
-```
-
-At startup, `ToolService._load_mcp_tools()` connects once to the server, discovers all tools via `tools/list`, and registers them as `real-streaming-server.real_time_data_stream`, `real-streaming-server.progressive_search`, etc. Tasks can then request whichever subset they need.
-
-When wiring it up in configuration, you only need to describe the server once—every tool discovered through `tools/list` becomes available automatically:
-
-```env
-ENABLE_MCP_TOOLS=true
-MCP_SERVERS='[
-  {
-    "name": "real-streaming-server",
-    "endpoint": "http://localhost:8002/mcp",
-    "timeout": 45,
-    "headers": {
-      "Authorization": "Bearer '"$REAL_STREAMING_TOKEN"'"
-    }
-  }
-]'
-```
-
-Then in a task, pick whichever tools you need:
-
-```python
-task_request = TaskRequest(
-    task_id="stream-demo",
-    task_type="tool_execution",
-    description="Stream data and inspect headers",
-    metadata={"mcp_headers": {"Authorization": f"Bearer {user_token}"}},
-    available_tools=[
-        UniversalTool(name="real-streaming-server.real_time_data_stream", namespace="real-streaming-server"),
-        UniversalTool(name="real-streaming-server.inspect_request_context", namespace="real-streaming-server"),
-    ],
-)
-```
-
-No extra config is required per tool; all names share the same `name` namespace.
-
 #### 1.2 Verify with automated tests
 
 Two repository tests cover the authentication and streaming flow end to end:
