@@ -43,6 +43,8 @@ class RunnerManager:
         
         # Runner availability check
         self.logger.info("RunnerManager initialized")
+
+
     def _hash_config(self, agent_config: AgentConfig) -> str:
         """Generate hash for agent configuration to enable Runner reuse."""
         config_dict = {
@@ -155,10 +157,10 @@ class RunnerManager:
                 from google.adk.sessions import InMemorySessionService
                 session_service = InMemorySessionService()
             
-            # Use provided ADK Agent or build internal one as fallback
             if adk_agent is None:
-                adk_agent = await self._build_adk_agent(agent_config)
-            # External agent provided, use it directly
+                raise RuntimeError(
+                    "ADK agent instance must be provided by the domain agent."
+                )
             
             memory_service = None
             if InMemoryMemoryService:
@@ -270,50 +272,6 @@ class RunnerManager:
         except Exception as e:
             self.logger.error(f"Failed to create Session {session_id} in Runner {runner_id}: {str(e)}")
             raise RuntimeError(f"Session creation failed: {str(e)}")
-
-    async def _build_adk_agent(self, agent_config: AgentConfig) -> Any:
-        """
-        Build ADK Agent from AgentConfig.
-        
-        Args:
-            agent_config: Agent configuration
-            
-        Returns:
-            ADK Agent instance
-        """
-        try:
-            from google.adk.agents import Agent
-            from .model_factory import AdkModelFactory
-            
-            # Extract model from agent config
-            model_config = getattr(agent_config, 'model_config', {})
-            model_name = model_config.get('model', self.settings.default_adk_model)
-            
-            # Use AdkModelFactory to create the appropriate model
-            adk_model = AdkModelFactory.create_model(model_name, settings=None, enable_streaming=False)
-            
-            # Create the real ADK agent with proper parameters
-            adk_agent = Agent(
-                name=getattr(agent_config, 'name', None) or agent_config.agent_type,
-                description=getattr(agent_config, 'description', None) or f"ADK agent for {agent_config.agent_type}",
-                instruction=getattr(agent_config, 'system_prompt', "You are a helpful AI assistant."),
-                model=adk_model,  # Use factory-created model
-                tools=[]  # TODO: Add tools from agent_config if needed
-            )
-            
-            self.logger.info(f"Created real ADK Agent with model {model_name} via AdkModelFactory")
-            return adk_agent
-            
-        except Exception as e:
-            self.logger.error(f"Failed to build real ADK Agent: {str(e)}")
-            
-            # Fallback to mock agent
-            class MockAdkAgent:
-                def __init__(self, config):
-                    self.config = config
-                    
-            self.logger.warning("Using MockAdkAgent as fallback")
-            return MockAdkAgent(agent_config)
 
     async def cleanup_runner(self, runner_id: str) -> bool:
         """
