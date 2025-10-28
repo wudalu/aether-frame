@@ -24,6 +24,7 @@ from aether_frame.contracts.enums import TaskChunkType
 from aether_frame.contracts.responses import ToolStatus
 from aether_frame.contracts.streaming import TaskStreamChunk
 from aether_frame.tools.service import ToolService
+from aether_frame.tools.resolver import ToolResolver
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -100,8 +101,24 @@ async def test_mcp_server_end_to_end():
             tools_dict = await tool_service.get_tools_dict()
             inspect_full_name = "real-streaming-server.inspect_request_context"
             stream_full_name = "real-streaming-server.real_time_data_stream"
+            search_full_name = "real-streaming-server.progressive_search"
             assert inspect_full_name in tools_dict
             assert stream_full_name in tools_dict
+            assert search_full_name in tools_dict
+
+            resolver = ToolResolver(tool_service)
+            resolved_tools = await resolver.resolve_tools(
+                [inspect_full_name, stream_full_name, search_full_name]
+            )
+            universal_by_name = {tool.name: tool for tool in resolved_tools}
+            inspect_universal_tool = universal_by_name[inspect_full_name]
+            stream_universal_tool = universal_by_name[stream_full_name]
+            search_universal_tool = universal_by_name[search_full_name]
+
+            assert inspect_universal_tool.parameters_schema.get("properties") is not None
+            duration_schema = stream_universal_tool.parameters_schema["properties"]["duration"]
+            assert duration_schema.get("type") in {"integer", "number"}
+            assert "query" in search_universal_tool.parameters_schema.get("required", [])
 
             task_request = TaskRequest(
                 task_id="mcp-auth-test",
@@ -126,18 +143,11 @@ async def test_mcp_server_end_to_end():
             )
             agent._active_task_request = task_request
 
-            inspect_tool = tools_dict[inspect_full_name]
-            inspect_universal_tool = UniversalTool(
-                name=inspect_full_name,
-                namespace="real-streaming-server",
-                description=inspect_tool.tool_description,
-                parameters_schema=inspect_tool.tool_schema,
-                metadata={
-                    "mcp_headers": {
-                        "Authorization": "Bearer tool-level-token",
-                        "X-Tool-Header": "tool-value",
-                    }
-                },
+            inspect_universal_tool.metadata.setdefault("mcp_headers", {}).update(
+                {
+                    "Authorization": "Bearer tool-level-token",
+                    "X-Tool-Header": "tool-value",
+                }
             )
 
             inspect_request = agent._prepare_tool_request(inspect_universal_tool, {})
@@ -180,18 +190,15 @@ async def test_mcp_server_end_to_end():
                 assert headers_lower.get("x-task-header") == "task-value"
                 assert headers_lower.get("x-af-user-id") == "user-123"
 
-            stream_tool = tools_dict[stream_full_name]
-            stream_universal_tool = UniversalTool(
-                name=stream_full_name,
-                namespace="real-streaming-server",
-                description=stream_tool.tool_description,
-                parameters_schema=stream_tool.tool_schema,
-                metadata={
-                    "mcp_headers": {"Authorization": "Bearer stream-tool-token"},
-                },
+            stream_universal_tool.metadata.setdefault("mcp_headers", {}).update(
+                {"Authorization": "Bearer stream-tool-token"}
             )
 
-            task_request.available_tools = [inspect_universal_tool, stream_universal_tool]
+            task_request.available_tools = [
+                inspect_universal_tool,
+                stream_universal_tool,
+                search_universal_tool,
+            ]
 
             stream_request = agent._prepare_tool_request(
                 stream_universal_tool, {"duration": 2}
@@ -204,6 +211,20 @@ async def test_mcp_server_end_to_end():
             assert len(chunks) >= 2
             assert chunks[-1].chunk_type in (TaskChunkType.COMPLETE, TaskChunkType.RESPONSE)
             assert chunks[-1].is_final is True
+
+            invalid_search_request = agent._prepare_tool_request(search_universal_tool, {})
+            invalid_result = await tool_service.execute_tool(invalid_search_request)
+            assert invalid_result.status == ToolStatus.ERROR
+            assert invalid_result.error_message == "Invalid tool parameters"
+
+            valid_search_request = agent._prepare_tool_request(
+                search_universal_tool,
+                {"query": "agent reuse", "max_results": 2},
+            )
+            valid_result = await tool_service.execute_tool(valid_search_request)
+            assert valid_result.status == ToolStatus.SUCCESS
+            assert isinstance(valid_result.result_data, str)
+            assert "agent reuse" in valid_result.result_data
 
         finally:
             if tool_service is not None:
