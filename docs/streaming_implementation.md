@@ -32,7 +32,11 @@ This document captures the current state of ADK live streaming support inside **
 - Extend `TaskStreamChunk` metadata with `chunk_kind`, `chunk_version`, `sequence_id`, and `interaction_id` scaffolding; update factories/tests to accept the additive fields without breaking clients.
 - Smoke tests to prove live invocation reaches ADK, the communicator closes on completion, and sync execution remains unaffected.
 
+<<<<<<< HEAD
 ### Phase 1 — Agent Plan Streaming & Pre-Tool Approvals *(ETA: ~1 sprint)*
+=======
+### Phase 1 — Agent Plan Streaming & Pre-Tool Approvals *(ETA: ~1.5 sprints)*
+>>>>>>> parent of 958e453 (revert: revert stream mode modification)
 
 - Extend `AdkEventConverter` to emit plan-centric chunks:
   - `TaskChunkType.PLAN_DELTA` with incremental plan steps (sanitised from ADK event content) tagged `metadata.stage = "plan"`.
@@ -45,6 +49,7 @@ This document captures the current state of ADK live streaming support inside **
   - Queue concurrent requests, enforce single-flight resolution, and push timeout/abort policies back into ADK via structured commands.
   - Apply a configurable timeout (default 90s) that auto-resumes with a policy-defined fallback (`auto_cancel`, `auto_approve`, or `safe-default`) when no human response arrives, mirroring Codex/Claude behaviour where sessions continue without manual approval to avoid deadlocks.
   - Surface human clarification requests as `TaskChunkType.HITL_PROMPT`, reusing the communicator to capture responses.
+<<<<<<< HEAD
 - Add `TaskChunkType.TOOL_RESULT` as a final, non-streaming payload: capture the complete tool response, execution metadata (latency, retries), and correlate to `interaction_id`, keeping MVP simple while preserving schemas for future tool streaming.
 - Update unit and integration coverage (`tests/unit/test_adk_adapter_live.py`, new streaming fixtures) to exercise plan ordering, approval edits, timeout fallbacks, and tool result correlation using mocked ADK events.
 
@@ -53,6 +58,17 @@ This document captures the current state of ADK live streaming support inside **
 - Preserve the async streaming interface in `ToolService.execute_tool_stream`, but default agent integration to buffered mode. Define translation helpers that can later forward tool chunks into ADK live streams without impacting MVP.
 - Design chunk semantics for future rollout (`tool.delta`, `tool.log`, `tool.partial_result`) and document transport considerations.
 - Validate end-to-end behaviour by toggling a feature flag in tests to enable synthetic tool streaming, ensuring the wiring is ready once we invest in full adoption.
+=======
+- Update unit and integration coverage (`tests/unit/test_adk_adapter_live.py`, new streaming fixtures) to exercise plan ordering, approval edits, and timeout fallbacks using mocked ADK events.
+
+### Phase 2 — Tool Completion Streaming *(ETA: ~0.5 sprint)*
+
+- Keep tool execution buffered but emit a rich completion event once results are available:
+  - `TaskChunkType.TOOL_RESULT` carries final output, execution metrics (latency, retries), and correlates to the originating `interaction_id`.
+  - `TaskChunkType.ERROR` surfaces tool failures with actionable metadata for the UI.
+- Instrument tool telemetry (duration, success rate) using existing logging/metrics hooks in `AdkDomainAgent` and `ToolService` without duplicating work.
+- Add tests covering approve→execute→result ordering, result-only streaming, and error propagation.
+>>>>>>> parent of 958e453 (revert: revert stream mode modification)
 
 ### Phase 3 — Extended HITL & Resilience *(ETA: ~2 sprints)*
 
@@ -70,16 +86,26 @@ This document captures the current state of ADK live streaming support inside **
 - **Domain agent streaming**: Keep leveraging `AdkDomainAgent.execute_live`, extending only the returned event payloads. The generator already streams ADK events; we simply enrich `AdkEventConverter` to emit the new plan/approval chunk types.
 - **Chunk schema**: Extend `TaskStreamChunk` dataclass and related factories (including the MCP client in `tests/tools/mcp/real_streaming_server.py`) to accept the new metadata fields, ensuring older consumers can ignore unknown keys.
 - **Communicator bridge**: Enhance `AdkLiveCommunicator` with typed methods (`send_approval_result`, `send_clarification`) rather than raw text so Phase 1 approvals translate cleanly into ADK commands.
+<<<<<<< HEAD
 - **Tooling**: When emitting `TaskChunkType.TOOL_RESULT`, rely on the existing `ToolService` wrappers and logging hooks instead of introducing a parallel execution path. Keep the streaming interface accessible for future phases but disabled by default.
+=======
+- **Tooling**: When emitting `TaskChunkType.TOOL_RESULT`, rely on the existing `ToolService` wrappers and logging hooks instead of introducing a parallel execution path.
+>>>>>>> parent of 958e453 (revert: revert stream mode modification)
 - **Testing**: Expand current suites (`tests/unit/test_adk_adapter_error_handling.py`, `tests/integration/test_adk_idle_cleanup_flow.py`) with streaming-specific fixtures to validate session cleanup, approval timeouts, and downgrade-to-sync behaviour.
 - **Transport**: Default client transport is Server-Sent Events; we will publish SSE examples first, while keeping the adapter transport-agnostic so WebSocket consumers can be added later.
 
 ## 5. Action Checklist (next sprint)
 
+<<<<<<< HEAD
 1. Ship the Phase 0 adapter bridge, sequence metadata extensions, and smoke tests. ✅ (done)
 2. **Current focus**: land Phase 1 scope (plan delta, tool proposal, buffered tool result, approval broker) with unit + integration coverage.
 3. Align with frontend on SSE payload examples (`PLAN_DELTA`, `TOOL_PROPOSAL`, `TOOL_RESULT`) and codify timeout UX.
 4. Backlog: draft the tool streaming hook design doc so Phase 2 can start once MVP stabilises.
+=======
+1. Ship the Phase 0 adapter bridge, sequence metadata extensions, and smoke tests.
+2. Draft the chunk schema (plan/proposal/result) and align contracts with FE consumers ahead of Phase 1.
+3. Prototype the approval broker flow with mocked ADK events to validate resume semantics.
+>>>>>>> parent of 958e453 (revert: revert stream mode modification)
 
 ## 6. Open Questions
 

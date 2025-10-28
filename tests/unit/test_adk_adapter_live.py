@@ -1,432 +1,186 @@
-# -*- coding: utf-8 -*-
-"""Tests for ADK Framework Adapter execute_task_live functionality."""
+"""Tests for ADK Framework Adapter live execution bridge."""
 
-import sys
-from datetime import datetime
-from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.aether_frame.contracts import (
     ExecutionContext,
     FrameworkType,
+    RuntimeContext,
     TaskChunkType,
     TaskRequest,
+    TaskResult,
+    TaskStatus,
     TaskStreamChunk,
     UserContext,
 )
 from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
+from src.aether_frame.agents.base.domain_agent import DomainAgent
 
 
-# Mock ADK modules at the system level
-def setup_adk_mocks():
-    """Setup mock ADK modules in sys.modules."""
-    # Create mock modules
-    mock_adk = MagicMock()
-    mock_adk_runners = MagicMock()
-    mock_adk_agents = MagicMock()
-    mock_run_config_module = MagicMock()
+class _StubDomainAgent(DomainAgent):
+    """Minimal domain agent used to validate live delegation."""
 
-    # Setup mock classes
-    mock_adk.Agent = MagicMock()
-    mock_adk_runners.Runner = MagicMock()  # Keep Runner mock
-    mock_adk_runners.LiveRequestQueue = MagicMock()
-    mock_run_config_module.RunConfig = MagicMock()
-    mock_run_config_module.StreamingMode = MagicMock()
+    def __init__(self):
+        super().__init__("agent-123", {}, {})
+        self.execute_live_called = False
 
-    # Setup StreamingMode enum values
-    mock_run_config_module.StreamingMode.NONE = MagicMock()
-    mock_run_config_module.StreamingMode.BIDI = MagicMock()
+    async def initialize(self):
+        return None
 
-    # Phase 2: Setup Runner with services architecture
-    mock_session_service = AsyncMock()
-    mock_artifact_service = MagicMock()
-    mock_runner_instance = MagicMock()
-    mock_runner_instance.session_service = mock_session_service
-    mock_runner_instance.artifact_service = mock_artifact_service
+    async def execute(self, agent_request):
+        return TaskResult(
+            task_id=agent_request.task_request.task_id,
+            status=TaskStatus.SUCCESS,
+        )
 
-    # Setup session and artifact services
-    mock_adk.sessions = MagicMock()
-    mock_adk.sessions.SessionService = MagicMock()
-    mock_adk.sessions.SessionService.return_value = mock_session_service
+    async def get_state(self) -> Dict[str, Any]:
+        return {}
 
-    mock_adk.artifacts = MagicMock()
-    mock_adk.artifacts.ArtifactService = MagicMock()
-    mock_adk.artifacts.ArtifactService.return_value = mock_artifact_service
+    async def cleanup(self):
+        return None
 
-    # Runner constructor returns configured instance
-    mock_adk_runners.Runner.return_value = mock_runner_instance
+    async def execute_live(self, task_request):
+        self.execute_live_called = True
 
-    # Setup agents submodule
-    mock_adk_agents.run_config = mock_run_config_module
-    mock_adk.agents = mock_adk_agents
+        async def _stream():
+            yield TaskStreamChunk(
+                task_id=task_request.task_id,
+                chunk_type=TaskChunkType.RESPONSE,
+                sequence_id=0,
+                content="ok",
+                metadata={},
+            )
 
-    # Register in sys.modules
-    sys.modules["google.adk"] = mock_adk
-    sys.modules["google.adk.runners"] = mock_adk_runners
-    sys.modules["google.adk.agents"] = mock_adk_agents
-    sys.modules["google.adk.agents.run_config"] = mock_run_config_module
-    sys.modules["google.adk.sessions"] = mock_adk.sessions  # Add sessions module
-    sys.modules["google.adk.artifacts"] = mock_adk.artifacts  # Add artifacts module
-
-    return mock_adk, mock_adk_runners, mock_run_config_module
-
-
-def cleanup_adk_mocks():
-    """Clean up mock ADK modules from sys.modules."""
-    modules_to_remove = [
-        "google.adk",
-        "google.adk.runners",
-        "google.adk.agents",
-        "google.adk.agents.run_config",
-        "google.adk.sessions",  # Add sessions cleanup
-        "google.adk.artifacts",  # Add artifacts cleanup
-    ]
-    for module in modules_to_remove:
-        if module in sys.modules:
-            del sys.modules[module]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def adk_mocks():
-    """Session-wide fixture to setup ADK mocks."""
-    mocks = setup_adk_mocks()
-    yield mocks
-    cleanup_adk_mocks()
-
-
-@pytest.fixture
-def task_request():
-    """Create a sample TaskRequest for testing."""
-    return TaskRequest(
-        task_id="test-task-123",
-        task_type="chat",
-        description="Test chat task",
-        user_context=None,
-        session_context=None,
-        execution_context=None,
-        messages=[],
-        available_tools=[],
-        available_knowledge=[],
-        metadata={"test": True},
-    )
+        return _stream(), MagicMock()
 
 
 @pytest.fixture
 def execution_context():
-    """Create a sample ExecutionContext for testing."""
     return ExecutionContext(
-        execution_id="test-execution-123",
+        execution_id="exec-live-1",
         framework_type=FrameworkType.ADK,
         execution_mode="live",
-        timeout=300,
+        timeout=120,
     )
 
 
 @pytest.fixture
-async def initialized_adapter():
-    """Create an initialized ADK framework adapter."""
+def task_request():
+    return TaskRequest(
+        task_id="task-live-1",
+        task_type="chat",
+        description="Live test",
+        user_context=UserContext(user_id="user-1"),
+        messages=[],
+        session_id="chat-session-1",
+        agent_id="agent-123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_task_live_not_initialized(task_request, execution_context):
     adapter = AdkFrameworkAdapter()
-    await adapter.initialize({"test_mode": True})
-    return adapter
+    with pytest.raises(RuntimeError, match="not initialized"):
+        await adapter.execute_task_live(task_request, execution_context)
 
 
-class TestAdkFrameworkAdapterLive:
-    """Test cases for AdkFrameworkAdapter live execution functionality."""
+@pytest.mark.asyncio
+async def test_execute_task_live_requires_agent_and_session(execution_context):
+    adapter = AdkFrameworkAdapter()
+    adapter._initialized = True
 
-    async def test_execute_task_live_not_initialized(
-        self, task_request, execution_context
-    ):
-        """Test execute_task_live fails when adapter not initialized."""
-        adapter = AdkFrameworkAdapter()
+    invalid_request = TaskRequest(
+        task_id="task-no-agent",
+        task_type="chat",
+        description="Missing agent",
+    )
 
-        with pytest.raises(RuntimeError, match="ADK framework not initialized"):
-            await adapter.execute_task_live(task_request, execution_context)
+    event_stream, communicator = await adapter.execute_task_live(
+        invalid_request, execution_context
+    )
 
-    async def test_execute_task_live_basic_setup(
-        self, adk_mocks, initialized_adapter, task_request, execution_context
-    ):
-        """Test basic setup of execute_task_live with correct ADK architecture."""
-        mock_adk, mock_adk_runners, mock_run_config_module = adk_mocks
+    chunks = []
+    async for chunk in event_stream:
+        chunks.append(chunk)
 
-        # Setup mocks for Phase 2 architecture
-        mock_agent_instance = MagicMock()
-        mock_adk.Agent.return_value = mock_agent_instance
+    assert len(chunks) == 1
+    assert chunks[0].chunk_type == TaskChunkType.ERROR
+    assert "requires both agent_id and session_id" in chunks[0].content
+    assert hasattr(communicator, "send_user_response")
 
-        mock_queue_instance = MagicMock()
-        mock_adk_runners.LiveRequestQueue.return_value = mock_queue_instance
 
-        # Mock Runner.run_async to return empty async iterator
-        async def empty_events():
-            return
-            yield  # This line will never execute, but makes it a generator
+@pytest.mark.asyncio
+async def test_execute_task_live_bridge_flow(task_request, execution_context):
+    adapter = AdkFrameworkAdapter()
+    adapter._initialized = True
 
-        initialized_adapter._runner.run_async.return_value = empty_events()
+    adapter.adk_session_manager.coordinate_chat_session = AsyncMock(
+        return_value=SimpleNamespace(adk_session_id="adk-session-123", switch_occurred=False)
+    )
 
-        # Execute
-        result = await initialized_adapter.execute_task_live(
-            task_request, execution_context
-        )
+    runtime_context = RuntimeContext(
+        session_id="adk-session-123",
+        user_id="user-1",
+        framework_type=FrameworkType.ADK,
+        agent_id=task_request.agent_id,
+        runner_id="runner-1",
+    )
+    runtime_context.metadata["domain_agent"] = _StubDomainAgent()
 
-        # Verify result structure
-        event_stream, communicator = result
-        assert hasattr(event_stream, "__aiter__")  # Should be async iterator
-        assert hasattr(
-            communicator, "send_user_response"
-        )  # Should be AdkLiveCommunicator
+    adapter._create_runtime_context_for_existing_session = AsyncMock(
+        return_value=runtime_context
+    )
+    adapter.runner_manager.mark_runner_activity = MagicMock()
+    adapter._execute_live_with_domain_agent = AsyncMock(
+        return_value=("stream", "communicator")
+    )
 
-        # Verify setup calls - Phase 2: Check Runner.run_async call
-        mock_adk.Agent.assert_called_once()
-        mock_adk_runners.LiveRequestQueue.assert_called_once()
-        initialized_adapter._runner.run_async.assert_called_once()
-        # Phase 2: Verify session service call through Runner's session service
-        initialized_adapter._runner.session_service.create_session.assert_called_once()
+    stream, communicator = await adapter.execute_task_live(
+        task_request, execution_context
+    )
 
-    async def test_execute_task_live_with_events(
-        self, adk_mocks, initialized_adapter, task_request, execution_context
-    ):
-        """Test execute_task_live with mock ADK events using correct architecture."""
-        mock_adk, mock_adk_runners, mock_run_config_module = adk_mocks
+    adapter.adk_session_manager.coordinate_chat_session.assert_awaited_once()
+    adapter._create_runtime_context_for_existing_session.assert_awaited_once()
+    adapter._execute_live_with_domain_agent.assert_awaited_once_with(
+        task_request, runtime_context
+    )
+    adapter.runner_manager.mark_runner_activity.assert_called_once_with("runner-1")
 
-        # Create mock ADK events
-        mock_event_1 = MagicMock()
-        mock_event_1.content = MagicMock()
-        mock_event_1.content.parts = [MagicMock()]
-        mock_event_1.content.parts[0].text = "Hello from agent!"
-        mock_event_1.partial = False
-        mock_event_1.author = "test_agent"
-        mock_event_1.id = "event-1"
-        mock_event_1.turn_complete = True
+    # Ensure request session id restored to business value
+    assert task_request.session_id == "chat-session-1"
+    assert stream == "stream"
+    assert communicator == "communicator"
 
-        mock_event_2 = MagicMock()
-        mock_event_2.turn_complete = True
-        mock_event_2.author = "test_agent"
 
-        # Setup mocks for Phase 2 architecture
-        mock_agent_instance = MagicMock()
-        mock_adk.Agent.return_value = mock_agent_instance
+@pytest.mark.asyncio
+async def test_execute_live_with_domain_agent_updates_runtime(task_request):
+    adapter = AdkFrameworkAdapter()
+    stub_agent = _StubDomainAgent()
 
-        mock_queue_instance = MagicMock()
-        mock_adk_runners.LiveRequestQueue.return_value = mock_queue_instance
+    runtime_context = RuntimeContext(
+        session_id="adk-session-456",
+        user_id="user-1",
+        framework_type=FrameworkType.ADK,
+        agent_id=stub_agent.agent_id,
+        runner_id="runner-live",
+    )
+    runtime_context.metadata["domain_agent"] = stub_agent
+    runtime_context.metadata["adk_session_id"] = "adk-session-456"
 
-        # Mock Runner.run_async to return test events
-        async def mock_events():
-            yield mock_event_1
-            yield mock_event_2
+    stream, communicator = await adapter._execute_live_with_domain_agent(
+        task_request, runtime_context
+    )
 
-        initialized_adapter._runner.run_async.return_value = mock_events()
+    assert stub_agent.execute_live_called is True
+    assert stub_agent.runtime_context["session_id"] == "adk-session-456"
 
-        # Execute
-        event_stream, communicator = await initialized_adapter.execute_task_live(
-            task_request, execution_context
-        )
+    collected = []
+    async for chunk in stream:
+        collected.append(chunk)
 
-        # Collect events from stream
-        events = []
-        async for event in event_stream:
-            events.append(event)
-
-        # Verify events
-        assert len(events) >= 1  # Should have at least one converted event
-
-        # Check first event (text response)
-        text_event = events[0]
-        assert isinstance(text_event, TaskStreamChunk)
-        assert text_event.task_id == task_request.task_id
-        assert text_event.chunk_type == TaskChunkType.RESPONSE
-        assert text_event.content == "Hello from agent!"
-        assert text_event.metadata["author"] == "test_agent"
-
-    async def test_convert_adk_event_to_chunk_text_response(self, initialized_adapter):
-        """Test conversion of ADK text event to TaskStreamChunk."""
-        # Create mock ADK event
-        mock_event = MagicMock()
-        mock_event.content = MagicMock()
-        mock_event.content.parts = [MagicMock()]
-        mock_event.content.parts[0].text = "Test response"
-        mock_event.partial = False
-        mock_event.author = "test_agent"
-        mock_event.id = "event-123"
-        mock_event.turn_complete = True
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 0
-        )
-
-        # Verify conversion
-        assert chunk is not None
-        assert isinstance(chunk, TaskStreamChunk)
-        assert chunk.task_id == "test-task"
-        assert chunk.chunk_type == TaskChunkType.RESPONSE
-        assert chunk.sequence_id == 0
-        assert chunk.content == "Test response"
-        assert not chunk.is_final == False  # is_final should be True for non-partial
-        assert chunk.metadata["author"] == "test_agent"
-        assert chunk.metadata["adk_event_id"] == "event-123"
-        assert chunk.metadata["turn_complete"] == True
-
-    async def test_convert_adk_event_to_chunk_partial_text(self, initialized_adapter):
-        """Test conversion of partial ADK text event."""
-        # Create mock ADK event with partial=True
-        mock_event = MagicMock()
-        mock_event.content = MagicMock()
-        mock_event.content.parts = [MagicMock()]
-        mock_event.content.parts[0].text = "Partial text..."
-        mock_event.partial = True
-        mock_event.author = "test_agent"
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 5
-        )
-
-        # Verify conversion
-        assert (
-            chunk.chunk_type == TaskChunkType.PROGRESS
-        )  # Should be PROGRESS for partial
-        assert chunk.is_final == False
-        assert chunk.sequence_id == 5
-
-    async def test_convert_adk_event_to_chunk_function_call(self, initialized_adapter):
-        """Test conversion of ADK function call event."""
-        # Create mock ADK event with function call
-        mock_event = MagicMock()
-        mock_event.content = MagicMock()
-        mock_event.content.parts = [MagicMock()]
-
-        # Make sure text attribute is None/False to avoid text processing
-        mock_event.content.parts[0].text = None
-        mock_event.content.parts[0].function_call = MagicMock()
-        mock_event.content.parts[0].function_call.name = "test_tool"
-        mock_event.content.parts[0].function_call.args = {"param1": "value1"}
-        mock_event.author = "test_agent"
-        mock_event.partial = False
-        mock_event.turn_complete = False
-        mock_event.error_code = None
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 1
-        )
-
-        # Verify conversion
-        assert chunk.chunk_type == TaskChunkType.TOOL_CALL_REQUEST
-        assert chunk.content == {
-            "function_name": "test_tool",
-            "arguments": {"param1": "value1"},
-        }
-        assert chunk.metadata["requires_approval"] == True
-
-    async def test_convert_adk_event_to_chunk_error(self, initialized_adapter):
-        """Test conversion of ADK error event."""
-        # Create mock ADK error event
-        mock_event = MagicMock()
-        mock_event.content = None  # No content for error events
-        mock_event.error_code = "SAFETY_FILTER"
-        mock_event.error_message = "Content blocked by safety filter"
-        mock_event.author = "system"
-        mock_event.turn_complete = False
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 2
-        )
-
-        # Verify conversion
-        assert chunk.chunk_type == TaskChunkType.ERROR
-        assert chunk.content == "Content blocked by safety filter"
-        assert chunk.is_final == True
-        assert chunk.metadata["error_code"] == "SAFETY_FILTER"
-
-    async def test_convert_adk_event_to_chunk_turn_complete(self, initialized_adapter):
-        """Test conversion of ADK turn complete event."""
-        # Create mock ADK turn complete event
-        mock_event = MagicMock()
-        mock_event.turn_complete = True
-        mock_event.author = "test_agent"
-        # No content
-        mock_event.content = None
-        mock_event.error_code = None
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 3
-        )
-
-        # Verify conversion
-        assert chunk.chunk_type == TaskChunkType.COMPLETE
-        assert chunk.content == "Turn completed"
-        assert chunk.is_final == True
-
-    async def test_convert_adk_event_to_chunk_filtered_event(self, initialized_adapter):
-        """Test filtering of irrelevant ADK events."""
-        # Create mock ADK event that should be filtered out
-        mock_event = MagicMock()
-        mock_event.content = None
-        mock_event.error_code = None
-        mock_event.turn_complete = False
-
-        # Convert event
-        chunk = initialized_adapter._convert_adk_event_to_chunk(
-            mock_event, "test-task", 4
-        )
-
-        # Verify filtering
-        assert chunk is None
-
-    async def test_convert_adk_event_to_chunk_conversion_error(
-        self, initialized_adapter
-    ):
-        """Test handling of event conversion errors."""
-        # Create mock ADK event that will cause conversion error by raising exception
-        mock_event = MagicMock()
-        mock_event.content = MagicMock()
-        mock_event.content.parts = [MagicMock()]
-
-        # Make hasattr fail to trigger exception handling
-        def failing_hasattr(obj, attr):
-            if attr == "text":
-                raise AttributeError("Simulated conversion error")
-            return True
-
-        # Mock hasattr to raise exception
-        with patch("builtins.hasattr", side_effect=failing_hasattr):
-            chunk = initialized_adapter._convert_adk_event_to_chunk(
-                mock_event, "test-task", 6
-            )
-
-        # Verify error handling
-        assert chunk is not None
-        assert chunk.chunk_type == TaskChunkType.ERROR
-        assert "Event conversion error" in chunk.content
-        assert chunk.metadata["error_type"] == "event_conversion_error"
-
-    async def test_execute_task_live_import_error(
-        self, adk_mocks, initialized_adapter, task_request, execution_context
-    ):
-        """Test execute_task_live handles ADK import errors."""
-
-        # Use patch to simulate import error by making the import fail
-        def mock_import_error(*args, **kwargs):
-            raise ImportError("Simulated ADK import failure")
-
-        # Mock the __import__ function to raise ImportError for ADK modules
-        with patch("builtins.__import__", side_effect=mock_import_error):
-            with pytest.raises(RuntimeError, match="ADK dependencies not available"):
-                await initialized_adapter.execute_task_live(
-                    task_request, execution_context
-                )
-
-    async def test_execute_task_live_execution_error(
-        self, adk_mocks, initialized_adapter, task_request, execution_context
-    ):
-        """Test execute_task_live handles execution errors."""
-        mock_adk, mock_adk_runners, mock_run_config_module = adk_mocks
-
-        # Setup Agent to raise exception
-        mock_adk.Agent.side_effect = Exception("Agent creation failed")
-
-        with pytest.raises(RuntimeError, match="Failed to start live execution"):
-            await initialized_adapter.execute_task_live(task_request, execution_context)
+    assert collected and collected[0].content == "ok"
+    assert hasattr(communicator, "send_user_response")
