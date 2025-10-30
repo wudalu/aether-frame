@@ -3,6 +3,23 @@
 
 import inspect
 import logging
+try:
+    from contextlib import aclosing
+except ImportError:  # Python <3.10 compatibility
+    class _AsyncClosing:
+        def __init__(self, resource):
+            self._resource = resource
+
+        async def __aenter__(self):
+            return self._resource
+
+        async def __aexit__(self, exc_type, exc, tb):
+            aclose = getattr(self._resource, "aclose", None)
+            if callable(aclose):
+                await aclose()
+
+    def aclosing(resource):
+        return _AsyncClosing(resource)
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -88,6 +105,7 @@ class AdkDomainAgent(DomainAgent):
             universal_tools=available_tools,
             request_factory=self._prepare_tool_request,
             settings=settings,
+            enable_streaming=True,
         )
 
         if self.adk_agent:
@@ -350,6 +368,8 @@ class AdkDomainAgent(DomainAgent):
                     await self._send_initial_message_to_live_queue(
                         live_request_queue, adk_content
                     )
+                    # No additional user messages expected for test flow; close queue to signal end of input
+                    live_request_queue.close()
 
                     # Stream real ADK live events
                     live_events = runner.run_live(
@@ -359,15 +379,15 @@ class AdkDomainAgent(DomainAgent):
                     )
 
                     sequence_id = 0
-                    async for adk_event in live_events:
-                        # Use event converter to transform ADK events to TaskStreamChunk
-                        chunk = self.event_converter.convert_adk_event_to_chunk(
-                            adk_event, task_request.task_id, sequence_id
-                        )
-                        
-                        if chunk is not None:
-                            yield chunk
-                            sequence_id += 1
+                    async with aclosing(live_events) as adk_events:
+                        async for adk_event in adk_events:
+                            chunk = self.event_converter.convert_adk_event_to_chunk(
+                                adk_event, task_request.task_id, sequence_id
+                            )
+
+                            if chunk is not None:
+                                yield chunk
+                                sequence_id += 1
 
                 except Exception as e:
                     yield TaskStreamChunk(
@@ -378,6 +398,8 @@ class AdkDomainAgent(DomainAgent):
                         is_final=True,
                         metadata={"error_type": "execution_error", "framework": "adk"},
                     )
+                finally:
+                    live_request_queue.close()
 
             # Use framework-level communicator with agent-created queue
             from ...framework.adk.live_communicator import AdkLiveCommunicator

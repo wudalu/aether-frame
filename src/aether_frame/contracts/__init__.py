@@ -46,6 +46,12 @@ from .enums import (
 from .requests import AgentRequest, TaskRequest, ToolRequest
 from .responses import AgentResponse, TaskResult, ToolResult
 from .streaming import (
+    CHUNK_KIND_PLAN_DELTA,
+    CHUNK_KIND_PLAN_SUMMARY,
+    CHUNK_KIND_TOOL_COMPLETE,
+    CHUNK_KIND_TOOL_PROGRESS,
+    CHUNK_KIND_TOOL_PROPOSAL,
+    CHUNK_KIND_TOOL_RESULT,
     DEFAULT_CHUNK_VERSION,
     InteractionRequest,
     InteractionResponse,
@@ -88,6 +94,12 @@ __all__ = [
     "LiveSession",
     "LiveExecutionResult",
     "DEFAULT_CHUNK_VERSION",
+    "CHUNK_KIND_PLAN_DELTA",
+    "CHUNK_KIND_PLAN_SUMMARY",
+    "CHUNK_KIND_TOOL_PROPOSAL",
+    "CHUNK_KIND_TOOL_RESULT",
+    "CHUNK_KIND_TOOL_PROGRESS",
+    "CHUNK_KIND_TOOL_COMPLETE",
     # Enums
     "FrameworkType",
     "TaskStatus",

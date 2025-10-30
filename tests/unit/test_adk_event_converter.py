@@ -24,6 +24,8 @@ def _make_adk_event():
 def test_plan_delta_conversion(converter):
     plan_event = MagicMock()
     plan_event.metadata = {"stage": "plan", "plan_text": "Step 1: gather info"}
+    plan_event.custom_metadata = None
+    plan_event.content = None
 
     chunk = converter.convert_adk_event_to_chunk(plan_event, "task-1", 0)
 
@@ -32,6 +34,33 @@ def test_plan_delta_conversion(converter):
     assert chunk.content == {"text": "Step 1: gather info"}
     assert chunk.chunk_kind == "plan.delta"
     assert chunk.metadata["stage"] == "plan"
+
+
+def test_plan_delta_with_custom_metadata(converter):
+    plan_event = MagicMock()
+    plan_event.metadata = None
+    plan_event.custom_metadata = {"stage": "plan", "plan_text": "Step 1: gather info", "source": "deepseek.reasoning"}
+    plan_event.content = None
+
+    chunk = converter.convert_adk_event_to_chunk(plan_event, "task-1", 0)
+
+    assert chunk is not None
+    assert chunk.chunk_type == TaskChunkType.PLAN_DELTA
+    assert chunk.metadata["stage"] == "plan"
+    assert chunk.metadata["source"] == "deepseek.reasoning"
+
+
+def test_metadata_merging_metadata_and_custom(converter):
+    plan_event = MagicMock()
+    plan_event.metadata = {"stage": "plan", "plan_text": "Step 1: gather info"}
+    plan_event.custom_metadata = {"source": "deepseek.reasoning"}
+    plan_event.content = None
+
+    chunk = converter.convert_adk_event_to_chunk(plan_event, "task-1", 0)
+
+    assert chunk is not None
+    assert chunk.metadata["stage"] == "plan"
+    assert chunk.metadata["source"] == "deepseek.reasoning"
 
 
 def test_tool_proposal_conversion(converter):

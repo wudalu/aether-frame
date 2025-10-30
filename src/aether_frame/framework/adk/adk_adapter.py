@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """ADK Framework Adapter Implementation."""
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from datetime import datetime
@@ -20,6 +21,7 @@ from ...contracts import (
 from ...agents.base.domain_agent import DomainAgent
 from ...execution.task_router import ExecutionStrategy
 from ..base.framework_adapter import FrameworkAdapter
+from .approval_broker import AdkApprovalBroker, ApprovalAwareCommunicator
 from .live_communicator import AdkLiveCommunicator
 from ...tools.resolver import ToolResolver, ToolNotFoundError
 
@@ -1224,9 +1226,42 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if execute_live_with_runtime and getattr(
             domain_agent.__class__, "execute_live_with_runtime", None
         ) is not None and domain_agent.__class__.execute_live_with_runtime is not DomainAgent.execute_live_with_runtime:  # type: ignore[attr-defined]
-            return await execute_live_with_runtime(agent_request, runtime_context.get_runtime_dict())  # type: ignore[call-arg]
+            live_result = await execute_live_with_runtime(  # type: ignore[call-arg]
+                agent_request, runtime_context.get_runtime_dict()
+            )
+        else:
+            live_result = await domain_agent.execute_live(task_request)
 
-        return await domain_agent.execute_live(task_request)
+        live_stream, communicator = live_result
+        approval_timeout = float(self._config.get("tool_approval_timeout_seconds", 90))
+        fallback_policy = self._config.get("tool_approval_timeout_policy", "auto_cancel")
+
+        broker = AdkApprovalBroker(
+            communicator,
+            timeout_seconds=approval_timeout,
+            fallback_policy=fallback_policy,
+        )
+
+        wrapped_communicator = ApprovalAwareCommunicator(communicator, broker)
+
+        async def orchestrated_stream():
+            try:
+                async for chunk in live_stream:
+                    chunk = await broker.on_chunk(chunk)
+                    if chunk is not None:
+                        yield chunk
+            finally:
+                self.logger.info("ADK orchestrated_stream finalizing broker")
+                await broker.finalize()
+                broker.close()
+                if hasattr(live_stream, "aclose"):
+                    try:
+                        await live_stream.aclose()  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        self.logger.warning("ADK orchestrated_stream failed to close live stream", exc_info=True)
+                self.logger.info("ADK orchestrated_stream broker finalized")
+
+        return orchestrated_stream(), wrapped_communicator
 
     def _create_live_error_result(
         self, task_request: Optional[TaskRequest], message: str, metadata: Optional[Dict[str, Any]] = None

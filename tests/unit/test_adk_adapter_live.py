@@ -1,5 +1,6 @@
 """Tests for ADK Framework Adapter live execution bridge."""
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +10,8 @@ import pytest
 from src.aether_frame.contracts import (
     ExecutionContext,
     FrameworkType,
+    InteractionResponse,
+    InteractionType,
     RuntimeContext,
     TaskChunkType,
     TaskRequest,
@@ -19,6 +22,26 @@ from src.aether_frame.contracts import (
 )
 from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
 from src.aether_frame.agents.base.domain_agent import DomainAgent
+
+
+class _SimpleCommunicator:
+    def __init__(self):
+        self.responses = []
+        self.cancellations = []
+        self.messages = []
+        self.closed = False
+
+    async def send_user_response(self, response: InteractionResponse) -> None:
+        self.responses.append(response)
+
+    async def send_cancellation(self, reason: str = "user_cancelled") -> None:
+        self.cancellations.append(reason)
+
+    async def send_user_message(self, message: str) -> None:
+        self.messages.append(message)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _StubDomainAgent(DomainAgent):
@@ -55,7 +78,53 @@ class _StubDomainAgent(DomainAgent):
                 metadata={},
             )
 
-        return _stream(), MagicMock()
+        return _stream(), _SimpleCommunicator()
+
+
+class _ProposalDomainAgent(DomainAgent):
+    """Domain agent that emits tool proposals for handshake verification."""
+
+    def __init__(self, *, include_result: bool = True):
+        super().__init__("agent-approval", {}, {})
+        self.include_result = include_result
+
+    async def initialize(self):
+        return None
+
+    async def execute(self, agent_request):
+        return TaskResult(
+            task_id=agent_request.task_request.task_id,
+            status=TaskStatus.SUCCESS,
+        )
+
+    async def get_state(self) -> Dict[str, Any]:
+        return {}
+
+    async def cleanup(self):
+        return None
+
+    async def execute_live(self, task_request):
+
+        async def _stream():
+            yield TaskStreamChunk(
+                task_id=task_request.task_id,
+                chunk_type=TaskChunkType.TOOL_PROPOSAL,
+                sequence_id=0,
+                content={"tool_name": "demo_tool", "arguments": {"value": 1}},
+                metadata={"stage": "tool"},
+                interaction_id="interaction-1",
+            )
+            if self.include_result:
+                yield TaskStreamChunk(
+                    task_id=task_request.task_id,
+                    chunk_type=TaskChunkType.TOOL_RESULT,
+                    sequence_id=1,
+                    content={"result": "done"},
+                    metadata={"stage": "tool"},
+                    interaction_id="interaction-1",
+                )
+
+        return _stream(), _SimpleCommunicator()
 
 
 @pytest.fixture
@@ -184,3 +253,86 @@ async def test_execute_live_with_domain_agent_updates_runtime(task_request):
 
     assert collected and collected[0].content == "ok"
     assert hasattr(communicator, "send_user_response")
+    assert hasattr(communicator, "delegate")
+
+
+@pytest.mark.asyncio
+async def test_tool_proposal_metadata_and_user_response(task_request):
+    adapter = AdkFrameworkAdapter()
+    adapter._config["tool_approval_timeout_seconds"] = 120
+    adapter._config["tool_approval_timeout_policy"] = "auto_cancel"
+
+    proposal_agent = _ProposalDomainAgent(include_result=True)
+
+    runtime_context = RuntimeContext(
+        session_id="adk-session-proposal",
+        user_id="user-approval",
+        framework_type=FrameworkType.ADK,
+        agent_id=proposal_agent.agent_id,
+        runner_id="runner-proposal",
+    )
+    runtime_context.metadata["domain_agent"] = proposal_agent
+
+    stream, communicator = await adapter._execute_live_with_domain_agent(
+        task_request, runtime_context
+    )
+
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+
+    assert len(chunks) == 2
+    proposal_chunk = chunks[0]
+    assert proposal_chunk.chunk_type == TaskChunkType.TOOL_PROPOSAL
+    assert proposal_chunk.interaction_id == "interaction-1"
+    assert "interaction_request" in proposal_chunk.metadata
+    assert proposal_chunk.metadata.get("interaction_timeout_seconds") == 120
+
+    # Simulate human approval
+    response = InteractionResponse(
+        interaction_id="interaction-1",
+        interaction_type=InteractionType.TOOL_APPROVAL,
+        approved=True,
+    )
+    await communicator.send_user_response(response)
+
+    base_comm = communicator.delegate
+    assert base_comm.responses[-1] == response
+
+
+@pytest.mark.asyncio
+async def test_tool_proposal_auto_timeout(task_request):
+    adapter = AdkFrameworkAdapter()
+    adapter._config["tool_approval_timeout_seconds"] = 0.05
+    adapter._config["tool_approval_timeout_policy"] = "auto_cancel"
+
+    proposal_agent = _ProposalDomainAgent(include_result=False)
+
+    runtime_context = RuntimeContext(
+        session_id="adk-session-timeout",
+        user_id="user-timeout",
+        framework_type=FrameworkType.ADK,
+        agent_id=proposal_agent.agent_id,
+        runner_id="runner-timeout",
+    )
+    runtime_context.metadata["domain_agent"] = proposal_agent
+
+    stream, communicator = await adapter._execute_live_with_domain_agent(
+        task_request, runtime_context
+    )
+
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+
+    # Only proposal chunk emitted
+    assert len(chunks) == 1
+    base_comm = communicator.delegate
+
+    # Broker should issue auto-cancel fallback after timeout
+    await asyncio.sleep(0.1)
+    assert base_comm.responses, "Expected auto-timeout response to be sent"
+    auto_response = base_comm.responses[-1]
+    assert auto_response.interaction_type == InteractionType.TOOL_APPROVAL
+    assert auto_response.approved is False
+    assert auto_response.metadata.get("auto_timeout") is True

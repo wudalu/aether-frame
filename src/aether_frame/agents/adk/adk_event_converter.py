@@ -56,6 +56,19 @@ class AdkEventConverter:
         """
         try:
             metadata: Dict[str, Any] = self._safe_metadata(adk_event)
+            event_type = (
+                getattr(adk_event, "event_type", None)
+                or metadata.get("event_type")
+                or getattr(adk_event, "type", None)
+            )
+            logger.debug(
+                "ADK event received: type=%s author=%s partial=%s finish=%s metadata=%s",
+                event_type,
+                getattr(adk_event, "author", None),
+                getattr(adk_event, "partial", None),
+                getattr(getattr(adk_event, "finish_reason", None), "value", getattr(adk_event, "finish_reason", None)),
+                metadata or None,
+            )
 
             # Plan streaming comes first so we do not treat plan text as assistant delta
             plan_chunk = self._try_convert_plan_event(
@@ -303,10 +316,12 @@ class AdkEventConverter:
 
     def _safe_metadata(self, adk_event: "AdkEvent") -> Dict[str, Any]:
         """Return metadata dict for the event without modifying original object."""
-        metadata = getattr(adk_event, "metadata", None)
-        if isinstance(metadata, dict):
-            return dict(metadata)
-        return {}
+        combined: Dict[str, Any] = {}
+        for attr_name in ("metadata", "custom_metadata"):
+            metadata = getattr(adk_event, attr_name, None)
+            if isinstance(metadata, dict):
+                combined.update(metadata)
+        return combined
 
     def _extract_first_part_text(self, adk_event: "AdkEvent") -> Optional[str]:
         """Attempt to extract first text part from an ADK event."""

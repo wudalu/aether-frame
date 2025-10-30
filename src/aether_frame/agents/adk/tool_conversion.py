@@ -93,6 +93,7 @@ def build_adk_agent(
     universal_tools: Optional[Iterable[Any]] = None,
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
     settings: Any = None,
+    enable_streaming: bool = False,
 ) -> Optional[Any]:
     """Create an ADK Agent with the provided configuration and tools."""
     try:
@@ -101,7 +102,11 @@ def build_adk_agent(
     except ImportError:
         return None
 
-    model = AdkModelFactory.create_model(model_identifier, settings)
+    model = AdkModelFactory.create_model(
+        model_identifier,
+        settings,
+        enable_streaming=enable_streaming,
+    )
 
     tools: List[Any] = []
     if universal_tools:
@@ -138,7 +143,7 @@ def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Sig
         if name in required_fields:
             default = inspect._empty
         else:
-            default = None
+            default = prop.get("default", None)
         parameters.append(
             inspect.Parameter(
                 name,

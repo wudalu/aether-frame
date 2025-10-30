@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 
 DEFAULT_CHUNK_VERSION = "2025-03-01"
 
+# Chunk semantic kinds (chunk_kind values)
+# These string identifiers loosely follow industry patterns used by OpenAI Responses API,
+# Cohere tool streaming, and LangGraph (plan/tool/result separation) so downstream clients
+# can rely on familiar naming when rendering live events.
+CHUNK_KIND_PLAN_DELTA = "plan.delta"  # Incremental plan step emitted while the agent is reasoning.
+CHUNK_KIND_PLAN_SUMMARY = "plan.summary"  # Consolidated plan/next action summary after planning stabilises.
+CHUNK_KIND_TOOL_PROPOSAL = "tool.proposal"  # Tool invocation proposal that may require human approval.
+CHUNK_KIND_TOOL_RESULT = "tool.result"  # Final tool execution result returned to the conversation transcript.
+CHUNK_KIND_TOOL_PROGRESS = "tool.delta"  # Optional intermediate progress log while a tool is running.
+CHUNK_KIND_TOOL_COMPLETE = "tool.complete"  # Tool wrapper completion marker (success or graceful finish).
+
 
 @dataclass
 class TaskStreamChunk:
