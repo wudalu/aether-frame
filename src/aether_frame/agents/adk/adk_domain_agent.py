@@ -59,6 +59,7 @@ class AdkDomainAgent(DomainAgent):
         self.event_converter = AdkEventConverter()
         self._tools_initialized = False  # Track if tools have been initialized
         self._active_task_request = None  # Track current TaskRequest context
+        self._tool_approval_policy: Dict[str, bool] = {}
 
     # === Core Interface Methods ===
 
@@ -93,6 +94,31 @@ class AdkDomainAgent(DomainAgent):
     async def _create_adk_agent(self, available_tools=None):
         """Create ADK agent instance for session execution within domain agent scope."""
         model_identifier = self._get_model_configuration()
+        raw_model_config = self.config.get("model_config") if isinstance(self.config, dict) else None
+        model_config = deepcopy(raw_model_config) if raw_model_config else {}
+
+        if model_config:
+            def _shorten_tool_names(payload):
+                if isinstance(payload, dict):
+                    return {
+                        key: (_shorten_tool_names(value) if key != "name" else _shorten_name(value))
+                        for key, value in payload.items()
+                    }
+                if isinstance(payload, list):
+                    return [_shorten_tool_names(item) for item in payload]
+                return payload
+
+            def _shorten_name(value):
+                if isinstance(value, str) and "." in value:
+                    return value.split(".")[-1]
+                return value
+
+            tool_choice = model_config.get("tool_choice")
+            if isinstance(tool_choice, dict):
+                model_config["tool_choice"] = _shorten_tool_names(tool_choice)
+            elif isinstance(tool_choice, str):
+                model_config["tool_choice"] = _shorten_name(tool_choice)
+
         tool_service = self.runtime_context.get("tool_service")
         settings = self._get_settings()
 
@@ -106,6 +132,7 @@ class AdkDomainAgent(DomainAgent):
             request_factory=self._prepare_tool_request,
             settings=settings,
             enable_streaming=True,
+            model_config=model_config,
         )
 
         if self.adk_agent:
@@ -174,17 +201,65 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             List of ADK-compatible async function objects
         """
-        tool_service = self.runtime_context.get("tool_service")
+        tool_service = self._lookup_runtime_value("tool_service")
+        tool_list = list(universal_tools)
+        self._tool_approval_policy = {}
+        for tool in tool_list:
+            metadata = getattr(tool, "metadata", {}) or {}
+            requires = metadata.get("requires_approval")
+            self._tool_approval_policy[tool.name] = bool(requires) if requires is not None else True
+            if "." in tool.name:
+                short_name = tool.name.split(".")[-1]
+                self._tool_approval_policy.setdefault(short_name, self._tool_approval_policy[tool.name])
+
+        self._store_runtime_value("tool_approval_policy", dict(self._tool_approval_policy))
+
         tools = create_function_tools(
             tool_service,
-            universal_tools,
+            tool_list,
             request_factory=self._prepare_tool_request,
+            approval_callback=self._await_tool_approval,
         )
         self.logger.info(
             "Successfully converted %d UniversalTools to async ADK functions",
             len(tools),
         )
         return tools
+
+    async def _await_tool_approval(self, tool, parameters: Dict[str, Any]):
+        broker = self._lookup_runtime_value("approval_broker")
+        requires = self._tool_approval_policy.get(tool.name, True)
+        if requires is None and "." in tool.name:
+            requires = self._tool_approval_policy.get(tool.name.split(".")[-1], True)
+        if not requires:
+            return {"approved": True, "requires_approval": False}
+        if not broker:
+            return {"approved": True}
+        try:
+            return await broker.wait_for_tool_approval(tool.name, parameters)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Tool approval check failed for %s: %s", tool.name, exc)
+            return {"approved": False, "error": str(exc)}
+
+    def _lookup_runtime_value(self, key: str):
+        context = self.runtime_context
+        if isinstance(context, dict):
+            return context.get(key) or context.get("metadata", {}).get(key)
+        metadata = getattr(context, "metadata", {})
+        if key in metadata:
+            return metadata[key]
+        return getattr(context, key, None)
+
+    def _store_runtime_value(self, key: str, value) -> None:
+        context = self.runtime_context
+        if isinstance(context, dict):
+            context.setdefault("metadata", {})[key] = value
+        else:
+            metadata = getattr(context, "metadata", None)
+            if metadata is not None:
+                metadata[key] = value
+            else:
+                setattr(context, key, value)
 
     def _prepare_tool_request(self, tool, parameters: Dict[str, Any]):
         """Build ToolRequest populated with contextual metadata for MCP tooling."""

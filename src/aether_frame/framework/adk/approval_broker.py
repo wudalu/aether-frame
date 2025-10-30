@@ -6,7 +6,7 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from ...contracts import (
     InteractionRequest,
@@ -27,6 +27,8 @@ class _PendingApproval:
     created_at: datetime
     timeout_task: Optional[asyncio.Task] = None
     resolved: bool = False
+    signature: Optional[str] = None
+    future: Optional[asyncio.Future] = None
 
 
 class AdkApprovalBroker:
@@ -38,6 +40,7 @@ class AdkApprovalBroker:
         *,
         timeout_seconds: float = 90.0,
         fallback_policy: str = "auto_cancel",
+        tool_requirements: Optional[Dict[str, bool]] = None,
     ):
         self._communicator = communicator
         self._timeout_seconds = float(timeout_seconds)
@@ -45,6 +48,8 @@ class AdkApprovalBroker:
         self._pending: Dict[str, _PendingApproval] = {}
         self._lock = asyncio.Lock()
         self._closed = False
+        self._signature_to_interaction: Dict[str, str] = {}
+        self._tool_requirements = tool_requirements or {}
 
     @property
     def timeout_seconds(self) -> float:
@@ -69,14 +74,25 @@ class AdkApprovalBroker:
 
         metadata = chunk.metadata or {}
         metadata.setdefault("stage", "tool")
-        metadata.setdefault("requires_approval", True)
-        metadata["interaction_timeout_seconds"] = self._timeout_seconds
-        metadata["approval_policy"] = self._fallback_policy
-        chunk.metadata = metadata
 
         content = chunk.content if isinstance(chunk.content, dict) else {}
         tool_name = content.get("tool_name") or metadata.get("tool_name")
         arguments = content.get("arguments")
+
+        requires = metadata.get("requires_approval")
+        if requires is None:
+            requires = self._tool_requirements.get(tool_name)
+            if requires is None and tool_name and "." in tool_name:
+                requires = self._tool_requirements.get(tool_name.split(".")[-1])
+        if requires is None:
+            requires = True
+        metadata["requires_approval"] = bool(requires)
+        metadata["interaction_timeout_seconds"] = self._timeout_seconds
+        metadata["approval_policy"] = self._fallback_policy
+        chunk.metadata = metadata
+
+        if not metadata["requires_approval"]:
+            return
 
         interaction_request = InteractionRequest(
             interaction_id=interaction_id,
@@ -106,10 +122,17 @@ class AdkApprovalBroker:
             created_at=datetime.now(timezone.utc),
         )
 
+        signature = self._build_signature(tool_name, arguments)
+        pending.signature = signature
+        loop = asyncio.get_running_loop()
+        pending.future = loop.create_future()
+
         async with self._lock:
             if self._closed:
                 return
             self._pending[interaction_id] = pending
+            if signature:
+                self._signature_to_interaction[signature] = interaction_id
             pending.timeout_task = asyncio.create_task(
                 self._handle_timeout(interaction_id), name=f"adk-approval-timeout-{interaction_id}"
             )
@@ -124,6 +147,8 @@ class AdkApprovalBroker:
         """Mark a pending approval as resolved."""
         async with self._lock:
             pending = self._pending.pop(interaction_id, None)
+            if pending and pending.signature:
+                self._signature_to_interaction.pop(pending.signature, None)
 
         if not pending:
             return
@@ -135,6 +160,8 @@ class AdkApprovalBroker:
             timeout_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await timeout_task
+
+        self._resolve_future(pending, response)
 
         logger.info(
             "Approval resolved",
@@ -163,6 +190,7 @@ class AdkApprovalBroker:
             if pending.timeout_task:
                 pending.timeout_task.cancel()
         self._pending.clear()
+        self._signature_to_interaction.clear()
 
     async def _handle_timeout(self, interaction_id: str) -> None:
         """Fallback when no approval response is received."""
@@ -206,6 +234,44 @@ class AdkApprovalBroker:
             )
 
         await self.resolve(interaction_id, response, source="timeout")
+
+    def _resolve_future(self, pending: _PendingApproval, response: Optional[InteractionResponse]) -> None:
+        if not pending.future or pending.future.done():
+            return
+        if response is None:
+            pending.future.set_result(True)
+        else:
+            pending.future.set_result(bool(response.approved))
+
+    def _build_signature(self, tool_name: Optional[str], arguments: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not tool_name:
+            return None
+        try:
+            import json
+
+            normalized_args = arguments or {}
+            return json.dumps({"tool": tool_name, "args": normalized_args}, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001
+            return tool_name
+
+    async def wait_for_tool_approval(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        signature = self._build_signature(tool_name, arguments)
+        async with self._lock:
+            interaction_id = self._signature_to_interaction.get(signature or "")
+            pending = self._pending.get(interaction_id) if interaction_id else None
+
+        if not pending or not pending.future:
+            return {"approved": True}
+
+        approved = await pending.future
+        response = {
+            "approved": bool(approved),
+            "interaction_id": pending.request.interaction_id,
+        }
+        if not approved:
+            response.setdefault("status", "cancelled")
+            response.setdefault("error", "Tool invocation cancelled by user")
+        return response
 
 
 class ApprovalAwareCommunicator:

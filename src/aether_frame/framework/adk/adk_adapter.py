@@ -2,7 +2,9 @@
 """ADK Framework Adapter Implementation."""
 
 import asyncio
+import contextlib
 import logging
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 from uuid import uuid4
@@ -1000,10 +1002,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from ...agents.adk.adk_domain_agent import AdkDomainAgent
         
         # Build config dict from agent_config
+        raw_model_config = getattr(agent_config, 'model_config', {}) or {}
+        model_config = deepcopy(raw_model_config) if raw_model_config else {}
+        model_name = (
+            model_config.get('model')
+            or getattr(agent_config, 'model', None)
+            or self._get_default_adk_model()
+        )
         config_dict = {
             "agent_type": agent_config.agent_type,
             "system_prompt": getattr(agent_config, 'system_prompt', "You are a helpful AI assistant."),
-            "model": getattr(agent_config, 'model_config', {}).get('model', self._get_default_adk_model())
+            "model": model_name,
+            "model_config": model_config,
         }
         
         # Create basic runtime context
@@ -1234,13 +1244,32 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
         live_stream, communicator = live_result
         approval_timeout = float(self._config.get("tool_approval_timeout_seconds", 90))
-        fallback_policy = self._config.get("tool_approval_timeout_policy", "auto_cancel")
+        fallback_policy = self._config.get("tool_approval_timeout_policy", "auto_approve")
+
+        tool_requirements = None
+        context_obj = getattr(domain_agent, "runtime_context", None)
+        tool_requirements = None
+        if isinstance(context_obj, dict):
+            tool_requirements = context_obj.get("tool_approval_policy") or context_obj.get("metadata", {}).get("tool_approval_policy")
+        elif context_obj is not None:
+            metadata = getattr(context_obj, "metadata", {})
+            tool_requirements = metadata.get("tool_approval_policy") or getattr(context_obj, "tool_approval_policy", None)
 
         broker = AdkApprovalBroker(
             communicator,
             timeout_seconds=approval_timeout,
             fallback_policy=fallback_policy,
+            tool_requirements=tool_requirements,
         )
+
+        if isinstance(context_obj, dict):
+            context_obj.setdefault("metadata", {})["approval_broker"] = broker
+        elif context_obj is not None:
+            metadata = getattr(context_obj, "metadata", None)
+            if metadata is not None:
+                metadata["approval_broker"] = broker
+            else:
+                setattr(context_obj, "approval_broker", broker)
 
         wrapped_communicator = ApprovalAwareCommunicator(communicator, broker)
 
@@ -1260,6 +1289,16 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     except Exception:  # noqa: BLE001
                         self.logger.warning("ADK orchestrated_stream failed to close live stream", exc_info=True)
                 self.logger.info("ADK orchestrated_stream broker finalized")
+                context_obj = getattr(domain_agent, "runtime_context", None)
+                if isinstance(context_obj, dict):
+                    context_obj.get("metadata", {}).pop("approval_broker", None)
+                elif context_obj is not None:
+                    metadata = getattr(context_obj, "metadata", None)
+                    if metadata is not None:
+                        metadata.pop("approval_broker", None)
+                    else:
+                        with contextlib.suppress(AttributeError):
+                            setattr(context_obj, "approval_broker", None)
 
         return orchestrated_stream(), wrapped_communicator
 

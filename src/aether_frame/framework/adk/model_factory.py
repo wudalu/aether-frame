@@ -2,7 +2,7 @@
 """ADK Model Factory for custom model handling."""
 
 import os
-from typing import Any, Union
+from typing import Any, Dict, Optional, Union
 
 
 class AdkModelFactory:
@@ -14,7 +14,12 @@ class AdkModelFactory:
     """
     
     @staticmethod
-    def create_model(model_identifier: str, settings=None, enable_streaming: bool = False) -> Union[str, Any]:
+    def create_model(
+        model_identifier: str,
+        settings=None,
+        enable_streaming: bool = False,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> Union[str, Any]:
         """
         Create appropriate model instance based on identifier.
         
@@ -22,12 +27,20 @@ class AdkModelFactory:
             model_identifier: Model identifier string
             settings: Application settings (optional)
             enable_streaming: Whether to enable streaming support
+            model_config: Optional per-model configuration overrides
             
         Returns:
             Either the original string for native ADK models,
             or a custom wrapper for external models
         """
         model_lower = model_identifier.lower()
+        model_kwargs: Dict[str, Any] = {}
+        if model_config:
+            model_kwargs = {
+                key: value
+                for key, value in model_config.items()
+                if key != "model" and value is not None
+            }
         
         # Handle DeepSeek models
         if "deepseek" in model_lower:
@@ -44,10 +57,14 @@ class AdkModelFactory:
                 if enable_streaming:
                     from .deepseek_streaming_llm import DeepSeekStreamingLLM
 
+                    stream_kwargs = dict(model_kwargs)
+                    if api_key:
+                        stream_kwargs.setdefault("api_key", api_key)
+                    if base_url:
+                        stream_kwargs.setdefault("api_base", base_url)
                     return DeepSeekStreamingLLM(
                         model=model_name,
-                        api_key=api_key,
-                        api_base=base_url,
+                        **stream_kwargs,
                     )
 
                 from google.adk.models.lite_llm import LiteLlm
@@ -57,6 +74,8 @@ class AdkModelFactory:
                     extra_kwargs["api_key"] = api_key
                 if base_url:
                     extra_kwargs["api_base"] = base_url
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
                 return LiteLlm(model=model_name, **extra_kwargs)
             except ImportError as exc:
                 if enable_streaming:
@@ -72,6 +91,8 @@ class AdkModelFactory:
             try:
                 from google.adk.models.lite_llm import LiteLlm
                 extra_kwargs = {"stream": enable_streaming}
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
                 return LiteLlm(model=model_identifier, **{k: v for k, v in extra_kwargs.items() if v is not None})
             except ImportError:
                 # LiteLLM not available, fallback to string
@@ -97,6 +118,8 @@ class AdkModelFactory:
                 else:
                     azure_model = model_identifier
                 extra_kwargs = {"stream": enable_streaming}
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
                 return LiteLlm(model=azure_model, **{k: v for k, v in extra_kwargs.items() if v is not None})
             except ImportError:
                 # LiteLLM not available, fallback to string
@@ -136,6 +159,8 @@ class AdkModelFactory:
                     extra_args["api_base"] = base_url
                 if enable_streaming:
                     extra_args["stream"] = True
+                if model_kwargs:
+                    extra_args.update(model_kwargs)
 
                 return LiteLlm(model=qwen_model, **extra_args)
             except ImportError:

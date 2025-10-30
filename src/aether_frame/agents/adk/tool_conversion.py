@@ -12,6 +12,7 @@ def create_function_tools(
     tool_service: Any,
     universal_tools: Iterable[Any],
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
+    approval_callback: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
 ) -> List[Any]:
     """Convert UniversalTool objects into ADK FunctionTool instances."""
     if not tool_service:
@@ -27,7 +28,28 @@ def create_function_tools(
     for universal_tool in universal_tools:
 
         def create_async_wrapper(tool):
+            tool_metadata = getattr(tool, "metadata", {}) or {}
+            requires_approval = bool(tool_metadata.get("requires_approval", True))
+
             async def async_adk_tool(**kwargs):
+                if requires_approval and approval_callback:
+                    approval_result = await approval_callback(tool, kwargs)
+                    if isinstance(approval_result, dict):
+                        if not approval_result.get("approved", True):
+                            return approval_result
+                        approval_metadata = approval_result
+                    else:
+                        if approval_result is False:
+                            return {
+                                "status": "cancelled",
+                                "error": "Tool invocation cancelled by approval flow",
+                                "tool_name": tool.name,
+                                "namespace": tool.namespace,
+                            }
+                        approval_metadata = None
+                else:
+                    approval_metadata = {"requires_approval": requires_approval}
+
                 tool_request = (
                     request_factory(tool, kwargs)
                     if request_factory
@@ -57,12 +79,15 @@ def create_function_tools(
                     )
                     error_message = result.error_message or error_message
 
-                return {
+                payload = {
                     "status": status_value,
                     "error": error_message,
                     "tool_name": tool.name,
                     "namespace": tool.namespace,
                 }
+                if approval_metadata and isinstance(approval_metadata, dict):
+                    payload.setdefault("approval_metadata", approval_metadata)
+                return payload
 
             async_adk_tool.__name__ = tool.name.split(".")[-1] if "." in tool.name else tool.name
             async_adk_tool.__doc__ = tool.description or f"Tool: {tool.name}"
@@ -94,6 +119,7 @@ def build_adk_agent(
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
     settings: Any = None,
     enable_streaming: bool = False,
+    model_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Create an ADK Agent with the provided configuration and tools."""
     try:
@@ -106,6 +132,7 @@ def build_adk_agent(
         model_identifier,
         settings,
         enable_streaming=enable_streaming,
+        model_config=model_config,
     )
 
     tools: List[Any] = []
