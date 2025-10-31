@@ -137,6 +137,17 @@ class AdkApprovalBroker:
                 self._handle_timeout(interaction_id), name=f"adk-approval-timeout-{interaction_id}"
             )
 
+        logger.info(
+            "Tool proposal registered",
+            extra={
+                "interaction_id": interaction_id,
+                "task_id": chunk.task_id,
+                "tool_name": tool_name,
+                "requires_approval": bool(requires),
+                "timeout_seconds": self._timeout_seconds,
+            },
+        )
+
     async def resolve(
         self,
         interaction_id: str,
@@ -261,6 +272,10 @@ class AdkApprovalBroker:
             pending = self._pending.get(interaction_id) if interaction_id else None
 
         if not pending or not pending.future:
+            logger.info(
+                "No pending approval, defaulting to allowed",
+                extra={"tool_name": tool_name, "interaction_signature": signature},
+            )
             return {"approved": True}
 
         approved = await pending.future
@@ -271,6 +286,14 @@ class AdkApprovalBroker:
         if not approved:
             response.setdefault("status", "cancelled")
             response.setdefault("error", "Tool invocation cancelled by user")
+        logger.info(
+            "Tool approval decision obtained",
+            extra={
+                "interaction_id": pending.request.interaction_id,
+                "tool_name": pending.request.metadata.get("tool_name"),
+                "approved": bool(approved),
+            },
+        )
         return response
 
     async def list_pending_interactions(self) -> List[Dict[str, Any]]:

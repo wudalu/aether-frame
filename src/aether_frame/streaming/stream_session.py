@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -37,11 +38,13 @@ class StreamSession:
         event_stream: AsyncIterator[TaskStreamChunk],
         communicator: LiveCommunicator,
     ) -> None:
+        self._logger = logging.getLogger(f"{__name__}.{task_id}")
         self._task_id = task_id
         self._event_stream = event_stream
         self._communicator = communicator
         self._closed = False
         self._close_lock = asyncio.Lock()
+        self._logger.info("Stream session created", extra={"task_id": task_id})
 
     # ------------------------------------------------------------------
     # Async iteration
@@ -57,9 +60,22 @@ class StreamSession:
     # Communicator passthrough helpers
     # ------------------------------------------------------------------
     async def send_user_message(self, message: str) -> None:
+        self._logger.info(
+            "Forwarding user message",
+            extra={"task_id": self._task_id, "message_length": len(message)},
+        )
         await self._communicator.send_user_message(message)
 
     async def send_interaction_response(self, response: InteractionResponse) -> None:
+        self._logger.info(
+            "Forwarding interaction response",
+            extra={
+                "task_id": self._task_id,
+                "interaction_id": response.interaction_id,
+                "interaction_type": response.interaction_type.value,
+                "approved": response.approved,
+            },
+        )
         await self._communicator.send_user_response(response)
 
     async def approve_tool(
@@ -72,6 +88,14 @@ class StreamSession:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Convenience helper to submit a tool approval/denial."""
+        self._logger.info(
+            "Submitting tool approval decision",
+            extra={
+                "task_id": self._task_id,
+                "interaction_id": interaction_id,
+                "approved": approved,
+            },
+        )
         await self.send_interaction_response(
             InteractionResponse(
                 interaction_id=interaction_id,
@@ -84,6 +108,10 @@ class StreamSession:
         )
 
     async def cancel(self, reason: str = "user_cancelled") -> None:
+        self._logger.info(
+            "Cancelling stream session",
+            extra={"task_id": self._task_id, "reason": reason},
+        )
         await self._communicator.send_cancellation(reason)
 
     async def close(self) -> None:
@@ -100,6 +128,9 @@ class StreamSession:
 
             broker = getattr(self._communicator, "broker", None)
             if broker is not None:
+                self._logger.info(
+                    "Closing approval broker", extra={"task_id": self._task_id}
+                )
                 broker.close()
 
             try:
@@ -114,6 +145,7 @@ class StreamSession:
                     await aclose()
                 except Exception:
                     pass
+            self._logger.info("Stream session closed", extra={"task_id": self._task_id})
 
     # ------------------------------------------------------------------
     # Approval inspection helpers
@@ -141,6 +173,10 @@ class StreamSession:
                     metadata=item.get("metadata", {}),
                 )
             )
+        self._logger.info(
+            "Queried pending interactions",
+            extra={"task_id": self._task_id, "count": len(interactions)},
+        )
         return interactions
 
 
