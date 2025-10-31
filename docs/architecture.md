@@ -143,6 +143,52 @@ sequenceDiagram
     AI-->>USER: TaskResult (ready for follow-up)
 ```
 
+### Detailed Execution Flows (Sync & Live)
+
+#### Sync Execution Overview
+- **Request Path**: `TaskRequest → ExecutionEngine → AdkFrameworkAdapter → AdkDomainAgent`
+- **Runner Coordination**: RunnerManager either reuses an existing runner/session or provisions a new one based on `agent_id`/`agent_config`.
+- **Tool Use**: Domain agent resolves the relevant tool set on-demand via `ToolService` and executes synchronously inside the ADK runtime.
+- **Result Packaging**: ADK response is flattened into a single `TaskResult` (no incremental streaming) and returned to the caller.
+
+```mermaid
+flowchart LR
+    Client -->|TaskRequest| ExecutionEngine -->|Strategy| AdkAdapter
+    AdkAdapter -->|Lookup/Create| AgentManager
+    AdkAdapter -->|Runner/session| RunnerManager
+    RunnerManager --> ADKRuntime --> ToolService
+    ADKRuntime -->|TaskResult| AdkAdapter --> ExecutionEngine --> Client
+```
+
+#### Live Execution + Tool Use
+- **Streaming Lifecycle**: `execute_task_live` yields an async generator of `TaskStreamChunk`s while a paired communicator sends user or approval messages back through the ADK `LiveRequestQueue`.
+- **Chunk Taxonomy**:  
+  `plan.delta / plan.summary → tool.proposal → tool.result → response.delta → turn.complete`
+- **Tool Invocation Flow**: Tool proposals are emitted prior to tool execution. When upstream frameworks omit proposals, the domain agent synthesizes a `tool_proposal` chunk before producing the real `tool_result`.
+- **HITL Bridge**: After the first turn completes, the suite prompts the operator (stdin) to decide whether to inject another user turn; responses are forwarded through `communicator.send_user_message`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant ExecutionEngine
+    participant DomainAgent
+    participant ADKLive as ADK Live Runtime
+    participant ToolSvc as Tool Service
+    participant Operator as HITL
+
+    Client->>ExecutionEngine: execute_task_live(request)
+    ExecutionEngine->>DomainAgent: AgentRequest + runtime
+    DomainAgent->>ADKLive: start_live_session(queue)
+    ADKLive-->>DomainAgent: plan/tool chunks (stream)
+    DomainAgent-->>ExecutionEngine: TaskStreamChunk(plan.delta)
+    DomainAgent-->>ToolSvc: execute(progressive_search)
+    ToolSvc-->>DomainAgent: tool response
+    DomainAgent-->>ExecutionEngine: TaskStreamChunk(tool.proposal/tool.result)
+    ExecutionEngine-->>Client: streaming chunks
+    Operator-->>DomainAgent: follow-up (via communicator)
+    ADKLive-->>DomainAgent: response.final + turn.complete
+```
+
 ## Core Components (Current Implementation)
 
 ### Framework Abstraction Layer
@@ -207,6 +253,30 @@ sequenceDiagram
 - **Current Support**: Builtin tools (echo, timestamp, chat_log)
 - **Planned Support**: MCP tools, ADK native tools, external API tools
 - **Integration**: Ready for agent tool execution
+
+#### Streaming & HITL Design (✅ Instrumented)
+- **TaskStreamChunk Envelope**  
+  - `chunk_type`: semantic category (`PLAN_DELTA`, `TOOL_PROPOSAL`, …)  
+  - `chunk_kind`: fine-grained identifier (`plan.delta`, `tool.result`, …)  
+  - `metadata`: `stage`, `author`, `interaction_id`, tool descriptors, and ADK event hints  
+  - `interaction_id`: stable key linking proposals to results (generated when upstream signals are absent)
+- **Chunk Kinds in Live Sessions**
+
+  | `chunk_kind`        | Description                                  | Primary Source                     |
+  |---------------------|----------------------------------------------|------------------------------------|
+  | `plan.delta` / `plan.summary` | Incremental reasoning plan            | ADK event metadata or fallback text detector |
+  | `tool.proposal`     | Tool invocation intent                       | ADK `function_call` event or synthesized by domain agent |
+  | `tool.result`       | Materialized tool output                     | Tool execution payload             |
+  | `response.delta` / `response.final` | Assistant natural language output       | ADK streaming events               |
+  | `turn.complete`     | Turn boundary indicator                      | ADK runtime                        |
+- **Fallback Semantics**
+  - `_fallback_plan_event` promotes free-form "Plan Step…" text into structured plan chunks so downstream telemetry remains consistent.
+  - `_try_convert_tool_result` now synthesizes a proposal chunk when upstream frameworks skip explicit proposals, ensuring `tool_proposal_detected` stays accurate.
+- **HITL Integration**
+  - `CompleteE2ETestSuite._prompt_user_input` bridges standard input into async execution, allowing operators to approve/skip follow-up messages mid-stream.
+  - Default values guarantee non-interactive environments still progress deterministically (auto-approve).
+- **Planner Compatibility**
+  - Planner configuration is optional and carried through `framework_config["planner"]`. Even when models do not emit native plan metadata, the fallback layer ensures plan visualization remains available.
 
 ### Infrastructure Layer (✅ Implemented)
 

@@ -1328,13 +1328,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         class ErrorCommunicator:
             """No-op communicator for error responses."""
 
-            def send_user_response(self, approved: bool):
+            async def send_user_response(self, approved: bool) -> None:
                 return None
 
-            def send_user_message(self, message: str):
+            async def send_user_message(self, message: str) -> None:
                 return None
 
-            def send_cancellation(self, reason: str):
+            async def send_cancellation(self, reason: str) -> None:
                 return None
 
             def close(self):

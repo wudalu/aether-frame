@@ -58,7 +58,6 @@ class ToolResult:
     result_data: Optional[Any] = None
     error_message: Optional[str] = None
     error: Optional[ErrorPayload] = None
-    error: Optional[ErrorPayload] = None
     execution_time: Optional[float] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
