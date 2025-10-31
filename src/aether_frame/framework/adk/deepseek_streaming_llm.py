@@ -416,10 +416,13 @@ class DeepSeekLiveConnection(BaseLlmConnection):
         )
         self._reset_stream_state()
         if previous_task:
+            # Prevent the previous stream from emitting the sentinel while we restart.
+            self._sentinel_emitted = True
             previous_task.cancel()
             with suppress(asyncio.CancelledError):
                 await previous_task
-            await self._response_queue.put(_STREAM_FINISHED)
+            # Allow the next stream to emit its sentinel once it completes.
+            self._sentinel_emitted = False
 
         if not self._history:
             self._pending_restart = False

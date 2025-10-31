@@ -97,6 +97,25 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
 | **Security & compliance** | Ensure summarised data retention aligns with privacy policies. |
 
 
+## Stream Mode Resource Handling
+
+Streaming/HITL execution复用了同一套会话/runner/agent 生命周期设计，并在以下层级保证资源最终被释放：
+
+- **Orchestrated stream finalizers**  
+  `AdkFrameworkAdapter` 在包装 live stream 时（`orchestrated_stream()`）会在 `finally` 中调用 `broker.finalize()` → `broker.close()`，尝试执行底层流的 `aclose()`，并从 `runtime_context` 清理 `approval_broker` 引用。从而即便前端终止订阅，审批任务与 communicator 也不会泄漏。
+
+- **StreamSession.close()**  
+  API 层若主动调用 `StreamSession.close()`，将关闭 communicator、broker 和事件流；日志 (`StreamSession` 模块) 记录关闭过程以便排查。
+
+- **Tool 级别清理**  
+  `ToolService.shutdown()` 在系统关闭时释放注册的工具，MCP 工具的 `cleanup()` 会断开 MCP client。
+
+- **Session/Runner/Agent 回收**  
+  `AdkSessionManager.cleanup_chat_session()` 与 idle cleanup watcher 继续负责 session → runner → agent 的回收逻辑，流式会话不会旁路这些规则；系统关闭 (`shutdown_system`) 时亦会按既定顺序销毁 ToolService、AgentManager、FrameworkRegistry 等组件。
+
+因此，开启 stream mode 后仍沿用统一的生命周期策略，额外的 broker/communicator 资源也会在会话结束或系统回收时正确释放。
+
+
 ## References
 
 1. <a id="ref1"></a>Amazon Bedrock AgentCore developer guide – discussion of `idleSessionTimeout` and recommendation to persist session history for rehydration.  
