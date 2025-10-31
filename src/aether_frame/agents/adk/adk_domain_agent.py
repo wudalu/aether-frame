@@ -452,8 +452,6 @@ class AdkDomainAgent(DomainAgent):
                     await self._send_initial_message_to_live_queue(
                         live_request_queue, adk_content
                     )
-                    # No additional user messages expected for test flow; close queue to signal end of input
-                    live_request_queue.close()
 
                     # Stream real ADK live events
                     live_events = runner.run_live(
