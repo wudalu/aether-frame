@@ -16,6 +16,11 @@ except ImportError:
 
 from ...contracts import KnowledgeSource, TaskRequest
 from .adk_session_models import ChatSessionInfo, CoordinationResult
+from .session_recovery import (
+    InMemorySessionRecoveryStore,
+    SessionRecoveryRecord,
+    SessionRecoveryStore,
+)
 
 DEFAULT_RUNNER_IDLE_TIMEOUT_SECONDS = 12 * 60 * 60  # 12 hours
 DEFAULT_AGENT_IDLE_TIMEOUT_SECONDS = 12 * 60 * 60  # 12 hours
@@ -43,7 +48,7 @@ class AdkSessionManager:
     handling agent switching with create-destroy pattern for simplicity.
     """
     
-    def __init__(self, session_service_factory=None):
+    def __init__(self, session_service_factory=None, recovery_store: Optional[SessionRecoveryStore] = None):
         """Initialize ADK Session Manager."""
         self.chat_sessions: Dict[str, ChatSessionInfo] = {}  # chat_session_id -> info
         self._cleared_sessions: Dict[str, Dict[str, Any]] = {}  # chat_session_id -> metadata
@@ -51,6 +56,10 @@ class AdkSessionManager:
 
         # Session service factory for creating session services
         self.session_service_factory = session_service_factory or self._default_session_service_factory
+
+        # Session recovery store for restored chat sessions
+        self._recovery_store: SessionRecoveryStore = recovery_store or InMemorySessionRecoveryStore()
+        self._pending_recoveries: Dict[str, SessionRecoveryRecord] = {}
 
         self.logger.info("ADKSessionManager initialized")
 
@@ -74,7 +83,9 @@ class AdkSessionManager:
     
     def create_session_service(self):
         """Create a new session service instance."""
-        return self.session_service_factory()
+        session_service = self.session_service_factory()
+        self._maybe_bind_recovery_store(session_service)
+        return session_service
 
     def start_idle_cleanup(self, runner_manager, agent_manager, settings=None):
         """Start background idle cleanup watcher if configured."""
@@ -156,6 +167,24 @@ class AdkSessionManager:
         self._idle_runner_manager = None
         self._idle_agent_manager = None
 
+    def _maybe_bind_recovery_store(self, session_service: Any) -> None:
+        """Adopt recovery store provided by session service when available."""
+
+        if not session_service or not hasattr(session_service, "get_recovery_store"):
+            return
+
+        try:
+            candidate = session_service.get_recovery_store()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug(
+                "Failed to obtain recovery store from session service",
+                extra={"error": str(exc)},
+            )
+            return
+
+        if candidate:
+            self._recovery_store = candidate
+
     async def _idle_cleanup_loop(self):
         """Background loop that scans for idle sessions."""
         try:
@@ -192,9 +221,20 @@ class AdkSessionManager:
                     },
                 )
                 try:
+                    await self._archive_chat_session_state(
+                        chat_session=info,
+                        runner_manager=self._idle_runner_manager,
+                        reason="session_idle_timeout",
+                    )
                     await self._cleanup_session_only(info, self._idle_runner_manager)
                     self.chat_sessions.pop(chat_session_id, None)
-                    self._mark_session_cleared(chat_session_id, reason="session_idle_timeout")
+                    archived_record = self._recovery_store.load(chat_session_id)
+                    archived_at = archived_record.archived_at if archived_record else None
+                    self._mark_session_cleared(
+                        chat_session_id,
+                        reason="session_idle_timeout",
+                        archived_at=archived_at,
+                    )
                     await self._evaluate_runner_agent_idle(
                         runner_manager=self._idle_runner_manager,
                         agent_manager=self._idle_agent_manager,
@@ -365,18 +405,42 @@ class AdkSessionManager:
                             extra={"agent_id": agent_id, "error": str(exc)},
                         )
 
-    async def recover_chat_session(self, chat_session_id: str, runner_manager) -> None:
-        """Placeholder for future recovery implementation."""
-        metadata = self._cleared_sessions.pop(chat_session_id, None)
+    async def recover_chat_session(self, chat_session_id: str, runner_manager) -> SessionRecoveryRecord:
+        """Rehydrate chat session tracking from stored recovery payload."""
+
+        record = self._recovery_store.load(chat_session_id)
+        if not record:
+            raise SessionClearedError(chat_session_id, datetime.now(), reason="missing_recovery_record")
+
+        existing = self.chat_sessions.get(chat_session_id)
+        if existing:
+            self.logger.debug(
+                "Chat session already tracked during recovery",
+                extra={"chat_session_id": chat_session_id},
+            )
+            self._pending_recoveries[chat_session_id] = record
+            self._cleared_sessions.pop(chat_session_id, None)
+            return record
+
+        chat_session = ChatSessionInfo(
+            user_id=record.user_id,
+            chat_session_id=chat_session_id,
+            active_agent_id=record.agent_id,
+        )
+        chat_session.last_activity = datetime.now()
+        self.chat_sessions[chat_session_id] = chat_session
+        self._pending_recoveries[chat_session_id] = record
+        cleared_metadata = self._cleared_sessions.pop(chat_session_id, None)
+
         self.logger.info(
-            "recover_chat_session invoked",
+            "recover_chat_session succeeded",
             extra={
                 "chat_session_id": chat_session_id,
-                "recovered": metadata is not None,
-                "cleared_at": metadata.get("cleared_at").isoformat() if metadata and metadata.get("cleared_at") else None,
+                "had_cleared_entry": cleared_metadata is not None,
+                "history_count": len(record.chat_history),
             },
         )
-        # TODO: Implement recovery (history injection, runner rebuild)
+        return record
     
     async def coordinate_chat_session(
         self, 
@@ -545,12 +609,17 @@ class AdkSessionManager:
         chat_session.active_runner_id = runner_id
         chat_session.last_switch_at = datetime.now()
         chat_session.last_activity = datetime.now()
-        
+
         coordination_result = CoordinationResult(
             adk_session_id=new_adk_session_id, 
             switch_occurred=True,
             previous_agent_id=previous_agent_id,
             new_agent_id=target_agent_id
+        )
+        await self._maybe_apply_recovery_payload(
+            chat_session,
+            runner_manager,
+            new_adk_session_id,
         )
         await self._sync_knowledge_to_memory(
             chat_session,
@@ -588,12 +657,13 @@ class AdkSessionManager:
         chat_session.active_adk_session_id = new_adk_session_id
         chat_session.active_runner_id = runner_id
         chat_session.last_activity = datetime.now()
-        
+
         coordination_result = CoordinationResult(
             adk_session_id=new_adk_session_id, 
             switch_occurred=False,
             new_agent_id=target_agent_id
         )
+        await self._maybe_apply_recovery_payload(chat_session, runner_manager, new_adk_session_id)
         await self._sync_knowledge_to_memory(
             chat_session,
             task_request,
@@ -603,12 +673,129 @@ class AdkSessionManager:
         )
         return coordination_result
     
-    def _mark_session_cleared(self, chat_session_id: str, reason: str) -> None:
+    def _mark_session_cleared(
+        self,
+        chat_session_id: str,
+        reason: str,
+        archived_at: Optional[datetime] = None,
+    ) -> None:
         """Track that a chat session was cleared to surface meaningful errors later."""
-        self._cleared_sessions[chat_session_id] = {
+
+        metadata: Dict[str, Any] = {
             "cleared_at": datetime.now(),
             "reason": reason,
         }
+        if archived_at:
+            metadata["archived_at"] = archived_at
+        self._cleared_sessions[chat_session_id] = metadata
+
+    async def _archive_chat_session_state(
+        self,
+        chat_session: ChatSessionInfo,
+        runner_manager,
+        reason: str,
+    ) -> None:
+        """Collect session state before cleanup for future recovery."""
+
+        if not self._recovery_store:
+            return
+
+        chat_history: List[Dict[str, Any]] = []
+        if chat_session.active_adk_session_id:
+            try:
+                extracted_history = await self._extract_chat_history(chat_session, runner_manager)
+                if extracted_history:
+                    chat_history = extracted_history
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "Failed to extract chat history before cleanup",
+                    extra=
+                    {
+                        "chat_session_id": chat_session.chat_session_id,
+                        "reason": reason,
+                        "error": str(exc),
+                    },
+                )
+
+        agent_config = None
+        runner_id = chat_session.active_runner_id
+        if runner_id and runner_manager:
+            runner_context = getattr(runner_manager, "runners", {}).get(runner_id)
+            if runner_context:
+                agent_config = runner_context.get("agent_config")
+
+        if not chat_session.active_agent_id:
+            self.logger.debug(
+                "Skipping archive for chat session without active agent",
+                extra={
+                    "chat_session_id": chat_session.chat_session_id,
+                    "reason": reason,
+                },
+            )
+            return
+
+        record = SessionRecoveryRecord(
+            chat_session_id=chat_session.chat_session_id,
+            user_id=chat_session.user_id,
+            agent_id=chat_session.active_agent_id,
+            agent_config=agent_config,
+            chat_history=chat_history,
+        )
+        self._recovery_store.save(record)
+        self.logger.info(
+            "Archived chat session state",
+            extra={
+                "chat_session_id": chat_session.chat_session_id,
+                "reason": reason,
+                "history_count": len(chat_history),
+            },
+        )
+
+    async def _maybe_apply_recovery_payload(
+        self,
+        chat_session: ChatSessionInfo,
+        runner_manager,
+        session_id: str,
+    ) -> None:
+        """Inject archived history into a newly created session when available."""
+
+        record = self._pending_recoveries.pop(chat_session.chat_session_id, None)
+        if not record:
+            record = self._recovery_store.load(chat_session.chat_session_id)
+        if not record:
+            return
+
+        if record.chat_history and chat_session.active_runner_id:
+            try:
+                await self._inject_chat_history(
+                    chat_session.active_runner_id,
+                    session_id,
+                    record.chat_history,
+                    runner_manager,
+                )
+                self.logger.info(
+                    "Injected recovered chat history",
+                    extra={
+                        "chat_session_id": chat_session.chat_session_id,
+                        "history_count": len(record.chat_history),
+                    },
+                )
+                self._recovery_store.purge(chat_session.chat_session_id)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "Failed to inject recovered chat history",
+                    extra={
+                        "chat_session_id": chat_session.chat_session_id,
+                        "error": str(exc),
+                    },
+                )
+                # Requeue for later attempts
+                self._pending_recoveries[chat_session.chat_session_id] = record
+                return
+
+        # No history to inject, simply purge the stored record
+        self._recovery_store.purge(chat_session.chat_session_id)
 
     async def _sync_knowledge_to_memory(
         self,
@@ -848,11 +1035,20 @@ class AdkSessionManager:
         chat_session = self.chat_sessions[chat_session_id]
         runner_id = chat_session.active_runner_id
         agent_id = chat_session.active_agent_id
+
+        await self._archive_chat_session_state(
+            chat_session=chat_session,
+            runner_manager=runner_manager,
+            reason="explicit_cleanup",
+        )
+
         await self._cleanup_session_and_runner(chat_session, runner_manager)
         
         # Remove from tracking
         del self.chat_sessions[chat_session_id]
-        self._mark_session_cleared(chat_session_id, reason="explicit_cleanup")
+        archived_record = self._recovery_store.load(chat_session_id)
+        archived_at = archived_record.archived_at if archived_record else None
+        self._mark_session_cleared(chat_session_id, reason="explicit_cleanup", archived_at=archived_at)
         await self._evaluate_runner_agent_idle(
             runner_manager=runner_manager,
             agent_manager=agent_manager or self._idle_agent_manager,

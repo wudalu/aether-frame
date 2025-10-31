@@ -21,6 +21,7 @@ from ...execution.task_router import ExecutionStrategy
 from ..base.framework_adapter import FrameworkAdapter
 from .live_communicator import AdkLiveCommunicator
 from ...tools.resolver import ToolResolver, ToolNotFoundError
+from .adk_session_manager import AdkSessionManager, SessionClearedError
 
 if TYPE_CHECKING:
     # ADK imports for type checking only
@@ -64,7 +65,6 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self._config_agents: Dict[str, List[str]] = {}  # config_hash -> [agent_ids]
         
         # ADK Session Manager for chat session coordination
-        from .adk_session_manager import AdkSessionManager
         self.adk_session_manager = AdkSessionManager()
         
         # Runner Manager for correct session lifecycle
@@ -771,25 +771,79 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         )
         
         # === SessionManager Coordination ===
-        try:
-            coordination_result = await self.adk_session_manager.coordinate_chat_session(
-                chat_session_id=task_request.session_id,
-                target_agent_id=task_request.agent_id,
-                user_id=task_request.user_context.get_adk_user_id(),
-                task_request=task_request,
-                runner_manager=self.runner_manager
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "Session coordination failed",
-                extra={
-                    "task_id": task_request.task_id,
-                    "chat_session_id": business_session_id,
-                    "agent_id": task_request.agent_id,
-                },
-            )
-            raise
-        
+        coordination_result = None
+        recovery_record = None
+        for attempt in range(2):
+            try:
+                coordination_result = await self.adk_session_manager.coordinate_chat_session(
+                    chat_session_id=task_request.session_id,
+                    target_agent_id=task_request.agent_id,
+                    user_id=task_request.user_context.get_adk_user_id(),
+                    task_request=task_request,
+                    runner_manager=self.runner_manager,
+                )
+                break
+            except SessionClearedError as exc:
+                if attempt == 1:
+                    self.logger.exception(
+                        "Session coordination failed after recovery attempt",
+                        extra={
+                            "task_id": task_request.task_id,
+                            "chat_session_id": business_session_id,
+                            "agent_id": task_request.agent_id,
+                            "reason": exc.reason,
+                        },
+                    )
+                    raise
+
+                self.logger.warning(
+                    "Chat session cleared; attempting recovery",
+                    extra={
+                        "task_id": task_request.task_id,
+                        "chat_session_id": business_session_id,
+                        "agent_id": task_request.agent_id,
+                        "cleared_at": exc.cleared_at.isoformat(),
+                        "reason": exc.reason,
+                    },
+                )
+                try:
+                    recovery_record = await self.adk_session_manager.recover_chat_session(
+                        chat_session_id=task_request.session_id,
+                        runner_manager=self.runner_manager,
+                    )
+                    self.logger.info(
+                        "Recovery payload prepared",
+                        extra={
+                            "task_id": task_request.task_id,
+                            "chat_session_id": business_session_id,
+                            "agent_id": recovery_record.agent_id,
+                            "history_count": len(recovery_record.chat_history),
+                        },
+                    )
+                except Exception as recovery_exc:
+                    self.logger.exception(
+                        "Session recovery failed",
+                        extra={
+                            "task_id": task_request.task_id,
+                            "chat_session_id": business_session_id,
+                            "agent_id": task_request.agent_id,
+                        },
+                    )
+                    raise recovery_exc
+            except Exception as exc:
+                self.logger.exception(
+                    "Session coordination failed",
+                    extra={
+                        "task_id": task_request.task_id,
+                        "chat_session_id": business_session_id,
+                        "agent_id": task_request.agent_id,
+                    },
+                )
+                raise
+
+        if coordination_result is None:
+            raise RuntimeError("Failed to coordinate chat session after recovery attempt")
+
         # Replace chat_session_id with adk_session_id
         original_session_id = task_request.session_id
         task_request.session_id = coordination_result.adk_session_id
