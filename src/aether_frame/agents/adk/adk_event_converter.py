@@ -43,10 +43,11 @@ class AdkEventConverter:
         """Initialize the ADK event converter."""
         # Track in-flight tool interactions so results can reference proposals
         self._pending_tool_interactions: Dict[str, str] = {}
+        self._fallback_plan_state: Dict[str, Dict[str, Any]] = {}
 
     def convert_adk_event_to_chunk(
         self, adk_event: "AdkEvent", task_id: str, sequence_id: int
-    ) -> Optional[TaskStreamChunk]:
+    ) -> List[TaskStreamChunk]:
         """
         Convert an ADK Event to TaskStreamChunk format.
 
@@ -59,7 +60,7 @@ class AdkEventConverter:
             sequence_id: Sequential ID for this chunk
 
         Returns:
-            TaskStreamChunk if the event should be exposed, None if filtered
+            List[TaskStreamChunk] emitted for this event (empty if filtered)
         """
         try:
             metadata: Dict[str, Any] = self._safe_metadata(adk_event)
@@ -82,7 +83,7 @@ class AdkEventConverter:
                 adk_event, task_id, sequence_id, metadata
             )
             if plan_chunk:
-                return plan_chunk
+                return [plan_chunk]
 
             # Handle text content from agent responses
             if (
@@ -97,99 +98,111 @@ class AdkEventConverter:
 
                 # Handle tool function call proposals
                 if hasattr(first_part, "function_call") and first_part.function_call:
-                    return self._convert_function_call_event(
+                    proposal_chunk = self._convert_function_call_event(
                         task_id, sequence_id, adk_event, first_part.function_call, metadata
                     )
+                    return [proposal_chunk]
 
                 # Handle tool execution responses
-                tool_result_chunk = self._try_convert_tool_result(
+                tool_result_chunks = self._try_convert_tool_result(
                     task_id, sequence_id, adk_event, first_part, metadata
                 )
-                if tool_result_chunk:
-                    return tool_result_chunk
+                if tool_result_chunks:
+                    return tool_result_chunks
 
                 # Handle text responses
                 if hasattr(first_part, "text") and first_part.text:
                     # Determine if this is partial or final content
                     is_partial = getattr(adk_event, "partial", False)
 
-                    return TaskStreamChunk(
-                        task_id=task_id,
-                        chunk_type=(
-                            TaskChunkType.RESPONSE
-                            if not is_partial
-                            else TaskChunkType.PROGRESS
-                        ),
-                        sequence_id=sequence_id,
-                        content=first_part.text,
-                        is_final=not is_partial,
-                        metadata={
-                            "author": getattr(adk_event, "author", "agent"),
-                            "adk_event_id": getattr(adk_event, "id", ""),
-                            "turn_complete": getattr(adk_event, "turn_complete", False),
-                            "stage": "assistant",
-                            **metadata,
-                        },
-                        chunk_kind="response.delta" if is_partial else "response.final",
-                    )
+                    return [
+                        TaskStreamChunk(
+                            task_id=task_id,
+                            chunk_type=(
+                                TaskChunkType.RESPONSE
+                                if not is_partial
+                                else TaskChunkType.PROGRESS
+                            ),
+                            sequence_id=sequence_id,
+                            content=first_part.text,
+                            is_final=not is_partial,
+                            metadata={
+                                "author": getattr(adk_event, "author", "agent"),
+                                "adk_event_id": getattr(adk_event, "id", ""),
+                                "turn_complete": getattr(adk_event, "turn_complete", False),
+                                "stage": "assistant",
+                                **metadata,
+                            },
+                            chunk_kind="response.delta" if is_partial else "response.final",
+                        )
+                    ]
 
             # Handle turn completion and other control signals
             if hasattr(adk_event, "turn_complete") and adk_event.turn_complete:
-                return TaskStreamChunk(
-                    task_id=task_id,
-                    chunk_type=TaskChunkType.COMPLETE,
-                    sequence_id=sequence_id,
-                    content="Turn completed",
-                    is_final=True,
-                    metadata={"author": getattr(adk_event, "author", "agent"), "stage": "control"},
-                    chunk_kind="turn.complete",
-                )
+                self._end_fallback_plan(task_id)
+                return [
+                    TaskStreamChunk(
+                        task_id=task_id,
+                        chunk_type=TaskChunkType.COMPLETE,
+                        sequence_id=sequence_id,
+                        content="Turn completed",
+                        is_final=True,
+                        metadata={"author": getattr(adk_event, "author", "agent"), "stage": "control"},
+                        chunk_kind="turn.complete",
+                    )
+                ]
 
             # Handle errors
             if hasattr(adk_event, "error_code") and adk_event.error_code:
-                return TaskStreamChunk(
-                    task_id=task_id,
-                    chunk_type=TaskChunkType.ERROR,
-                    sequence_id=sequence_id,
-                content=build_error(
-                    ErrorCode.FRAMEWORK_EXECUTION,
-                    getattr(adk_event, "error_message", "Unknown error"),
-                    source="adk_event",
-                    details={"error_code": adk_event.error_code},
-                ).to_dict(),
-                is_final=True,
-                metadata={
-                    "error_code": adk_event.error_code,
-                    "author": getattr(adk_event, "author", "system"),
-                    "stage": "error",
-                    **metadata,
-                },
-                chunk_kind="error",
-                )
+                self._end_fallback_plan(task_id)
+                return [
+                    TaskStreamChunk(
+                        task_id=task_id,
+                        chunk_type=TaskChunkType.ERROR,
+                        sequence_id=sequence_id,
+                        content=build_error(
+                            ErrorCode.FRAMEWORK_EXECUTION,
+                            getattr(adk_event, "error_message", "Unknown error"),
+                            source="adk_event",
+                            details={"error_code": adk_event.error_code},
+                        ).to_dict(),
+                        is_final=True,
+                        metadata={
+                            "error_code": adk_event.error_code,
+                            "author": getattr(adk_event, "author", "system"),
+                            "stage": "error",
+                            **metadata,
+                        },
+                        chunk_kind="error",
+                    )
+                ]
 
             # Filter out events that don't need to be exposed
-            return None
+            return []
 
         except Exception as e:
             # If event conversion fails, create an error chunk
-            return TaskStreamChunk(
-                task_id=task_id,
-                chunk_type=TaskChunkType.ERROR,
-                sequence_id=sequence_id,
-                content=build_error(
-                    ErrorCode.INTERNAL_ERROR,
-                    f"Event conversion error: {str(e)}",
-                    source="adk_event_converter",
-                    details={"original_event": repr(adk_event)},
-                ).to_dict(),
-                is_final=True,
-                metadata={
-                    "error_type": "event_conversion_error",
-                    "original_event": str(adk_event) if adk_event else "None",
-                    "stage": "error",
-                },
-                chunk_kind="error",
-            )
+            self._end_fallback_plan(task_id)
+            return [
+                TaskStreamChunk(
+                    task_id=task_id,
+                    chunk_type=TaskChunkType.ERROR,
+                    sequence_id=sequence_id,
+                    content=build_error(
+                        ErrorCode.INTERNAL_ERROR,
+                        f"Event conversion error: {str(e)}",
+                        source="adk_event_converter",
+                        details={"original_event": repr(adk_event)},
+                    ).to_dict(),
+                    is_final=True,
+                    metadata={
+                        "error_type": "event_conversion_error",
+                        "original_event": str(adk_event) if adk_event else "None",
+                        "stage": "error",
+                    },
+                    chunk_kind="error",
+                )
+            ]
 
     def _try_convert_plan_event(
         self,
@@ -213,6 +226,11 @@ class AdkEventConverter:
         }
 
         if not (is_plan_delta or is_plan_summary):
+            fallback_plan_chunk = self._fallback_plan_event(
+                adk_event, task_id, sequence_id, metadata
+            )
+            if fallback_plan_chunk:
+                return fallback_plan_chunk
             return None
 
         plan_text = metadata.get("plan_text") or getattr(adk_event, "plan", None)
@@ -240,6 +258,93 @@ class AdkEventConverter:
             chunk_kind=chunk_kind,
         )
 
+    def _fallback_plan_event(
+        self,
+        adk_event: "AdkEvent",
+        task_id: str,
+        sequence_id: int,
+        metadata: Dict[str, Any],
+    ) -> Optional[TaskStreamChunk]:
+        """Best-effort plan detection when ADK metadata lacks explicit plan markers."""
+        stage_hint = metadata.get("stage")
+        if stage_hint not in (None, "assistant"):
+            return None
+
+        text = self._extract_first_part_text(adk_event)
+        if not text:
+            return None
+
+        normalized = text.strip()
+        lower_text = normalized.lower()
+
+        state = self._fallback_plan_state.get(task_id)
+        if not state or not state.get("active"):
+            if not self._looks_like_plan_start(lower_text):
+                return None
+            state = {"active": True, "chunk_count": 0}
+            self._fallback_plan_state[task_id] = state
+        else:
+            if state["chunk_count"] >= 512:
+                self._end_fallback_plan(task_id)
+                return None
+
+        if self._looks_like_plan_end(lower_text):
+            self._end_fallback_plan(task_id)
+            return None
+
+        chunk_type = TaskChunkType.PLAN_DELTA
+        chunk_kind = "plan.delta"
+        if lower_text.startswith("plan summary"):
+            chunk_type = TaskChunkType.PLAN_SUMMARY
+            chunk_kind = "plan.summary"
+
+        staged_metadata = dict(metadata)
+        staged_metadata.setdefault("stage", "plan")
+
+        state["chunk_count"] += 1
+
+        chunk = TaskStreamChunk(
+            task_id=task_id,
+            chunk_type=chunk_type,
+            sequence_id=sequence_id,
+            content={"text": text},
+            is_final=False,
+            metadata=staged_metadata,
+            chunk_kind=chunk_kind,
+        )
+
+        if chunk_type == TaskChunkType.PLAN_SUMMARY:
+            self._end_fallback_plan(task_id)
+
+        return chunk
+
+    @staticmethod
+    def _looks_like_plan_start(lower_text: str) -> bool:
+        if not lower_text:
+            return False
+        if lower_text.startswith("plan"):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_plan_end(lower_text: str) -> bool:
+        if not lower_text:
+            return False
+        endings = (
+            "final answer",
+            "answer:",
+            "based on",
+            "final summary",
+            "overall summary",
+            "in summary",
+            "overall",
+        )
+        return lower_text.startswith(endings)
+
+    def _end_fallback_plan(self, task_id: str) -> None:
+        """Stop treating subsequent chunks as plan deltas for the given task."""
+        self._fallback_plan_state.pop(task_id, None)
+
     def _convert_function_call_event(
         self,
         task_id: str,
@@ -249,6 +354,7 @@ class AdkEventConverter:
         metadata: Dict[str, Any],
     ) -> TaskStreamChunk:
         """Convert ADK function call events into tool proposals."""
+        self._end_fallback_plan(task_id)
         tool_name = getattr(function_call, "name", None) or metadata.get("tool_name")
         tool_namespace = metadata.get("tool_namespace")
         tool_short_name = tool_name.split(".")[-1] if isinstance(tool_name, str) else tool_name
@@ -303,7 +409,7 @@ class AdkEventConverter:
         adk_event: "AdkEvent",
         first_part: Any,
         metadata: Dict[str, Any],
-    ) -> Optional[TaskStreamChunk]:
+    ) -> List[TaskStreamChunk]:
         """Convert ADK tool result events (function responses)."""
         response_payload = None
         tool_name = metadata.get("tool_name")
@@ -332,7 +438,7 @@ class AdkEventConverter:
             response_payload = metadata.get("tool_result") or metadata.get("tool_output")
 
         if not response_payload:
-            return None
+            return []
 
         if not tool_call_key:
             tool_call_key = self._derive_tool_call_key(adk_event, first_part, tool_name or "")
@@ -351,7 +457,7 @@ class AdkEventConverter:
             }
         )
 
-        return TaskStreamChunk(
+        result_chunk = TaskStreamChunk(
             task_id=task_id,
             chunk_type=TaskChunkType.TOOL_RESULT,
             sequence_id=sequence_id,
@@ -361,6 +467,37 @@ class AdkEventConverter:
             interaction_id=interaction_id,
             chunk_kind="tool.result",
         )
+
+        self._end_fallback_plan(task_id)
+
+        if interaction_id is not None:
+            return [result_chunk]
+
+        proposal_metadata = dict(metadata)
+        proposal_metadata["stage"] = "tool"
+        proposal_metadata["author"] = getattr(adk_event, "author", "agent")
+
+        proposal_chunk = TaskStreamChunk(
+            task_id=task_id,
+            chunk_type=TaskChunkType.TOOL_PROPOSAL,
+            sequence_id=sequence_id,
+            content={
+                "tool_name": tool_name,
+                "tool_short_name": tool_short_name,
+                "tool_full_name": tool_full_name,
+                "tool_namespace": tool_namespace,
+                "arguments": metadata.get("tool_args") or {},
+            },
+            is_final=False,
+            metadata=proposal_metadata,
+            chunk_kind="tool.proposal",
+        )
+
+        synthesized_interaction_id = metadata.get("interaction_id") or tool_call_key or f"tool-{uuid4().hex}"
+        proposal_chunk.interaction_id = synthesized_interaction_id
+        result_chunk.interaction_id = synthesized_interaction_id
+
+        return [proposal_chunk, result_chunk]
 
     def _safe_metadata(self, adk_event: "AdkEvent") -> Dict[str, Any]:
         """Return metadata dict for the event without modifying original object."""

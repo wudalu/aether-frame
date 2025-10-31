@@ -53,6 +53,11 @@ class RunnerManager:
             "model_config": getattr(agent_config, 'model_config', {}),
             "available_tools": getattr(agent_config, 'available_tools', []),
         }
+        framework_cfg = getattr(agent_config, "framework_config", {})
+        if isinstance(framework_cfg, dict):
+            planner_cfg = framework_cfg.get("planner")
+            if planner_cfg:
+                config_dict["planner"] = planner_cfg
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:16]
 

@@ -102,10 +102,14 @@ class _StreamingDomainAgent(DomainAgent):
         async def stream():
             sequence_id = 0
             for event in events:
-                chunk = self.event_converter.convert_adk_event_to_chunk(
+                chunks = self.event_converter.convert_adk_event_to_chunk(
                     event, task_request.task_id, sequence_id
                 )
-                if chunk is not None:
+                if not chunks:
+                    continue
+
+                for chunk in chunks:
+                    chunk.sequence_id = sequence_id
                     yield chunk
                     sequence_id += 1
 

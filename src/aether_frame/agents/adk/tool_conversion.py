@@ -2,6 +2,7 @@
 """Helpers for converting UniversalTools into ADK FunctionTool objects."""
 
 import inspect
+import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...contracts import ToolRequest
@@ -116,6 +117,9 @@ def create_function_tools(
     return adk_tools
 
 
+logger = logging.getLogger(__name__)
+
+
 def build_adk_agent(
     *,
     name: str,
@@ -128,6 +132,7 @@ def build_adk_agent(
     settings: Any = None,
     enable_streaming: bool = False,
     model_config: Optional[Dict[str, Any]] = None,
+    framework_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Create an ADK Agent with the provided configuration and tools."""
     try:
@@ -145,15 +150,78 @@ def build_adk_agent(
 
     tools: List[Any] = []
     if universal_tools:
-        tools = create_function_tools(tool_service, universal_tools, request_factory=request_factory)
+        tools = create_function_tools(
+            tool_service, universal_tools, request_factory=request_factory
+        )
+    planner = None
+    planner_cfg: Optional[Dict[str, Any]] = None
+    if framework_config:
+        raw_planner = framework_config.get("planner")
+        if isinstance(raw_planner, bool):
+            planner_cfg = {"type": "built_in"} if raw_planner else None
+        elif isinstance(raw_planner, str):
+            planner_cfg = {"type": raw_planner}
+        elif isinstance(raw_planner, dict):
+            planner_cfg = dict(raw_planner)
+        elif raw_planner is not None:
+            logger.warning("Unsupported planner configuration type: %s", type(raw_planner))
 
-    return Agent(
-        name=name,
-        description=description,
-        instruction=instruction,
-        model=model,
-        tools=tools,
-    )
+    if planner_cfg:
+        planner_type = str(planner_cfg.get("type", "built_in")).lower()
+        planner_kwargs = dict(planner_cfg.get("kwargs", {}) or {})
+        thinking_cfg_data = planner_cfg.get("thinking_config")
+        thinking_config = None
+        if thinking_cfg_data:
+            try:
+                from google.genai import types as genai_types  # type: ignore
+
+                if isinstance(thinking_cfg_data, dict):
+                    thinking_kwargs = {
+                        key: value
+                        for key, value in thinking_cfg_data.items()
+                        if value is not None
+                    }
+                    if thinking_kwargs:
+                        thinking_config = genai_types.ThinkingConfig(**thinking_kwargs)
+                else:
+                    logger.warning(
+                        "Ignoring non-dict thinking_config for planner: %s",
+                        thinking_cfg_data,
+                    )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logger.warning("Failed to build ThinkingConfig for planner: %s", exc)
+
+        if thinking_config is not None and "thinking_config" not in planner_kwargs:
+            planner_kwargs["thinking_config"] = thinking_config
+
+        try:
+            from google.adk.planners import (  # type: ignore
+                BuiltInPlanner,
+                PlanReActPlanner,
+            )
+
+            if planner_type in {"built_in", "builtin", "built-in"}:
+                planner = BuiltInPlanner(**planner_kwargs)
+            elif planner_type in {"planreact", "plan_react", "plan-react"}:
+                planner = PlanReActPlanner(**planner_kwargs)
+            else:
+                logger.warning("Unsupported planner type '%s'; skipping planner", planner_type)
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            logger.warning("Planner requested but google-adk planners unavailable: %s", exc)
+        except Exception as exc:  # pragma: no cover - planner init failure
+            logger.warning("Failed to initialize planner '%s': %s", planner_type, exc)
+
+    agent_kwargs = {
+        "name": name,
+        "description": description,
+        "instruction": instruction,
+        "model": model,
+        "tools": tools,
+    }
+    if planner is not None:
+        agent_kwargs["planner"] = planner
+
+    return Agent(**agent_kwargs)
 
 
 def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Signature]:

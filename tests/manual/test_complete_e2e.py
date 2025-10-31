@@ -201,6 +201,15 @@ class CompleteE2ETestSuite:
             "model_results": {},
         }
 
+    async def _prompt_user_input(self, prompt: str, default: Optional[str] = None) -> str:
+        """Prompt the operator for input, falling back to default when non-interactive."""
+        if default is None:
+            default = ""
+        if not sys.stdin or not sys.stdin.isatty():
+            return default
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: input(prompt))
+
     def _build_user_context(self) -> UserContext:
         """Return default user context for requests."""
         return self.test_user_context
@@ -562,7 +571,7 @@ class CompleteE2ETestSuite:
                 self.logger.info(f"{model} API Key configured: {status}")
         
         self.logger.info(f"Python version: {sys.version}")
-        
+
         try:
             self.logger.info("🚀 STEP 1: Initializing Aether Frame system...")
             self.logger.debug("Creating AI Assistant with timeout protection...")
@@ -875,6 +884,13 @@ class CompleteE2ETestSuite:
                     },
                     available_tools=[progressive_tool],
                     framework_config={
+                        "planner": {
+                            "type": "built_in",
+                            "thinking_config": {
+                                "include_thoughts": True,
+                                "thinking_budget": 256,
+                            },
+                        },
                         "output_schema": {
                             "type": "object",
                             "properties": {
@@ -951,6 +967,23 @@ class CompleteE2ETestSuite:
             plan_seen = False
             chunk_count = 0
             final_response_preview: Optional[str] = None
+            followup_sent = False
+            followup_response_seen = False
+            followup_sent_sequence: Optional[int] = None
+            followup_message = (
+                "Thanks for the research. Please continue with one more insight "
+                "focused specifically on reliability improvements for live AI streaming workloads."
+            )
+            followup_response_types = {
+                TaskChunkType.PLAN_DELTA,
+                TaskChunkType.PLAN_SUMMARY,
+                TaskChunkType.PROGRESS,
+                TaskChunkType.TOOL_PROPOSAL,
+                TaskChunkType.TOOL_RESULT,
+                TaskChunkType.RESPONSE,
+            }
+            followup_session_closed = False
+            sent_followup_message: Optional[str] = None
 
             self.logger.info("▶️ [%s] Live streaming loop started", model_name)
             async for chunk in live_stream:
@@ -984,12 +1017,84 @@ class CompleteE2ETestSuite:
                     }
                 )
 
+                chunk_turn_complete = bool((chunk.metadata or {}).get("turn_complete"))
+                if (
+                    not followup_sent
+                    and (
+                        chunk.chunk_type == TaskChunkType.COMPLETE
+                        or chunk_turn_complete
+                    )
+                ):
+                    choice = await self._prompt_user_input(
+                        "HITL: send additional user message? (y/n): ",
+                        default="y",
+                    )
+                    if choice.strip().lower().startswith("y"):
+                        user_followup = await self._prompt_user_input(
+                            "HITL: enter follow-up message (leave blank for default): ",
+                            default=followup_message,
+                        )
+                        message_to_send = user_followup.strip() or followup_message
+                        self.logger.info(
+                            "🔁 [%s] Initial turn complete; sending follow-up live user message",
+                            model_name,
+                        )
+                        try:
+                            await communicator.send_user_message(message_to_send)
+                        except Exception as followup_exc:
+                            raise RuntimeError(
+                                f"Failed to send follow-up message: {followup_exc}"
+                            ) from followup_exc
+                        followup_sent = True
+                        sent_followup_message = message_to_send
+                        followup_sent_sequence = chunk.sequence_id
+                        self.logger.info(
+                            "🔁 [%s] Follow-up message dispatched successfully", model_name
+                        )
+                    else:
+                        self.logger.info(
+                            "🔁 [%s] Follow-up skipped by operator input", model_name
+                        )
+
                 if chunk.chunk_type == TaskChunkType.TOOL_RESULT:
                     tool_result_seen = True
                 if chunk.chunk_type == TaskChunkType.TOOL_PROPOSAL:
                     tool_proposal_seen = True
                 if chunk.chunk_kind in {CHUNK_KIND_PLAN_DELTA, CHUNK_KIND_PLAN_SUMMARY}:
                     plan_seen = True
+                if (
+                    followup_sent
+                    and not followup_response_seen
+                    and followup_sent_sequence is not None
+                    and chunk.sequence_id > followup_sent_sequence
+                    and chunk.chunk_type in followup_response_types
+                ):
+                    followup_response_seen = True
+                if (
+                    followup_sent
+                    and followup_response_seen
+                    and not followup_session_closed
+                    and chunk.chunk_type == TaskChunkType.COMPLETE
+                ):
+                    self.logger.info(
+                        "🔚 [%s] Follow-up turn complete; closing live communicator",
+                        model_name,
+                    )
+                    if hasattr(communicator, "close"):
+                        try:
+                            communicator.close()
+                        except Exception as close_exc:  # pragma: no cover - diagnostic
+                            self.logger.warning(
+                                "⚠️ [%s] Failed to close communicator cleanly: %s",
+                                model_name,
+                                close_exc,
+                            )
+                    else:
+                        self.logger.debug(
+                            "🔚 [%s] Communicator exposes no close() method", model_name
+                        )
+                    followup_session_closed = True
+                    break
                 if (
                     chunk.chunk_type == TaskChunkType.RESPONSE
                     and isinstance(chunk.content, str)
@@ -1002,15 +1107,17 @@ class CompleteE2ETestSuite:
             self.performance_metrics["total_requests"] += 1
             self.performance_metrics["total_execution_time"] += execution_time
 
-            success = tool_result_seen
+            success = tool_result_seen and (not followup_sent or followup_response_seen)
 
             self.logger.info(
-                "🔚 [%s] Live streaming finished | chunks=%s | plan=%s | tool_proposal=%s | tool_result=%s | response_preview=%s",
+                "🔚 [%s] Live streaming finished | chunks=%s | plan=%s | tool_proposal=%s | tool_result=%s | followup_sent=%s | followup_response=%s | response_preview=%s",
                 model_name,
                 chunk_count,
                 plan_seen,
                 tool_proposal_seen,
                 tool_result_seen,
+                followup_sent,
+                followup_response_seen,
                 final_response_preview or "n/a",
             )
 
@@ -1019,20 +1126,22 @@ class CompleteE2ETestSuite:
                 self.performance_metrics["successful_requests"] += 1
                 self.performance_metrics["tool_calls_detected"] += 1
                 self.logger.info(
-                    "✅ [%s] Live streaming test completed (plan=%s, tool_proposal=%s, tool_result=%s)",
+                    "✅ [%s] Live streaming test completed (plan=%s, tool_proposal=%s, tool_result=%s, followup_response=%s)",
                     model_name,
                     plan_seen,
                     tool_proposal_seen,
                     tool_result_seen,
+                    followup_response_seen,
                 )
             else:
                 self.performance_metrics["failed_requests"] += 1
                 self.logger.error(
-                    "❌ [%s] Live streaming test failed (plan=%s, tool_proposal=%s, tool_result=%s)",
+                    "❌ [%s] Live streaming test failed (plan=%s, tool_proposal=%s, tool_result=%s, followup_response=%s)",
                     model_name,
                     plan_seen,
                     tool_proposal_seen,
                     tool_result_seen,
+                    followup_response_seen,
                 )
 
             self.test_results.append(
@@ -1048,6 +1157,9 @@ class CompleteE2ETestSuite:
                         "plan_detected": plan_seen,
                         "tool_proposal_detected": tool_proposal_seen,
                         "tool_result_detected": tool_result_seen,
+                        "multi_turn_followup_sent": followup_sent,
+                        "multi_turn_followup_response_detected": followup_response_seen,
+                        "followup_message": (sent_followup_message or followup_message) if followup_sent else "",
                         "tool_name": progressive_tool,
                         "chunk_count": chunk_count,
                     },

@@ -98,6 +98,10 @@ class AdkDomainAgent(DomainAgent):
         model_identifier = self._get_model_configuration()
         raw_model_config = self.config.get("model_config") if isinstance(self.config, dict) else None
         model_config = deepcopy(raw_model_config) if raw_model_config else {}
+        raw_framework_config = (
+            self.config.get("framework_config") if isinstance(self.config, dict) else None
+        )
+        framework_config = deepcopy(raw_framework_config) if raw_framework_config else {}
 
         if model_config:
             def _shorten_tool_names(payload):
@@ -135,6 +139,7 @@ class AdkDomainAgent(DomainAgent):
             settings=settings,
             enable_streaming=True,
             model_config=model_config,
+            framework_config=framework_config,
         )
 
         if self.adk_agent:
@@ -463,11 +468,15 @@ class AdkDomainAgent(DomainAgent):
                     sequence_id = 0
                     async with aclosing(live_events) as adk_events:
                         async for adk_event in adk_events:
-                            chunk = self.event_converter.convert_adk_event_to_chunk(
+                            chunks = self.event_converter.convert_adk_event_to_chunk(
                                 adk_event, task_request.task_id, sequence_id
                             )
 
-                            if chunk is not None:
+                            if not chunks:
+                                continue
+
+                            for chunk in chunks:
+                                chunk.sequence_id = sequence_id
                                 yield chunk
                                 sequence_id += 1
 
