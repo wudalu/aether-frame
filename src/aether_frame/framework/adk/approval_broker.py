@@ -5,8 +5,8 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from ...contracts import (
     InteractionRequest,
@@ -272,6 +272,29 @@ class AdkApprovalBroker:
             response.setdefault("status", "cancelled")
             response.setdefault("error", "Tool invocation cancelled by user")
         return response
+
+    async def list_pending_interactions(self) -> List[Dict[str, Any]]:
+        """Return structured data for pending approval interactions."""
+        async with self._lock:
+            pending_values = list(self._pending.values())
+
+        items: List[Dict[str, Any]] = []
+        for pending in pending_values:
+            expires_at = pending.created_at + timedelta(seconds=self._timeout_seconds)
+            metadata = dict(pending.request.metadata or {})
+            metadata.setdefault("tool_name", metadata.get("tool_name") or pending.chunk.metadata.get("tool_name"))
+            metadata.setdefault("requires_confirmation", metadata.get("requires_confirmation", True))
+            items.append(
+                {
+                    "interaction_id": pending.request.interaction_id,
+                    "tool_name": metadata.get("tool_name"),
+                    "created_at": pending.created_at.isoformat(),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "requires_approval": metadata.get("requires_confirmation", True),
+                    "metadata": metadata,
+                }
+            )
+        return items
 
 
 class ApprovalAwareCommunicator:

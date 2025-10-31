@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from ...contracts import (
     AgentConfig,
+    ErrorCode,
     ExecutionContext,
     FrameworkType,
     LiveExecutionResult,
@@ -19,6 +20,7 @@ from ...contracts import (
     TaskResult,
     TaskStatus,
     TaskStreamChunk,
+    build_error,
 )
 from ...agents.base.domain_agent import DomainAgent
 from ...execution.task_router import ExecutionStrategy
@@ -1308,11 +1310,17 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         """Create a live execution result that yields a single error chunk."""
 
         async def error_stream():
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                message,
+                source="adk_adapter.live_error",
+                details=metadata or {},
+            )
             yield TaskStreamChunk(
                 task_id=task_request.task_id if task_request else "unknown",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=message,
+                content=error_payload.to_dict(),
                 is_final=True,
                 metadata={"framework": "adk", **(metadata or {})},
             )

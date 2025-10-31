@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """MCP tool wrapper implementing the Tool interface."""
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+import inspect
 from datetime import datetime
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from aether_frame.tools.base.tool import Tool
-from aether_frame.contracts import ToolRequest, ToolResult
-from aether_frame.contracts.responses import ToolStatus
-from aether_frame.contracts.enums import TaskChunkType
-from aether_frame.contracts.streaming import TaskStreamChunk
-from aether_frame.tools.mcp.client import MCPClient, MCPConnectionError, MCPToolError
+from aether_frame.contracts import ErrorCode, ToolRequest, ToolResult, build_error
 from aether_frame.contracts.contexts import ExecutionContext, SessionContext, UserContext
+from aether_frame.contracts.enums import TaskChunkType
+from aether_frame.contracts.responses import ToolStatus
+from aether_frame.contracts.streaming import TaskStreamChunk
+from aether_frame.tools.base.tool import Tool
+from aether_frame.tools.mcp.client import MCPClient, MCPConnectionError, MCPToolError
 
 
 class MCPTool(Tool):
@@ -105,12 +106,22 @@ class MCPTool(Tool):
             
         except (MCPConnectionError, MCPToolError) as e:
             # MCP specific errors
+            error_payload = build_error(
+                ErrorCode.TOOL_EXECUTION,
+                str(e),
+                source="mcp_tool.execute",
+                details={
+                    "tool": self.full_name,
+                    "error_type": type(e).__name__,
+                },
+            )
             return ToolResult(
                 tool_name=self.full_name,
                 status=ToolStatus.ERROR,
                 tool_namespace=self.namespace,
                 result_data=None,
-                error_message=str(e),
+                error_message=error_payload.message,
+                error=error_payload,
                 created_at=datetime.now(),
                 metadata={
                     "error_type": type(e).__name__,
@@ -121,12 +132,19 @@ class MCPTool(Tool):
             
         except Exception as e:
             # Generic errors
+            error_payload = build_error(
+                ErrorCode.INTERNAL_ERROR,
+                f"Unexpected error: {e}",
+                source="mcp_tool.execute",
+                details={"tool": self.full_name},
+            )
             return ToolResult(
                 tool_name=self.full_name,
                 status=ToolStatus.ERROR,
                 tool_namespace=self.namespace,
                 result_data=None,
-                error_message=f"Unexpected error: {e}",
+                error_message=error_payload.message,
+                error=error_payload,
                 created_at=datetime.now(),
                 metadata={
                     "error_type": "UnexpectedError",
@@ -158,11 +176,16 @@ class MCPTool(Tool):
             sequence_id = 0
             
             # Stream from MCP client with enhanced streaming
-            async for chunk in self.mcp_client.call_tool_stream(
+            stream_source = self.mcp_client.call_tool_stream(
                 self.original_tool_name,
                 parameters,
                 extra_headers=extra_headers or None,
-            ):
+            )
+
+            if inspect.isawaitable(stream_source):
+                stream_source = await stream_source
+
+            async for chunk in stream_source:
                 
                 # Determine chunk type from MCP response
                 chunk_type_mapping = {
@@ -176,6 +199,15 @@ class MCPTool(Tool):
                 chunk_type = chunk_type_mapping.get(mcp_type, TaskChunkType.RESPONSE)
                 
                 # Convert MCP chunk to TaskStreamChunk
+                if chunk_type is TaskChunkType.RESPONSE:
+                    chunk_kind = "tool.result" if chunk.get("is_final", False) else "tool.delta"
+                elif chunk_type is TaskChunkType.COMPLETE:
+                    chunk_kind = "tool.complete"
+                elif chunk_type is TaskChunkType.ERROR:
+                    chunk_kind = "tool.error"
+                else:
+                    chunk_kind = None
+
                 stream_chunk = TaskStreamChunk(
                     task_id=f"tool_execution_{self.full_name}",
                     chunk_type=chunk_type,
@@ -187,8 +219,10 @@ class MCPTool(Tool):
                         "mcp_server": self.namespace,
                         "original_tool_name": self.original_tool_name,
                         "mcp_timestamp": chunk.get("timestamp"),
-                        "mcp_chunk_type": mcp_type
-                    }
+                        "mcp_chunk_type": mcp_type,
+                        "stage": "tool",
+                    },
+                    chunk_kind=chunk_kind,
                 )
                 
                 yield stream_chunk
@@ -196,34 +230,53 @@ class MCPTool(Tool):
                 
         except (MCPConnectionError, MCPToolError) as e:
             # Yield error chunk
+            error_payload = build_error(
+                ErrorCode.TOOL_EXECUTION,
+                str(e),
+                source="mcp_tool.execute_stream",
+                details={
+                    "tool": self.full_name,
+                    "error_type": type(e).__name__,
+                },
+            )
             yield TaskStreamChunk(
                 task_id=f"tool_execution_{self.full_name}",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=str(e),
+                content=error_payload.to_dict(),
                 is_final=True,
                 metadata={
                     "tool_name": self.full_name,
                     "error_type": type(e).__name__,
                     "mcp_server": self.namespace,
-                    "original_tool_name": self.original_tool_name
-                }
+                    "original_tool_name": self.original_tool_name,
+                    "stage": "tool",
+                },
+                chunk_kind="tool.error",
             )
             
         except Exception as e:
             # Yield generic error chunk
+            error_payload = build_error(
+                ErrorCode.INTERNAL_ERROR,
+                f"Unexpected error: {e}",
+                source="mcp_tool.execute_stream",
+                details={"tool": self.full_name},
+            )
             yield TaskStreamChunk(
                 task_id=f"tool_execution_{self.full_name}",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=f"Unexpected error: {e}",
+                content=error_payload.to_dict(),
                 is_final=True,
                 metadata={
                     "tool_name": self.full_name,
                     "error_type": "UnexpectedError",
                     "mcp_server": self.namespace,
-                    "original_tool_name": self.original_tool_name
-                }
+                    "original_tool_name": self.original_tool_name,
+                    "stage": "tool",
+                },
+                chunk_kind="tool.error",
             )
     
     async def get_schema(self) -> Dict[str, Any]:
@@ -345,9 +398,6 @@ class MCPTool(Tool):
                 headers[str(key)] = str(value)
         
         # 2. Task/session identifiers
-        if tool_request.session_id and "X-AF-Session-ID" not in headers:
-            headers["X-AF-Session-ID"] = str(tool_request.session_id)
-        
         session_context = tool_request.session_context
         if isinstance(session_context, SessionContext):
             if session_context.session_id and "X-AF-Session-ID" not in headers:
@@ -371,6 +421,8 @@ class MCPTool(Tool):
                 headers["X-AF-User-Name"] = str(user_context.user_name)
             if user_context.session_token and "X-AF-Session-Token" not in headers:
                 headers["X-AF-Session-Token"] = str(user_context.session_token)
+            if tool_request.session_id and "X-AF-Session-ID" not in headers:
+                headers["X-AF-Session-ID"] = str(tool_request.session_id)
             if (
                 user_context.permissions
                 and user_context.permissions.permissions

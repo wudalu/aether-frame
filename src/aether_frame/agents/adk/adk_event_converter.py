@@ -5,7 +5,14 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from ...contracts import TaskChunkType, TaskStreamChunk, UniversalMessage, ContentPart
+from ...contracts import (
+    ContentPart,
+    ErrorCode,
+    TaskChunkType,
+    TaskStreamChunk,
+    UniversalMessage,
+    build_error,
+)
 from ...framework.adk.multimodal_utils import (
     decode_base64_image,
     detect_image_mime_type,
@@ -120,8 +127,10 @@ class AdkEventConverter:
                             "author": getattr(adk_event, "author", "agent"),
                             "adk_event_id": getattr(adk_event, "id", ""),
                             "turn_complete": getattr(adk_event, "turn_complete", False),
+                            "stage": "assistant",
                             **metadata,
                         },
+                        chunk_kind="response.delta" if is_partial else "response.final",
                     )
 
             # Handle turn completion and other control signals
@@ -132,7 +141,8 @@ class AdkEventConverter:
                     sequence_id=sequence_id,
                     content="Turn completed",
                     is_final=True,
-                    metadata={"author": getattr(adk_event, "author", "agent")},
+                    metadata={"author": getattr(adk_event, "author", "agent"), "stage": "control"},
+                    chunk_kind="turn.complete",
                 )
 
             # Handle errors
@@ -141,13 +151,20 @@ class AdkEventConverter:
                     task_id=task_id,
                     chunk_type=TaskChunkType.ERROR,
                     sequence_id=sequence_id,
-                    content=getattr(adk_event, "error_message", "Unknown error"),
-                    is_final=True,
-                    metadata={
-                        "error_code": adk_event.error_code,
-                        "author": getattr(adk_event, "author", "system"),
-                        **metadata,
-                    },
+                content=build_error(
+                    ErrorCode.FRAMEWORK_EXECUTION,
+                    getattr(adk_event, "error_message", "Unknown error"),
+                    source="adk_event",
+                    details={"error_code": adk_event.error_code},
+                ).to_dict(),
+                is_final=True,
+                metadata={
+                    "error_code": adk_event.error_code,
+                    "author": getattr(adk_event, "author", "system"),
+                    "stage": "error",
+                    **metadata,
+                },
+                chunk_kind="error",
                 )
 
             # Filter out events that don't need to be exposed
@@ -159,12 +176,19 @@ class AdkEventConverter:
                 task_id=task_id,
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=sequence_id,
-                content=f"Event conversion error: {str(e)}",
+                content=build_error(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"Event conversion error: {str(e)}",
+                    source="adk_event_converter",
+                    details={"original_event": repr(adk_event)},
+                ).to_dict(),
                 is_final=True,
                 metadata={
                     "error_type": "event_conversion_error",
                     "original_event": str(adk_event) if adk_event else "None",
+                    "stage": "error",
                 },
+                chunk_kind="error",
             )
 
     def _try_convert_plan_event(
@@ -226,6 +250,13 @@ class AdkEventConverter:
     ) -> TaskStreamChunk:
         """Convert ADK function call events into tool proposals."""
         tool_name = getattr(function_call, "name", None) or metadata.get("tool_name")
+        tool_namespace = metadata.get("tool_namespace")
+        tool_short_name = tool_name.split(".")[-1] if isinstance(tool_name, str) else tool_name
+        tool_full_name = (
+            metadata.get("tool_full_name")
+            or (f"{tool_namespace}.{tool_short_name}" if tool_namespace and tool_short_name else tool_name)
+            or tool_name
+        )
         tool_args = getattr(function_call, "args", None) or metadata.get("tool_args")
 
         interaction_id = metadata.get("interaction_id") or getattr(function_call, "id", None)
@@ -240,7 +271,10 @@ class AdkEventConverter:
             {
                 "author": getattr(adk_event, "author", "agent"),
                 "stage": "tool",
-                "tool_name": tool_name,
+                "tool_name": tool_short_name or tool_name,
+                "tool_short_name": tool_short_name or tool_name,
+                "tool_full_name": tool_full_name,
+                "tool_namespace": tool_namespace,
                 "requires_approval": staged_metadata.get("requires_approval", True),
             }
         )
@@ -251,6 +285,9 @@ class AdkEventConverter:
             sequence_id=sequence_id,
             content={
                 "tool_name": tool_name,
+                "tool_short_name": tool_short_name or tool_name,
+                "tool_full_name": tool_full_name,
+                "tool_namespace": tool_namespace,
                 "arguments": tool_args,
             },
             is_final=False,
@@ -270,6 +307,13 @@ class AdkEventConverter:
         """Convert ADK tool result events (function responses)."""
         response_payload = None
         tool_name = metadata.get("tool_name")
+        tool_short_name = metadata.get("tool_short_name") or (tool_name.split(".")[-1] if isinstance(tool_name, str) else tool_name)
+        tool_namespace = metadata.get("tool_namespace")
+        tool_full_name = (
+            metadata.get("tool_full_name")
+            or (f"{tool_namespace}.{tool_short_name}" if tool_namespace and tool_short_name else tool_name)
+            or tool_name
+        )
         tool_call_key = metadata.get("tool_call_id")
 
         if hasattr(first_part, "function_response") and first_part.function_response:
@@ -280,6 +324,7 @@ class AdkEventConverter:
             else:
                 tool_name = getattr(first_part.function_response, "name", tool_name)
                 tool_call_key = getattr(first_part.function_response, "id", tool_call_key)
+            tool_short_name = tool_name.split(".")[-1] if isinstance(tool_name, str) else tool_name
 
         # Some ADK implementations track tool output via metadata stage
         stage_hint = metadata.get("stage")
@@ -299,7 +344,10 @@ class AdkEventConverter:
             {
                 "author": getattr(adk_event, "author", "system"),
                 "stage": "tool",
-                "tool_name": tool_name,
+                "tool_name": tool_short_name or tool_name,
+                "tool_short_name": tool_short_name or tool_name,
+                "tool_full_name": tool_full_name,
+                "tool_namespace": tool_namespace,
             }
         )
 

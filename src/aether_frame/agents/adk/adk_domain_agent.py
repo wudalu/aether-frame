@@ -26,10 +26,12 @@ from typing import Any, Dict, List, Optional
 
 from ...contracts import (
     AgentRequest,
+    ErrorCode,
     LiveExecutionResult,
     TaskResult,
     TaskStatus,
     UniversalMessage,
+    build_error,
 )
 from ..base.domain_agent import DomainAgent
 from .adk_agent_hooks import AdkAgentHooks
@@ -375,10 +377,17 @@ class AdkDomainAgent(DomainAgent):
             self.logger.error(
                 f"ADK domain agent execution failed - agent_id: {self.agent_id}, error: {error_message}"
             )
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                error_message,
+                source="adk_domain_agent.execute",
+                details={"agent_id": self.agent_id, "error_type": error_type},
+            )
             error_result = TaskResult(
                 task_id=agent_request.task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
+                error=error_payload,
                 created_at=datetime.now(),
                 session_id=agent_request.session_id or self.runtime_context.get("session_id"),
                 metadata={
@@ -576,10 +585,17 @@ class AdkDomainAgent(DomainAgent):
             self.logger.error(
                 f"ADK runtime context missing - agent_id: {self.agent_id}, missing: {missing_parts or ['unknown']}"
             )
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                error_message,
+                source="adk_domain_agent.runtime_context",
+                details={"agent_id": self.agent_id, "missing_components": missing_parts},
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
+                error=error_payload,
                 session_id=session_id,
                 metadata={
                     "framework": "adk",
@@ -632,10 +648,17 @@ class AdkDomainAgent(DomainAgent):
             self.logger.error(
                 f"ADK runner execution failed - agent_id: {self.agent_id}, session_id: {session_id}, error: {error_message}"
             )
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                error_message,
+                source="adk_domain_agent.runner_execution",
+                details={"agent_id": self.agent_id, "session_id": session_id, "error_type": error_type},
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
+                error=error_payload,
                 session_id=session_id,
                 metadata={
                     "framework": "adk",
@@ -944,10 +967,18 @@ class AdkDomainAgent(DomainAgent):
             )
 
         except Exception as e:
+            error_message = f"Failed to convert ADK response: {str(e)}"
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                error_message,
+                source="adk_domain_agent.convert_response",
+                details={"agent_id": self.agent_id},
+            )
             return TaskResult(
                 task_id=task_id,
                 status=TaskStatus.ERROR,
-                error_message=f"Failed to convert ADK response: {str(e)}",
+                error_message=error_message,
+                error=error_payload,
                 metadata={"framework": "adk", "agent_id": self.agent_id},
             )
 
@@ -955,7 +986,14 @@ class AdkDomainAgent(DomainAgent):
 
     def _create_error_live_result(self, task_id: str, error_message: str):
         """Create error live execution result."""
-        
+
+        error_payload = build_error(
+            ErrorCode.FRAMEWORK_EXECUTION,
+            error_message,
+            source="adk_domain_agent.live",
+            details={"agent_id": self.agent_id},
+        )
+
         async def error_stream():
             from ...contracts import TaskChunkType, TaskStreamChunk
 
@@ -963,9 +1001,10 @@ class AdkDomainAgent(DomainAgent):
                 task_id=task_id,
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=error_message,
+                content=error_payload.to_dict(),
                 is_final=True,
-                metadata={"error_type": "runtime_error", "framework": "adk"},
+                metadata={"error_type": "runtime_error", "framework": "adk", "stage": "error"},
+                chunk_kind="error",
             )
 
         # Use framework-level error communicator

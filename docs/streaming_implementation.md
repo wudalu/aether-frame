@@ -103,10 +103,188 @@ non-streaming tool execution during this phase.
 4. (Optional) Capture full coverage by omitting `--tests` to execute the entire
    DeepSeek scenario list.
 
-## Current Limitations & Next Steps
+## End-to-End Data Contracts
+
+### Synchronous invocation
+
+- **Build** – Create a `TaskRequest` via `TaskRequestFactory.create_chat_task(...)`
+  (or the lower-level builder). The factory resolves tools and attaches the
+  appropriate `AgentConfig` / `ExecutionContext`.
+- **Execute** – Call `ExecutionEngine.execute_task(request)`. The engine routes
+  to ADK and returns a `TaskResult`.
+- **Consume** – `TaskResult` (`src/aether_frame/contracts/responses.py`) includes
+  `status`, optional assistant `messages`, `tool_results`, and the structured
+  `error: ErrorPayload` (`src/aether_frame/contracts/errors.py`) alongside the
+  legacy `error_message`.
+
+### Streaming invocation
+
+- **Build** – `TaskRequestFactory.create_live_chat_task(...)` returns a
+  `TaskRequest` whose `ExecutionContext.execution_mode == "live"` and whose
+  metadata contains `stream_mode=True`.
+- **Prompt for planning** – Because plan chunks originate from the model’s
+  reasoning stream, provide an explicit instruction in
+  `AgentConfig.system_prompt` such as:
+  > “You are a meticulous analyst. Respond in two phases: (1) produce a numbered
+  > plan labelled ‘Plan Step 1/2/...’ and keep the plan in the reasoning channel;
+  > (2) call the required tools and deliver a final answer.”
+  This nudge ensures the model emits reasoning segments that the runtime can
+  translate into `plan.delta` / `plan.summary` chunks, even when the model is
+  not token-streaming by default.
+- **Execute** – Call `ExecutionEngine.execute_task_live(request, context)` or,
+  if you prefer a higher-level helper, `ExecutionEngine.execute_task_live_session`
+  (which simply wraps the raw `(event_stream, communicator)` into a
+  `StreamSession`). The routing decision is still made by the framework;
+  passing a live execution context signals the live path.
+- **Consume** – Iterate over the resulting stream to receive `TaskStreamChunk`
+  objects (`src/aether_frame/contracts/streaming.py`). The `StreamSession`
+  wrapper (`src/aether_frame/streaming/stream_session.py`) exposes helpers such
+  as `approve_tool(...)`, `send_user_message(...)`, `cancel(...)`, and
+  `list_pending_interactions()` so HITL flows can be driven without touching ADK
+  internals.
+- **Chunk semantics** – Each chunk carries `chunk_type`, `chunk_kind`, and
+  `metadata` describing the stage (`plan`, `assistant`, `tool`, `control`,
+  `error`). Tool events now include `tool_full_name`, `tool_short_name`, and
+  `tool_namespace`. Tool execution results are still returned in a single
+  `tool.result` chunk; only the LLM response is token/segment streamed.
+
+### Error handling
+
+- **Structured errors everywhere** – Synchronous results embed
+  `TaskResult.error`; streaming errors emit `TaskStreamChunk` with
+  `chunk_type=TaskChunkType.ERROR` and `content=ErrorPayload.to_dict()`.
+- **Common error codes** – `request.validation`, `framework.execution`,
+  `framework.unavailable`, `stream.interrupted`, `tool.not_declared`,
+  `tool.invalid_parameters`, `tool.execution`.
+- **Debugging** – Inspect `ErrorPayload.details` for context (missing runner,
+  upstream HTTP status, tool identifier, etc.). Because the structure is
+  unified, the API layer can log or expose the same fields for both sync and
+  streaming paths.
+
+## Practical API Integration
+
+The framework already exposes complete streaming/HITL capabilities. API
+developers only need to provide lightweight wrappers so clients can interact
+with them.
+
+### 1. Session lifecycle
+
+- **Bootstrap** – On service startup call `create_system_components(Settings)`
+  and keep references to `execution_engine` / `task_factory`. Shut down with
+  `shutdown_system(...)`.
+- **Synchronous tasks** – Build a `TaskRequest`, invoke
+  `execution_engine.execute_task(...)`, return the `TaskResult`.
+- **Streaming tasks** – Build a live `TaskRequest` by setting
+  `execution_context.execution_mode="live"` (the helper
+  `TaskRequestFactory.create_live_chat_task(...)` does this automatically). Call
+  `execution_engine.execute_task` – the framework will detect the live mode and
+  take the streaming path. For convenience, you may also use
+  `execute_task_live`/`execute_task_live_session` to obtain a `StreamSession`
+  wrapper directly. Store the session keyed by `session_id` and call
+  `StreamSession.close()` when finished.
+- **System prompts** – Populate the model’s instructions via
+  `AgentConfig.system_prompt` when constructing the `TaskRequest`
+  (`TaskRequestBuilder`/`TaskRequestFactory` both accept a `system_prompt`
+  argument). The value you supply is passed straight through to the ADK agent
+  and ultimately to the underlying model, so prompting conventions such as
+  “think step by step” or “always produce a numbered plan” should be authored
+  here.
+
+### 2. Event delivery (WebSocket or SSE)
+
+- Iterate over the `StreamSession` and push each `TaskStreamChunk` to the
+  client. The chunk’s `chunk_type`, `chunk_kind`, and `metadata.stage` indicate
+  plan deltas, assistant tokens, tool proposals/results, completion markers, or
+  errors.
+- Optional throttling/aggregation can be added for response deltas, but keep the
+  original semantics whenever possible.
+
+### 3. User interaction endpoints
+
+- **Tool approval** – `POST /live-sessions/{session_id}/approvals/{interaction_id}`
+  → `stream_session.approve_tool(...)` with `approved`, `user_message`,
+  `response_data`.
+- **User messages** – `POST /live-sessions/{session_id}/messages`
+  → `stream_session.send_user_message(text)`.
+- **Cancellation** – `POST /live-sessions/{session_id}/cancel`
+  → `stream_session.cancel(reason)`.
+- **Status polling** – `stream_session.list_pending_interactions()` returns the
+  outstanding proposals (useful for reconnecting clients). If the broker times
+  out, it will emit the corresponding `tool.error` or `tool.result` chunk with
+  `auto_timeout` metadata, so simply relaying chunks keeps the client informed.
+
+### 4. Error reporting
+
+- For synchronous requests, read `TaskResult.error` and forward `code`,
+  `message`, and `details`.
+- For streaming, forward any chunk with `chunk_type=ERROR` (or
+  `chunk_kind="tool.error"`) as soon as it arrives. The payload is a serialized
+  `ErrorPayload`, so clients can show consistent error messages.
+
+## Stream Mode Integration Plan
+
+The API service sits above this framework layer and speaks HTTP/WebSocket to
+front-end clients. Our responsibility is to expose cohesive primitives so that
+layer can call `TaskRequest` endpoints and return structured results without
+peeking into ADK internals.
+
+### Phase 0 – Framework Surface (immediate)
+
+- **`StreamSession` wrapper** – wrap `LiveExecutionResult` in a lightweight
+  object that exposes:
+  - `events`: async iterator of `TaskStreamChunk`
+  - `send_user_message(...)` / `send_approval_response(...)`
+  - `list_pending_interactions()` for API-side status polling
+  - `close()`
+- **Task factory helpers** – publish helpers such as
+  `TaskFactory.build_live_request()` / `build_sync_request()` that take
+  (tenant, payload, options) and return canonical `TaskRequest` instances with
+  tools, prompts, model config, and HITL settings already populated.
+- **Chunk metadata contract** – document mandatory metadata keys (`stage`,
+  `tool_name`, `requires_approval`, `interaction_timeout_seconds`,
+  `approval_policy`, etc.) and ensure every chunk emitted by the adapter fills
+  them consistently so the API layer can forward them verbatim.
+
+### Phase 1 – Error & Approval Normalisation
+
+- **Error code registry** – introduce a shared enum/constant set (e.g.
+  `aether_frame/contracts/error_codes.py`) and make `TaskResult.error_message`
+  emit `{ "code": ..., "detail": ..., "source": ... }`. Live streaming must
+  emit `chunk_type=ERROR` chunks that reuse the same structure.
+- **Approval state API** – extend `AdkApprovalBroker` with public helpers to
+  list pending approvals and expose expiry timestamps. This allows the API
+  layer to implement `/approvals/{interaction_id}` for status queries and
+  retries.
+- **Tool name mapping** – guarantee that streaming/tool events carry both the
+  short DeepSeek name and the fully-qualified MCP namespace so API consumers
+  can display/track them accurately.
+
+### Phase 1b – Session Recovery & Multi-Client Support
+
+- **session_recovery enhancements** – persist chunk sequence, approval state,
+  and pending tool calls so `resume_live_session(session_id)` can rehydrate the
+  stream and re-register outstanding approvals.
+- **Broker reattachment** – on resume, automatically re-enqueue pending
+  interactions with the broker so a reconnecting client receives the same
+  approval prompts.
+- **Multi-subscriber guidance** – document how multiple clients can subscribe
+  to the same `StreamSession` (e.g. leader + reviewer) and prevent duplicate
+  approval submissions.
+
+### Phase 2 – Observability & Tool Telemetry
+
+- **Structured logging** – emit structured logs for every plan delta, tool
+  proposal, approval decision, and tool result (including latency). Provide a
+  hook so the API layer can forward these to its logging pipeline.
+- **Metrics/tracing** – add Prometheus/OTEL counters for approval latency,
+  proposal counts, tool success/failure rates, and per-session token usage.
+- **Tool delta streaming (stretch)** – evaluate streaming intermediate tool
+  progress once the above foundations are live.
+
+## Current Limitations
 
 - Tool execution output is still buffered and emitted only once the tool call
-  completes. Streamed tool deltas are a future phase.
+  completes. Streamed tool deltas are a future phase (see Phase 2).
 - Audio/video real-time inputs remain unsupported; DeepSeek's API currently
   accepts text-only content in this pipeline.
 - The fallback completion chunk is a safety net; once DeepSeek reliably emits a
@@ -115,5 +293,6 @@ non-streaming tool execution during this phase.
   the event metadata when the observability backlog is prioritised.
 
 With these pieces in place, DeepSeek integrates cleanly with the ADK streaming
-interface, providing plan visibility, prompt/response continuity, and tool-call
-round trips compatible with the rest of the framework.
+interface, and the surrounding API layer can provide plan visibility,
+prompt/response continuity, and tool-call round trips to end users without
+tight coupling to internal adapters.

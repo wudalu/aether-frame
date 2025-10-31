@@ -73,11 +73,17 @@ def create_function_tools(
 
                 status_value = "error"
                 error_message = "Tool execution failed"
+                error_payload = None
                 if result:
                     status_value = (
                         result.status.value if hasattr(result.status, "value") else result.status
                     )
                     error_message = result.error_message or error_message
+                    if getattr(result, "error", None):
+                        try:
+                            error_payload = result.error.to_dict()  # type: ignore[attr-defined]
+                        except Exception:
+                            error_payload = None
 
                 payload = {
                     "status": status_value,
@@ -85,6 +91,8 @@ def create_function_tools(
                     "tool_name": tool.name,
                     "namespace": tool.namespace,
                 }
+                if error_payload:
+                    payload["error_payload"] = error_payload
                 if approval_metadata and isinstance(approval_metadata, dict):
                     payload.setdefault("approval_metadata", approval_metadata)
                 return payload

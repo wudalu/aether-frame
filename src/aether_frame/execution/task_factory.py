@@ -8,6 +8,7 @@ from aether_frame.contracts import (
     AgentConfig,
     ExecutionConfig,
     ExecutionContext,
+    FrameworkType,
     KnowledgeSource,
     SessionContext,
     TaskRequest,
@@ -314,4 +315,75 @@ class TaskRequestFactory:
             tool_names=tools,
             user_context=user_context,
             **kwargs
+        )
+
+    async def create_live_chat_task(
+        self,
+        *,
+        task_id: str,
+        description: str,
+        user_context: UserContext,
+        messages: List[UniversalMessage],
+        agent_type: str,
+        system_prompt: str,
+        model_config: Optional[Dict[str, Any]] = None,
+        tool_names: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
+        task_metadata: Optional[Dict[str, Any]] = None,
+        framework_config: Optional[Dict[str, Any]] = None,
+        execution_metadata: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+    ) -> TaskRequest:
+        """Create a live-streaming chat task with HITL-ready configuration.
+
+        Args:
+            task_id: Unique task identifier.
+            description: Human readable task description.
+            user_context: User context (required for live ADK flows).
+            messages: Conversation messages to seed the session.
+            agent_type: Domain agent type to instantiate.
+            system_prompt: System prompt for the agent.
+            model_config: Optional model configuration (merged with defaults).
+            tool_names: Optional list of tool identifiers to resolve.
+            session_id: Optional existing session identifier.
+            execution_id: Optional explicit execution identifier.
+            task_metadata: Additional metadata attached to TaskRequest.
+            framework_config: Optional framework-specific config for AgentConfig.
+            execution_metadata: Extra metadata to attach to ExecutionContext.
+            agent_id: Optional pre-existing agent identifier for reuse.
+        """
+        model_cfg = dict(model_config or {})
+        agent_config = AgentConfig(
+            agent_type=agent_type,
+            system_prompt=system_prompt,
+            model_config=model_cfg,
+            available_tools=tool_names or [],
+            framework_config=framework_config or {},
+        )
+
+        execution_ctx = ExecutionContext(
+            execution_id=execution_id or f"{task_id}_live_exec",
+            framework_type=FrameworkType.ADK,
+            execution_mode="live",
+            metadata=dict(execution_metadata or {}),
+        )
+        execution_ctx.metadata.setdefault("stream_mode", True)
+
+        metadata = dict(task_metadata or {})
+        metadata.setdefault("stream_mode", True)
+        metadata.setdefault("phase", "live_execution")
+
+        return await self.builder.create(
+            task_id=task_id,
+            task_type="chat",
+            description=description,
+            tool_names=tool_names,
+            user_context=user_context,
+            messages=messages,
+            session_id=session_id,
+            metadata=metadata,
+            agent_config=agent_config,
+            execution_context=execution_ctx,
+            agent_id=agent_id,
         )
