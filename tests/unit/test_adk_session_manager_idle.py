@@ -3,12 +3,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from aether_frame.contracts import KnowledgeSource, TaskRequest, UserContext
+from aether_frame.contracts import AgentConfig, KnowledgeSource, TaskRequest, UserContext
 from aether_frame.framework.adk.adk_session_manager import (
     AdkSessionManager,
     SessionClearedError,
 )
 from aether_frame.framework.adk.adk_session_models import ChatSessionInfo
+from aether_frame.framework.adk.session_recovery import (
+    InMemorySessionRecoveryStore,
+    SessionRecoveryRecord,
+)
 
 
 class StubRunnerManager:
@@ -18,6 +22,7 @@ class StubRunnerManager:
         self.agent_runner_mapping = {}
         self.cleaned = []
         self.removed_sessions = []
+        self.created_sessions = []
         self.settings = SimpleNamespace(
             runner_idle_timeout_seconds=43200,
             agent_idle_timeout_seconds=43200,
@@ -42,6 +47,30 @@ class StubRunnerManager:
         runner_context = self.runners.get(runner_id, {})
         sessions = runner_context.get("sessions", {})
         return len(sessions)
+
+    async def _create_session_in_runner(self, runner_id: str, task_request=None, external_session_id: str = None) -> str:
+        session_id = external_session_id or f"session-{len(self.created_sessions)}"
+        runner_context = self.runners.setdefault(
+            runner_id,
+            {
+                "sessions": {},
+                "session_user_ids": {},
+                "agent_config": AgentConfig(agent_type="test", system_prompt="prompt"),
+            },
+        )
+        runner_context["sessions"][session_id] = object()
+        user_id = "user"
+        if task_request and getattr(task_request, "user_context", None):
+            user_id = task_request.user_context.get_adk_user_id()
+        runner_context.setdefault("session_user_ids", {})[session_id] = user_id
+        self.session_to_runner[session_id] = runner_id
+        self.created_sessions.append((runner_id, session_id))
+        return session_id
+
+    async def get_runner_for_agent(self, agent_id: str) -> str:
+        if agent_id not in self.agent_runner_mapping:
+            raise RuntimeError(f"No runner for agent {agent_id}")
+        return self.agent_runner_mapping[agent_id]
 
 
 class StubAgentManager:
@@ -70,7 +99,8 @@ class StubMemoryService:
 
 @pytest.mark.asyncio
 async def test_session_cleanup_marks_and_blocks_reuse():
-    manager = AdkSessionManager()
+    recovery_store = InMemorySessionRecoveryStore()
+    manager = AdkSessionManager(recovery_store=recovery_store)
     runner_manager = StubRunnerManager()
     agent_manager = StubAgentManager()
 
@@ -88,9 +118,10 @@ async def test_session_cleanup_marks_and_blocks_reuse():
     )
 
     runner_manager.runners[runner_id] = {
-        "sessions": {},
+        "sessions": {"adk-1": object()},
         "last_activity": datetime.now(),
         "created_at": datetime.now(),
+        "agent_config": AgentConfig(agent_type="test", system_prompt="prompt"),
     }
     runner_manager.agent_runner_mapping[agent_id] = runner_id
 
@@ -107,15 +138,26 @@ async def test_session_cleanup_marks_and_blocks_reuse():
     )
 
     assert chat_session_id in manager._cleared_sessions
+    archived_entry = recovery_store.load(chat_session_id)
+    assert archived_entry is not None
+    assert archived_entry.chat_session_id == chat_session_id
+    assert manager._cleared_sessions[chat_session_id]["archived_at"] == archived_entry.archived_at
 
     with pytest.raises(SessionClearedError):
         manager.get_or_create_chat_session(chat_session_id, user_id)
 
-    await manager.recover_chat_session(chat_session_id, runner_manager)
+    recovery_record = await manager.recover_chat_session(chat_session_id, runner_manager)
     assert chat_session_id not in manager._cleared_sessions
+    assert recovery_record.agent_id == agent_id
+    assert recovery_store.load(chat_session_id) is recovery_record
+    assert manager._pending_recoveries[chat_session_id] is recovery_record
+    chat_info = manager.chat_sessions[chat_session_id]
+    assert chat_info.active_agent_id == agent_id
+    assert chat_info.active_adk_session_id is None
 
     info = manager.get_or_create_chat_session(chat_session_id, user_id)
     assert isinstance(info, ChatSessionInfo)
+    assert info is chat_info
 
 
 @pytest.mark.asyncio
@@ -155,6 +197,184 @@ async def test_evaluate_runner_agent_idle_cleans_resources():
 
     assert runner_id in runner_manager.cleaned
     assert agent_id in agent_manager.cleaned
+
+
+@pytest.mark.asyncio
+async def test_idle_cleanup_archives_session():
+    recovery_store = InMemorySessionRecoveryStore()
+    manager = AdkSessionManager(recovery_store=recovery_store)
+    runner_manager = StubRunnerManager()
+
+    chat_session_id = "chat-idle"
+    runner_id = "runner-idle"
+    agent_id = "agent-idle"
+
+    chat_session = ChatSessionInfo(
+        user_id="user-idle",
+        chat_session_id=chat_session_id,
+        active_agent_id=agent_id,
+        active_adk_session_id="adk-idle",
+        active_runner_id=runner_id,
+    )
+    chat_session.last_activity = datetime.now() - timedelta(hours=2)
+    manager.chat_sessions[chat_session_id] = chat_session
+
+    runner_manager.runners[runner_id] = {
+        "sessions": {"adk-idle": object()},
+        "last_activity": datetime.now(),
+        "created_at": datetime.now(),
+        "agent_config": AgentConfig(agent_type="test", system_prompt="prompt"),
+    }
+
+    manager._idle_runner_manager = runner_manager
+    manager._session_idle_timeout_seconds = 10
+
+    await manager._perform_idle_cleanup()
+
+    archived = recovery_store.load(chat_session_id)
+    assert archived is not None
+    assert archived.agent_id == agent_id
+    assert chat_session_id in manager._cleared_sessions
+
+
+@pytest.mark.asyncio
+async def test_create_session_after_recovery_injects_history(monkeypatch):
+    recovery_store = InMemorySessionRecoveryStore()
+    manager = AdkSessionManager(recovery_store=recovery_store)
+    runner_manager = StubRunnerManager()
+
+    chat_session_id = "chat-recover"
+    agent_id = "agent-recover"
+    runner_id = "runner-recover"
+    user_id = "user-recover"
+
+    runner_manager.agent_runner_mapping[agent_id] = runner_id
+    runner_manager.runners[runner_id] = {
+        "sessions": {},
+        "last_activity": datetime.now(),
+        "created_at": datetime.now(),
+        "session_user_ids": {},
+        "agent_config": AgentConfig(agent_type="test", system_prompt="prompt"),
+    }
+
+    record = SessionRecoveryRecord(
+        chat_session_id=chat_session_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        agent_config=AgentConfig(agent_type="test", system_prompt="prompt"),
+        chat_history=[{"role": "user", "content": "hello"}],
+    )
+    recovery_store.save(record)
+    manager._cleared_sessions[chat_session_id] = {"cleared_at": datetime.now()}
+
+    recovered = await manager.recover_chat_session(chat_session_id, runner_manager)
+    assert recovered.chat_history
+
+    injections = []
+
+    async def fake_inject(runner_id_in, session_id_in, chat_history_in, runner_manager_in):
+        injections.append((runner_id_in, session_id_in, chat_history_in))
+
+    monkeypatch.setattr(manager, "_inject_chat_history", fake_inject)
+
+    chat_session = manager.chat_sessions[chat_session_id]
+    task_request = TaskRequest(
+        task_id="task",
+        task_type="chat",
+        description="recover conversation",
+        session_id=chat_session_id,
+        agent_id=agent_id,
+        user_context=UserContext(user_id=user_id),
+    )
+
+    result = await manager._create_session_for_agent(
+        chat_session,
+        agent_id,
+        user_id,
+        task_request,
+        runner_manager,
+    )
+
+    assert result.adk_session_id == chat_session.active_adk_session_id
+    assert injections
+    injected_runner_id, injected_session_id, injected_history = injections[0]
+    assert injected_runner_id == runner_id
+    assert injected_history == record.chat_history
+    assert recovery_store.load(chat_session_id) is None
+    assert chat_session_id not in manager._pending_recoveries
+
+
+@pytest.mark.asyncio
+async def test_switch_agent_consumes_pending_recovery(monkeypatch):
+    recovery_store = InMemorySessionRecoveryStore()
+    manager = AdkSessionManager(recovery_store=recovery_store)
+    runner_manager = StubRunnerManager()
+
+    chat_session_id = "chat-switch"
+    old_agent = "agent-old"
+    new_agent = "agent-new"
+    runner_new = "runner-new"
+    user_id = "user-switch"
+
+    chat_session = ChatSessionInfo(
+        user_id=user_id,
+        chat_session_id=chat_session_id,
+        active_agent_id=old_agent,
+        active_adk_session_id=None,
+        active_runner_id=None,
+    )
+    manager.chat_sessions[chat_session_id] = chat_session
+
+    record = SessionRecoveryRecord(
+        chat_session_id=chat_session_id,
+        user_id=user_id,
+        agent_id=old_agent,
+        agent_config=AgentConfig(agent_type="test", system_prompt="prompt"),
+        chat_history=[{"role": "user", "content": "hello"}],
+    )
+    recovery_store.save(record)
+    manager._pending_recoveries[chat_session_id] = record
+
+    runner_manager.agent_runner_mapping[new_agent] = runner_new
+    runner_manager.runners[runner_new] = {
+        "sessions": {},
+        "last_activity": datetime.now(),
+        "created_at": datetime.now(),
+        "agent_config": AgentConfig(agent_type="test", system_prompt="prompt"),
+        "session_user_ids": {},
+    }
+
+    injections = []
+
+    async def fake_inject(runner_id_in, session_id_in, history_in, runner_manager_in):
+        injections.append((runner_id_in, session_id_in, history_in))
+
+    monkeypatch.setattr(manager, "_inject_chat_history", fake_inject)
+
+    task_request = TaskRequest(
+        task_id="task-switch",
+        task_type="chat",
+        description="Agent switch after recovery",
+        agent_id=new_agent,
+        session_id=chat_session_id,
+        user_context=UserContext(user_id=user_id),
+    )
+
+    result = await manager._switch_agent_session(
+        chat_session,
+        new_agent,
+        user_id,
+        task_request,
+        runner_manager,
+    )
+
+    assert result.switch_occurred is True
+    assert injections
+    injected_runner_id, injected_session_id, injected_history = injections[0]
+    assert injected_runner_id == runner_new
+    assert injected_history == record.chat_history
+    assert recovery_store.load(chat_session_id) is None
+    assert chat_session_id not in manager._pending_recoveries
 
 
 @pytest.mark.asyncio

@@ -2,23 +2,23 @@
 
 ## Background & Objectives
 
-Our current ADK integration deliberately supports **controlled reuse** of chat sessions, ADK runners, and domain agents to reduce the cost of repeatedly spinning resources. The product layer can switch agents by supplying a `chat_session_id`. This reuse model boosts performance, but it also demands proactive cleanup and recovery mechanisms so we do not leak resources or encounter reuse failures. We need a strategy that balances the following goals:
+Our current ADK integration intentionally supports **controlled reuse** of chat sessions, ADK runners, and domain agents to reduce rehydration cost. At the business layer we keep a stable `chat_session_id` so that callers can switch agents while preserving history. Reuse improves latency and spend, but it also requires well-defined cleanup and recovery mechanics; otherwise, idle sessions leak resources or resurrect with inconsistent state. We need a strategy that balances the following goals:
 
-- **Continuity** – Preserve business context while reusing components so the same agent/runner keeps serving the conversation.
-- **Resource control** – Release idle runners/agents promptly via idle cleanup to avoid long-lived resource usage.
-- **Predictable recovery** – Rebuild quickly and restore history when resources are reclaimed or fail unexpectedly.
+- **Continuity** – Preserve business context during reuse so one agent/runner can keep serving the same conversation until explicitly retired.
+- **Resource control** – Tear down idle runners/agents quickly to avoid over-provisioning.
+- **Predictable recovery** – When cleanup removes a session, provide a deterministic path to rebuild it and inject historical context so clients can resume seamlessly.
 
-This document summarizes industry approaches (AWS Bedrock AgentCore, Microsoft Agent Framework, enterprise chatbot platforms) and proposes an MVP plus longer-term roadmap tailored to Aether Frame’s ADK stack.
+This document summarises relevant industry approaches (AWS Bedrock AgentCore, Microsoft Agent Framework, enterprise chatbot platforms) and proposes an MVP plus a longer-term roadmap tailored to Aether Frame’s ADK stack.
 
 
 ## Industry Insights
 
 | Theme | Observations | Relevance |
 | --- | --- | --- |
-| Idle timeout + state summarisation | Amazon Bedrock AgentCore enforces an `idleSessionTimeout` (currently limited to 1 hour) and recommends storing conversation state externally, then re-hydrating the agent by loading summaries when the session restarts.<sup>[1](#ref1)</sup> | Mirrors our reuse approach: capture context safely before releasing a runner so we can reuse or restore it later. |
-| Persistent “memory” tiers | Bedrock AgentCore Memory distinguishes **short-term** (within the current session) and **long-term** (cross-session preferences/summaries).<sup>[2](#ref2)</sup> | Highlights the need to decide which data travels with the session and which must be persisted and re-injected during reconstruction. |
-| Two-level retention windows | Many SaaS support bots (ServiceNow, Zendesk) apply a short idle window for expensive resources (live runner), and a longer retention window for conversational artifacts (history, metadata). | Reinforces a split between “resource lifetime” and “context lifetime.” |
-| Manual lifecycle hooks + automation | Enterprise bots expose “close conversation” APIs but rely on automation (cron jobs, usage-based policies) to invoke them, because users rarely terminate chats themselves. | Justifies adding explicit cleanup endpoints plus background sweeps. |
+| Idle timeout + state summarisation | Amazon Bedrock AgentCore enforces an `idleSessionTimeout` (currently limited to 1 hour) and recommends persisting conversation state externally, then re-hydrating the agent by loading summaries when the session restarts.<sup>[1](#ref1)</sup> | Mirrors our reuse strategy: capture context before tearing down runners so it can be injected during recovery. |
+| Persistent “memory” tiers | Bedrock AgentCore Memory distinguishes **short-term** (per session) and **long-term** (cross-session preferences/summaries).<sup>[2](#ref2)</sup> | Highlights the need to separate reusable in-session artefacts from durable knowledge that must persist across rebuilds. |
+| Two-level retention windows | Many SaaS bots (ServiceNow, Zendesk) apply a short idle window for expensive resources (live runner) and a longer retention window for conversational artefacts (history, metadata). | Reinforces the split between “resource lifetime” and “context lifetime.” |
+| Manual lifecycle hooks + automation | Enterprise bots expose “close conversation” APIs but still rely on automation (cron jobs, usage-based policies) to invoke them because users rarely terminate chats. | Justifies adding explicit cleanup endpoints plus background sweeps. |
 
 **Summarization best practices:** Bedrock Memory uses LLM prompts to summarise sessions into structured memory and lets developers customise prompts, retention limits, and memory injection when sessions restart.<sup>[2](#ref2)</sup> This aligns with our plan to summarise transcripts before runner teardown and rehydrate on demand.
 
@@ -29,22 +29,22 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
 
 ### Functional scope
 1. **Idle eviction & cleanup (Runner/Agent/Session)**
-   - Periodically scan `ChatSessionInfo.last_activity` (existing field). For sessions that exceed the threshold (e.g., 30 minutes):
-     1. Persist the raw transcript (can feed the summariser later; raw storage is acceptable for MVP).
-     2. Call `cleanup_chat_session` to tear down the session, runner, and agent together.
-     3. Emit structured logs describing the cleanup for auditing purposes.
-   - Provide configuration to control the idle timeout and whether cleanup is enabled.
+   - Periodically scan `ChatSessionInfo.last_activity` (existing field) and flag business sessions that exceed the configured threshold (e.g., 30 minutes).
+     1. Extract and persist the raw transcript (later iterations can summarise it; for the MVP we keep raw text).
+     2. Call `cleanup_chat_session` to tear down the ADK session, runner, and agent as a single transaction.
+     3. Emit structured logs containing the cleanup reason and resource identifiers for auditing.
+   - Provide configuration knobs to control idle thresholds and enable/disable the background sweep.
 
-2. **Controlled reuse (current model) + placeholder recovery hook**
-   - Continue reusing agents/runners when the business layer keeps the same `chat_session_id`, validating runner/agent health before reuse.
-   - After idle cleanup we do not auto-rebuild; when the next request sees “session not found,” business logic can decide whether to invoke the recovery endpoint.
-   - Provide a stub recovery API that future work can extend with history injection and runner recreation.
+2. **Controlled reuse (current) + recovery entry point**
+   - Continue the “agent/runner reuse” strategy: clients must reuse the same `chat_session_id` and validate runner/agent status before reuse.
+   - After idle cleanup we do **not** auto-rebuild the session. The next request that references the `chat_session_id` will trigger recovery if needed.
+   - Leave a recovery API hook (now implemented) to reinject history, rebuild runners, and prepare for future capabilities like cached knowledge.
 
 3. **Observability (MVP scope)**
-   - Extend existing DEBUG logging with idle cleanup metrics (reason, idle duration, rebuild latency).
-   - Record key lifecycle events for `chat_session_id`, internal `adk_session_id`, and `agent_id` to simplify troubleshooting.
+   - Extend existing DEBUG logs with idle-cleanup specific events (reason, idle duration, rebuild latency).
+   - Track key lifecycle transitions for `chat_session_id`, `adk_session_id`, and `agent_id` to simplify investigations when reuse fails.
 
-> Summaries and long-term storage remain future enhancements (Phase 2). The MVP focuses on controllable cleanup and stable reuse.
+> Summarisation and long-term storage remain future work (Phase 2). The MVP focuses on resource hygiene and deterministic reuse.
 
 ### Effort & Dependencies
 
@@ -57,6 +57,85 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
 | Ops/Config (flags, metrics) | DevOps | 1–2 eng days |
 
 **MVP Total:** ~10–13 engineering days. Dependencies: storage layer for conversation logs (already exists), minimal summarisation (can reuse existing LLM call or postpone to long-term plan).
+
+### Implementation Plan (Current Work)
+
+To deliver controlled reuse plus recovery in this iteration we execute the following steps, running or adding tests at each milestone:
+
+1. **Recovery record model and store abstraction**
+   - Define `SessionRecoveryRecord` with `chat_session_id`, `user_id`, `agent_id`, the latest `agent_config`, `chat_history`, and `archived_at`.
+   - Introduce a `SessionRecoveryStore` interface (`save/load/purge`) with an in-memory implementation for development/testing.
+   - Unit tests: validate persistence, default behaviours, and duplicate writes.
+
+2. **Snapshot capture during cleanup paths**
+   - In `cleanup_chat_session` and `_perform_idle_cleanup`, extract chat history and write it to the recovery store before destroying resources.
+   - Extend `_mark_session_cleared` to record the cleanup reason and archive timestamp for diagnostics.
+   - Unit tests: confirm snapshots exist after explicit and idle cleanup.
+
+3. **Recovery flow implementation**
+   - Implement `recover_chat_session`: load the recovery record, rebuild agent/runner if required, create a new ADK session, inject prior `chat_history`, and restore `ChatSessionInfo`.
+   - Remove snapshots and `_cleared_sessions` entries after success; propagate clear errors if recovery fails.
+   - Key design: split recovery into two stages. `recover_chat_session` re-registers the session and records `_pending_recoveries`; `_maybe_apply_recovery_payload` injects history once `_create_session_for_agent` has produced a live ADK session. This separation decouples timing, allows retries when injection fails, and keeps asynchronous control paths clean.
+   - Unit tests: success path, missing snapshot, injection failure.
+
+4. **AdkFrameworkAdapter integration**
+   - Catch `SessionClearedError` inside `_handle_conversation`, invoke recovery once, then retry `coordinate_chat_session`.
+   - Unit/integration coverage: ensure conversations resume after cleanup.
+
+5. **SessionService mock extension**
+   - Implement `archive_session`, `load_archived_session`, and `purge_archived_session` on the mock SessionService, exposing `get_recovery_store()` so the SessionManager reuses the same store (production Redis implementations must match this interface).
+   - Unit tests: ensure calls reach the recovery store.
+
+   **Redis SessionService contract**
+
+   | Method | Parameters | Description |
+   | --- | --- | --- |
+   | `create_session(app_name: str, user_id: str, session_id: str) -> Session` | `app_name`: ADK application identifier; `user_id`: ADK user (typically `UserContext.get_adk_user_id()`); `session_id`: caller-supplied session identifier | Create or fetch the underlying ADK session and return a session object containing at least `app_name` and `user_id`. |
+   | `delete_session(app_name: str, user_id: str, session_id: str) -> None` | Same parameters as above | Delete the specified session as part of cleanup. |
+   | `archive_session(record: SessionRecoveryRecord) -> None` | `record`: snapshot produced by the SessionManager containing `chat_session_id`, `user_id`, `agent_id`, `agent_config`, `chat_history`, etc. | Persist the recovery snapshot (e.g., in Redis). |
+   | `load_archived_session(chat_session_id: str) -> Optional[SessionRecoveryRecord]` | `chat_session_id`: business session identifier | Retrieve the saved snapshot; return `None` if not found. |
+   | `purge_archived_session(chat_session_id: str) -> None` | `chat_session_id`: business session identifier | Delete the snapshot after successful recovery to avoid duplicate injections. |
+   | `get_recovery_store() -> SessionRecoveryStore` | None | Return the underlying `SessionRecoveryStore` instance (must support `save(record)`, `load(chat_session_id)`, and `purge(chat_session_id)`). The SessionManager reuses this store so both components operate on the same data. |
+
+   Additional requirements:
+   - All methods are `async` so the SessionManager can await them.
+   - `SessionRecoveryRecord` uses the structure defined in `session_recovery.py`; Redis implementations must serialise and deserialise it faithfully.
+   - Raise explicit exceptions for serialization failures or connectivity issues so callers can log and react.
+
+6. **Documentation and comments**
+   - Update this document and related design notes with the Redis interface contract and operational expectations.
+   - Manual review: ensure code comments and log messages align with behaviour.
+
+#### Recovery Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Adapter as AdkFrameworkAdapter
+    participant Manager as AdkSessionManager
+    participant Runner as RunnerManager
+    participant Store as SessionRecoveryStore / Redis
+
+    Client->>Adapter: conversation request (agent_id + chat_session_id)
+    Adapter->>Manager: coordinate_chat_session
+    Manager-->>Adapter: SessionClearedError (session destroyed)
+    Adapter->>Manager: recover_chat_session
+    Manager->>Store: load(chat_session_id)
+    Store-->>Manager: SessionRecoveryRecord
+    Manager->>Adapter: recovery payload registered
+    Adapter->>Manager: coordinate_chat_session (retry)
+    Manager->>Runner: create_session_for_agent
+    Runner-->>Manager: new adk_session_id
+    Manager->>Runner: inject chat_history
+    Runner-->>Manager: injection complete
+    Manager->>Store: purge(chat_session_id)
+    Store-->>Manager: ok
+    Manager-->>Adapter: CoordinationResult (new adk_session_id)
+    Adapter-->>Client: TaskResult (conversation resumes)
+```
+
+> Execute the steps sequentially. After each change run the associated tests (or add new ones) to keep the iteration small and reversible.
 
 
 ## Long-Term Roadmap
