@@ -7,12 +7,14 @@ from datetime import datetime
 
 from ..config.settings import Settings
 from ..contracts import (
+    ErrorCode,
     ExecutionContext,
     FrameworkType,
     LiveExecutionResult,
     TaskRequest,
     TaskResult,
     TaskStatus,
+    build_error,
 )
 from .execution_engine import ExecutionEngine
 
@@ -72,10 +74,17 @@ class AIAssistant:
                     else "Invalid task request: unknown validation failure"
                 )
                 self.logger.error(f"Request validation failed - task_id: {task_request.task_id}, errors: {validation_errors}")
+                error_payload = build_error(
+                    ErrorCode.REQUEST_VALIDATION,
+                    error_msg,
+                    source="ai_assistant.validate_request",
+                    details={"validation_errors": validation_errors},
+                )
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=error_msg,
+                    error=error_payload,
                     metadata={
                         "error_stage": "ai_assistant.validate_request",
                         "validation_errors": validation_errors,
@@ -94,10 +103,17 @@ class AIAssistant:
             error_type = type(e).__name__
             error_msg = f"Processing failed in ai_assistant.process_request ({error_type}): {str(e)}"
             self.logger.error(f"AI Assistant processing failed - task_id: {task_request.task_id}, error: {error_msg}")
+            error_payload = build_error(
+                ErrorCode.INTERNAL_ERROR,
+                error_msg,
+                source="ai_assistant.process_request",
+                details={"error_type": error_type},
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_msg,
+                error=error_payload,
                 metadata={
                     "error_stage": "ai_assistant.process_request",
                     "error_type": error_type,

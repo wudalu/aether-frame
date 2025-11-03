@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """ADK Framework Adapter Implementation."""
 
+import asyncio
+import contextlib
 import logging
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 from uuid import uuid4
 
 from ...contracts import (
     AgentConfig,
+    ErrorCode,
     ExecutionContext,
     FrameworkType,
     LiveExecutionResult,
@@ -16,9 +20,12 @@ from ...contracts import (
     TaskResult,
     TaskStatus,
     TaskStreamChunk,
+    build_error,
 )
+from ...agents.base.domain_agent import DomainAgent
 from ...execution.task_router import ExecutionStrategy
 from ..base.framework_adapter import FrameworkAdapter
+from .approval_broker import AdkApprovalBroker, ApprovalAwareCommunicator
 from .live_communicator import AdkLiveCommunicator
 from ...tools.resolver import ToolResolver, ToolNotFoundError
 from .adk_session_manager import AdkSessionManager, SessionClearedError
@@ -1051,10 +1058,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         from ...agents.adk.adk_domain_agent import AdkDomainAgent
         
         # Build config dict from agent_config
+        raw_model_config = getattr(agent_config, 'model_config', {}) or {}
+        model_config = deepcopy(raw_model_config) if raw_model_config else {}
+        model_name = (
+            model_config.get('model')
+            or getattr(agent_config, 'model', None)
+            or self._get_default_adk_model()
+        )
         config_dict = {
             "agent_type": agent_config.agent_type,
             "system_prompt": getattr(agent_config, 'system_prompt', "You are a helpful AI assistant."),
-            "model": getattr(agent_config, 'model_config', {}).get('model', self._get_default_adk_model())
+            "model": model_name,
+            "model_config": model_config,
         }
         
         # Create basic runtime context
@@ -1124,50 +1139,262 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self, task_request: TaskRequest, context: ExecutionContext
     ) -> LiveExecutionResult:
         """
-        Execute a task in live/interactive mode.
+        Execute a task in live/interactive mode with streaming support.
 
-        TODO: This method needs to be updated to use RunnerManager pattern 
-        instead of legacy session management. Currently commented out to avoid 
-        breaking changes during Phase 1 cleanup.
-
-        Args:
-            task_request: The universal task request
-            context: Execution context with user and session information (unused currently)
-
-        Returns:
-            LiveExecutionResult: Tuple of (event_stream, communicator)
+        Reuses the conversation/session coordination path to hydrate an
+        `AdkDomainAgent` with the correct runtime context, then delegates to
+        the agent's live execution pipeline.
         """
-        # TODO: Implement live execution using RunnerManager pattern
-        # This requires integration with agents/adk/ code which will be done separately
-        
-        async def placeholder_stream():
-            yield TaskStreamChunk(
-                task_id=task_request.task_id,
-                chunk_type=TaskChunkType.ERROR,
-                sequence_id=0,
-                content="Live execution temporarily disabled during refactoring",
-                is_final=True,
-                metadata={"error_type": "not_implemented", "framework": "adk"},
+        if not self._initialized:
+            raise RuntimeError("ADK framework not initialized")
+
+        if not task_request:
+            raise ValueError("Task request is required for live execution")
+
+        if not task_request.agent_id or not task_request.session_id:
+            return self._create_live_error_result(
+                task_request,
+                "ADK live execution requires both agent_id and session_id",
+                metadata={"error_stage": "adk_adapter.validate_live_request"},
             )
 
-        # Create null communicator for placeholder
-        class PlaceholderCommunicator:
-            def send_user_response(self, approved: bool):
-                """Placeholder implementation."""
-                pass
+        # Ensure execution context references are preserved for downstream consumers
+        if context:
+            task_request.execution_context = context
 
-            def send_user_message(self, message: str):
-                """Placeholder implementation."""
-                pass
+        # Ensure we have a user context for runner coordination
+        if not task_request.user_context:
+            from ...contracts import UserContext
 
-            def send_cancellation(self, reason: str):
-                """Placeholder implementation."""
-                pass
+            task_request.user_context = UserContext(user_id=self._get_default_user_id())
+
+        user_id = task_request.user_context.get_adk_user_id()
+        business_chat_session_id = task_request.session_id
+
+        try:
+            coordination_result = await self.adk_session_manager.coordinate_chat_session(
+                chat_session_id=business_chat_session_id,
+                target_agent_id=task_request.agent_id,
+                user_id=user_id,
+                task_request=task_request,
+                runner_manager=self.runner_manager,
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Live session coordination failed",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": business_chat_session_id,
+                    "agent_id": task_request.agent_id,
+                },
+            )
+            return self._create_live_error_result(
+                task_request,
+                f"Failed to coordinate live session: {str(exc)}",
+                metadata={"error_stage": "adk_adapter.coordinate_live_session"},
+            )
+
+        # Swap in the ADK session ID to build runtime context, then restore
+        adk_session_id = coordination_result.adk_session_id
+        task_request.session_id = adk_session_id
+
+        try:
+            runtime_context = await self._create_runtime_context_for_existing_session(
+                task_request
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to create runtime context for live execution",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": business_chat_session_id,
+                    "agent_id": task_request.agent_id,
+                    "adk_session_id": adk_session_id,
+                },
+            )
+            return self._create_live_error_result(
+                task_request,
+                f"Failed to prepare live runtime context: {str(exc)}",
+                metadata={"error_stage": "adk_adapter.runtime_context_live"},
+            )
+        finally:
+            # Restore original business session ID on request object
+            task_request.session_id = business_chat_session_id
+
+        runtime_context.metadata.setdefault(
+            "business_chat_session_id", business_chat_session_id
+        )
+        runtime_context.metadata.setdefault("adk_session_id", adk_session_id)
+
+        # Attach execution identifiers from context if available
+        if context:
+            runtime_context.execution_id = context.execution_id
+            runtime_context.trace_id = context.trace_id
+            runtime_context.metadata.setdefault("execution_mode", context.execution_mode)
+
+        runtime_context.update_activity()
+        if runtime_context.runner_id:
+            self.runner_manager.mark_runner_activity(runtime_context.runner_id)
+
+        try:
+            return await self._execute_live_with_domain_agent(
+                task_request, runtime_context
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "ADK live execution failed",
+                extra={
+                    "task_id": task_request.task_id,
+                    "chat_session_id": business_chat_session_id,
+                    "agent_id": task_request.agent_id,
+                    "adk_session_id": adk_session_id,
+                },
+            )
+            return self._create_live_error_result(
+                task_request,
+                f"ADK live execution failed: {str(exc)}",
+                metadata={"error_stage": "adk_adapter.execute_live"},
+            )
+
+    async def _execute_live_with_domain_agent(
+        self, task_request: TaskRequest, runtime_context: "RuntimeContext"
+    ) -> LiveExecutionResult:
+        """Delegate live execution to the hydrated domain agent."""
+        from ...contracts import AgentRequest, FrameworkType
+
+        domain_agent = runtime_context.metadata.get("domain_agent")
+        if not domain_agent:
+            domain_agent = self.agent_manager._agents.get(runtime_context.agent_id)
+
+        if not domain_agent:
+            return self._create_live_error_result(
+                task_request,
+                "Domain agent not available for live execution",
+                metadata={
+                    "error_stage": "adk_adapter.fetch_domain_agent",
+                    "agent_id": runtime_context.agent_id,
+                },
+            )
+
+        # Update the domain agent runtime context in-place
+        domain_agent.runtime_context.update(runtime_context.get_runtime_dict())
+
+        agent_request = AgentRequest(
+            agent_type=self._get_default_agent_type(),
+            framework_type=FrameworkType.ADK,
+            task_request=task_request,
+            runtime_options=runtime_context.get_runtime_dict(),
+            session_id=runtime_context.session_id,
+        )
+
+        # Prefer runtime-aware live execution when the domain agent overrides it
+        execute_live_with_runtime = getattr(domain_agent, "execute_live_with_runtime", None)
+        if execute_live_with_runtime and getattr(
+            domain_agent.__class__, "execute_live_with_runtime", None
+        ) is not None and domain_agent.__class__.execute_live_with_runtime is not DomainAgent.execute_live_with_runtime:  # type: ignore[attr-defined]
+            live_result = await execute_live_with_runtime(  # type: ignore[call-arg]
+                agent_request, runtime_context.get_runtime_dict()
+            )
+        else:
+            live_result = await domain_agent.execute_live(task_request)
+
+        live_stream, communicator = live_result
+        approval_timeout = float(self._config.get("tool_approval_timeout_seconds", 90))
+        fallback_policy = self._config.get("tool_approval_timeout_policy", "auto_approve")
+
+        tool_requirements = None
+        context_obj = getattr(domain_agent, "runtime_context", None)
+        tool_requirements = None
+        if isinstance(context_obj, dict):
+            tool_requirements = context_obj.get("tool_approval_policy") or context_obj.get("metadata", {}).get("tool_approval_policy")
+        elif context_obj is not None:
+            metadata = getattr(context_obj, "metadata", {})
+            tool_requirements = metadata.get("tool_approval_policy") or getattr(context_obj, "tool_approval_policy", None)
+
+        broker = AdkApprovalBroker(
+            communicator,
+            timeout_seconds=approval_timeout,
+            fallback_policy=fallback_policy,
+            tool_requirements=tool_requirements,
+        )
+
+        if isinstance(context_obj, dict):
+            context_obj.setdefault("metadata", {})["approval_broker"] = broker
+        elif context_obj is not None:
+            metadata = getattr(context_obj, "metadata", None)
+            if metadata is not None:
+                metadata["approval_broker"] = broker
+            else:
+                setattr(context_obj, "approval_broker", broker)
+
+        wrapped_communicator = ApprovalAwareCommunicator(communicator, broker)
+
+        async def orchestrated_stream():
+            try:
+                async for chunk in live_stream:
+                    chunk = await broker.on_chunk(chunk)
+                    if chunk is not None:
+                        yield chunk
+            finally:
+                self.logger.info("ADK orchestrated_stream finalizing broker")
+                await broker.finalize()
+                broker.close()
+                if hasattr(live_stream, "aclose"):
+                    try:
+                        await live_stream.aclose()  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        self.logger.warning("ADK orchestrated_stream failed to close live stream", exc_info=True)
+                self.logger.info("ADK orchestrated_stream broker finalized")
+                context_obj = getattr(domain_agent, "runtime_context", None)
+                if isinstance(context_obj, dict):
+                    context_obj.get("metadata", {}).pop("approval_broker", None)
+                elif context_obj is not None:
+                    metadata = getattr(context_obj, "metadata", None)
+                    if metadata is not None:
+                        metadata.pop("approval_broker", None)
+                    else:
+                        with contextlib.suppress(AttributeError):
+                            setattr(context_obj, "approval_broker", None)
+
+        return orchestrated_stream(), wrapped_communicator
+
+    def _create_live_error_result(
+        self, task_request: Optional[TaskRequest], message: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> LiveExecutionResult:
+        """Create a live execution result that yields a single error chunk."""
+
+        async def error_stream():
+            error_payload = build_error(
+                ErrorCode.FRAMEWORK_EXECUTION,
+                message,
+                source="adk_adapter.live_error",
+                details=metadata or {},
+            )
+            yield TaskStreamChunk(
+                task_id=task_request.task_id if task_request else "unknown",
+                chunk_type=TaskChunkType.ERROR,
+                sequence_id=0,
+                content=error_payload.to_dict(),
+                is_final=True,
+                metadata={"framework": "adk", **(metadata or {})},
+            )
+
+        class ErrorCommunicator:
+            """No-op communicator for error responses."""
+
+            async def send_user_response(self, approved: bool) -> None:
+                return None
+
+            async def send_user_message(self, message: str) -> None:
+                return None
+
+            async def send_cancellation(self, reason: str) -> None:
+                return None
 
             def close(self):
-                pass
+                return None
 
-        return (placeholder_stream(), PlaceholderCommunicator())
+        return error_stream(), ErrorCommunicator()
 
     def is_ready(self) -> bool:
         """

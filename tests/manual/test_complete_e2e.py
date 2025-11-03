@@ -11,6 +11,9 @@ import os
 import json
 import warnings
 import argparse
+import socket
+import subprocess
+from contextlib import suppress
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from uuid import uuid4
@@ -40,6 +43,69 @@ from aether_frame.contracts import (
     UserContext,
     FrameworkType,
 )
+from aether_frame.contracts.enums import TaskChunkType
+from aether_frame.contracts.streaming import (
+    CHUNK_KIND_PLAN_DELTA,
+    CHUNK_KIND_PLAN_SUMMARY,
+    CHUNK_KIND_TOOL_PROPOSAL,
+    CHUNK_KIND_TOOL_RESULT,
+)
+from aether_frame.contracts import TaskStreamChunk, ExecutionContext
+
+# Enforce execution inside the project virtual environment with a modern Python runtime.
+if os.environ.get("VIRTUAL_ENV") is None:
+    print("❌ This script must be executed from the project virtual environment (.venv).")
+    sys.exit(1)
+
+if sys.version_info < (3, 10):
+    print(
+        f"❌ Python 3.10 or newer is required for streaming tests. Current version: {sys.version.split()[0]}"
+    )
+    sys.exit(1)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REAL_MCP_SERVER_PATH = PROJECT_ROOT / "tests" / "tools" / "mcp" / "real_streaming_server.py"
+REAL_MCP_ENDPOINT = "http://localhost:8002/mcp"
+REAL_MCP_NAME = "real-streaming-server"
+
+
+async def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> None:
+    """Poll until a TCP port is accepting connections."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            if sock.connect_ex((host, port)) == 0:
+                return
+        await asyncio.sleep(0.2)
+    raise TimeoutError(f"Port {host}:{port} did not open within {timeout} seconds")
+
+
+def _start_real_mcp_server() -> subprocess.Popen:
+    """Launch the real streaming MCP server as a subprocess."""
+    env = os.environ.copy()
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(PROJECT_ROOT) + (os.pathsep + pythonpath if pythonpath else "")
+    )
+
+    return subprocess.Popen(
+        [sys.executable, str(REAL_MCP_SERVER_PATH)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+
+
+def _stop_real_mcp_server(proc: subprocess.Popen) -> None:
+    """Terminate the real streaming MCP server process."""
+    with suppress(ProcessLookupError):
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 class CompleteE2ETestSuite:
@@ -116,6 +182,7 @@ class CompleteE2ETestSuite:
             self.test_models = ["deepseek-chat"]
         # Test configuration
         self.settings = Settings()
+        self.selected_tests: Optional[set[str]] = None
 
         # Setup logging (both global system log and test-specific log)
         self.setup_logging()
@@ -134,9 +201,37 @@ class CompleteE2ETestSuite:
             "model_results": {},
         }
 
+    async def _prompt_user_input(self, prompt: str, default: Optional[str] = None) -> str:
+        """Prompt the operator for input, falling back to default when non-interactive."""
+        if default is None:
+            default = ""
+        if not sys.stdin or not sys.stdin.isatty():
+            return default
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: input(prompt))
+
     def _build_user_context(self) -> UserContext:
         """Return default user context for requests."""
         return self.test_user_context
+
+    def _should_run(self, test_case: str) -> bool:
+        """Check whether a test case should be executed based on CLI filter."""
+        if not self.selected_tests:
+            return True
+        return test_case in self.selected_tests
+
+    def _record_skip(self, test_case: str, model: str, reason: str = "filtered_by_cli") -> None:
+        """Log and record a skipped test case."""
+        self.logger.info(f"⏭️ [{model}] Skipping {test_case} ({reason})")
+        self.test_results.append(
+            {
+                "test_case": test_case,
+                "model": model,
+                "status": "skipped",
+                "reason": reason,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
     def _summarize_message_content(self, content) -> str:
         """Create a short preview for logging."""
@@ -247,6 +342,7 @@ class CompleteE2ETestSuite:
         model_config: Optional[Dict[str, Any]] = None,
         available_tools: Optional[List[str]] = None,
         evaluate_response=None,
+        seed_creation_with_first_message: bool = True,
     ) -> bool:
         """Create agent lazily and execute a conversation test."""
         start_time = datetime.now()
@@ -255,7 +351,7 @@ class CompleteE2ETestSuite:
         conversation_metadata = dict(conversation_metadata or {})
         messages = messages or []
 
-        initial_message = messages[0] if messages else None
+        initial_message = messages[0] if (seed_creation_with_first_message and messages) else None
 
         business_chat_session_id = conversation_metadata.get("chat_session_id") or f"chat_session_{uuid4().hex[:12]}"
         conversation_metadata.setdefault("chat_session_id", business_chat_session_id)
@@ -475,7 +571,7 @@ class CompleteE2ETestSuite:
                 self.logger.info(f"{model} API Key configured: {status}")
         
         self.logger.info(f"Python version: {sys.version}")
-        
+
         try:
             self.logger.info("🚀 STEP 1: Initializing Aether Frame system...")
             self.logger.debug("Creating AI Assistant with timeout protection...")
@@ -669,7 +765,443 @@ class CompleteE2ETestSuite:
             },
             available_tools=["chat_log"],
             evaluate_response=evaluate_response,
+            seed_creation_with_first_message=False,
         )
+
+    async def test_live_streaming_mode(self, model: str = None) -> bool:
+        """Run a full live-streaming scenario using the real MCP tool server."""
+        test_case = "live_streaming"
+        model_name = model or self.settings.default_model
+
+        if "deepseek" not in model_name.lower():
+            self.logger.info(
+                f"⏭️ [{model_name}] Streaming test skipped (requires DeepSeek model)."
+            )
+            self.test_results.append(
+                {
+                    "test_case": test_case,
+                    "model": model_name,
+                    "status": "skipped",
+                    "timestamp": datetime.now().isoformat(),
+                    "reason": "streaming_test_requires_deepseek",
+                }
+            )
+            return True
+
+        self.logger.info(f"🌊 [{model_name}] Starting live streaming end-to-end test...")
+        server_proc: Optional[subprocess.Popen] = None
+        components = None
+        chunk_records: List[Dict[str, Any]] = []
+        start_time = datetime.now()
+
+        try:
+            server_proc = _start_real_mcp_server()
+            await _wait_for_port("localhost", 8002, timeout=15.0)
+
+            stream_settings = Settings()
+            stream_settings.enable_tool_service = True
+            stream_settings.enable_mcp_tools = True
+            stream_settings.mcp_servers = [
+                {
+                    "name": REAL_MCP_NAME,
+                    "endpoint": REAL_MCP_ENDPOINT,
+                    "timeout": 60,
+                }
+            ]
+            stream_settings.default_model = model_name
+            stream_settings.default_model_provider = "deepseek"
+            stream_settings.default_adk_model = model_name
+            stream_settings.deepseek_model = model_name
+            stream_settings.deepseek_temperature = 0.6
+
+            components = await create_system_components(stream_settings)
+            tool_service = components.tool_service
+            if not tool_service:
+                raise RuntimeError("ToolService unavailable for streaming test.")
+
+            tool_names = await tool_service.list_tools(REAL_MCP_NAME)
+            if not tool_names:
+                tool_names = [
+                    name
+                    for name in await tool_service.list_tools()
+                    if name.startswith(f"{REAL_MCP_NAME}.")
+                ]
+
+            if not tool_names:
+                raise RuntimeError("No tools discovered from the real streaming MCP server.")
+
+            progressive_tool = next(
+                (name for name in tool_names if name.endswith("progressive_search")),
+                tool_names[0],
+            )
+
+            tools_dict = await tool_service.get_tools_dict()
+            progressive_tool_obj = tools_dict.get(progressive_tool)
+            if progressive_tool_obj and hasattr(progressive_tool_obj, "parameters_schema"):
+                schema = progressive_tool_obj.parameters_schema or {}
+                props = schema.setdefault("properties", {})
+                max_results_schema = props.get("max_results")
+                if isinstance(max_results_schema, dict):
+                    max_results_schema.setdefault("type", "integer")
+                    if max_results_schema.get("default") is None:
+                        max_results_schema["default"] = 5
+                required = schema.setdefault("required", [])
+                if "max_results" in required:
+                    required.remove("max_results")
+                self.logger.debug(
+                    "MCP progressive_search schema adjusted: %s",
+                    json.dumps(schema, indent=2)
+                )
+
+            adk_adapter = await components.framework_registry.get_adapter(FrameworkType.ADK)
+            if not adk_adapter:
+                raise RuntimeError("Failed to acquire ADK adapter for streaming test.")
+            adk_adapter._config.setdefault("tool_approval_timeout_seconds", 3.0)
+            adk_adapter._config.setdefault("tool_approval_timeout_policy", "auto_approve")
+            adk_adapter._config["tool_approval_timeout_seconds"] = 3.0
+            adk_adapter._config["tool_approval_timeout_policy"] = "auto_approve"
+
+            user_context = UserContext(user_id="streaming_test_user")
+            system_prompt = (
+                "You are a meticulous research assistant. Always begin by outlining a numbered plan with "
+                "the prefix 'Plan Step:' for each step. After planning, you MUST call the tool "
+                f"'{progressive_tool}' with the requested query to gather data before providing your final answer. "
+                "Do not fabricate results; wait for tool output before concluding."
+            )
+
+            creation_request = TaskRequest(
+                task_id=f"stream_agent_create_{uuid4().hex[:8]}",
+                task_type="chat",
+                description="Create agent for live streaming validation",
+                messages=[],
+                agent_config=AgentConfig(
+                    agent_type="streaming_researcher",
+                    system_prompt=system_prompt,
+                    model_config={
+                        "model": model_name,
+                        "temperature": 0.3,
+                        "max_tokens": 1500,
+                    },
+                    available_tools=[progressive_tool],
+                    framework_config={
+                        "planner": {
+                            "type": "built_in",
+                            "thinking_config": {
+                                "include_thoughts": True,
+                                "thinking_budget": 256,
+                            },
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "properties": {
+                                "plan": {"type": "array", "items": {"type": "string"}},
+                                "answer": {"type": "string"},
+                            },
+                        }
+                    },
+                ),
+                user_context=user_context,
+                metadata={
+                    "test_case": test_case,
+                    "phase": "agent_creation",
+                    "model": model_name,
+                },
+            )
+
+            creation_result = await components.execution_engine.execute_task(creation_request)
+            if creation_result.status != TaskStatus.SUCCESS:
+                raise RuntimeError(
+                    f"Agent creation failed: {creation_result.error_message or 'unknown error'}"
+                )
+
+            agent_id = creation_result.agent_id
+            chat_session_id = creation_result.session_id or creation_result.metadata.get(
+                "chat_session_id"
+            )
+            if not agent_id or not chat_session_id:
+                raise RuntimeError("Agent creation response missing identifiers.")
+
+            stream_message = UniversalMessage(
+                role="user",
+                content=(
+                    "Research three recent developments in AI streaming infrastructure. "
+                    "1) Present your plan first with 'Plan Step:' labels. "
+                    "2) Call the tool to gather live data using the query 'AI streaming infrastructure updates'. "
+                    "3) After tool results return, summarize the findings succinctly."
+                ),
+                metadata={"requires_tool": True},
+            )
+
+            live_request = TaskRequest(
+                task_id=f"stream_live_{uuid4().hex[:8]}",
+                task_type="chat",
+                description="Live streaming conversation with MCP tool",
+                messages=[stream_message],
+                agent_id=agent_id,
+                session_id=chat_session_id,
+                user_context=user_context,
+                metadata={
+                    "test_case": test_case,
+                    "phase": "live_execution",
+                    "model": model_name,
+                    "tool_expected": progressive_tool,
+                },
+            )
+
+            execution_context = ExecutionContext(
+                execution_id=f"stream_exec_{uuid4().hex[:8]}",
+                framework_type=FrameworkType.ADK,
+                execution_mode="live",
+            )
+
+            live_stream, communicator = await components.execution_engine.execute_task_live(
+                live_request, execution_context
+            )
+
+            if hasattr(communicator, "broker"):
+                communicator.broker._fallback_policy = "auto_approve"
+                communicator.broker._timeout_seconds = 3.0
+
+            tool_result_seen = False
+            tool_proposal_seen = False
+            plan_seen = False
+            chunk_count = 0
+            final_response_preview: Optional[str] = None
+            followup_sent = False
+            followup_response_seen = False
+            followup_sent_sequence: Optional[int] = None
+            followup_message = (
+                "Thanks for the research. Please continue with one more insight "
+                "focused specifically on reliability improvements for live AI streaming workloads."
+            )
+            followup_response_types = {
+                TaskChunkType.PLAN_DELTA,
+                TaskChunkType.PLAN_SUMMARY,
+                TaskChunkType.PROGRESS,
+                TaskChunkType.TOOL_PROPOSAL,
+                TaskChunkType.TOOL_RESULT,
+                TaskChunkType.RESPONSE,
+            }
+            followup_session_closed = False
+            sent_followup_message: Optional[str] = None
+
+            self.logger.info("▶️ [%s] Live streaming loop started", model_name)
+            async for chunk in live_stream:
+                chunk_count += 1
+                content_preview = chunk.content
+                if isinstance(content_preview, dict):
+                    content_preview = json.dumps(content_preview, ensure_ascii=False)
+                if isinstance(content_preview, str):
+                    content_preview = content_preview[:200]
+                else:
+                    content_preview = str(content_preview)[:200]
+
+                stage = (chunk.metadata or {}).get("stage")
+                self.logger.info(
+                    "🔸 [STREAM][%s] seq=%02d type=%s kind=%s stage=%s | %s",
+                    model_name,
+                    chunk.sequence_id,
+                    chunk.chunk_type.value,
+                    chunk.chunk_kind or "-",
+                    stage or "-",
+                    content_preview,
+                )
+
+                chunk_records.append(
+                    {
+                        "sequence_id": chunk.sequence_id,
+                        "chunk_type": chunk.chunk_type.value,
+                        "chunk_kind": chunk.chunk_kind,
+                        "metadata": chunk.metadata,
+                        "content": chunk.content,
+                    }
+                )
+
+                chunk_turn_complete = bool((chunk.metadata or {}).get("turn_complete"))
+                if (
+                    not followup_sent
+                    and (
+                        chunk.chunk_type == TaskChunkType.COMPLETE
+                        or chunk_turn_complete
+                    )
+                ):
+                    choice = await self._prompt_user_input(
+                        "HITL: send additional user message? (y/n): ",
+                        default="y",
+                    )
+                    if choice.strip().lower().startswith("y"):
+                        user_followup = await self._prompt_user_input(
+                            "HITL: enter follow-up message (leave blank for default): ",
+                            default=followup_message,
+                        )
+                        message_to_send = user_followup.strip() or followup_message
+                        self.logger.info(
+                            "🔁 [%s] Initial turn complete; sending follow-up live user message",
+                            model_name,
+                        )
+                        try:
+                            await communicator.send_user_message(message_to_send)
+                        except Exception as followup_exc:
+                            raise RuntimeError(
+                                f"Failed to send follow-up message: {followup_exc}"
+                            ) from followup_exc
+                        followup_sent = True
+                        sent_followup_message = message_to_send
+                        followup_sent_sequence = chunk.sequence_id
+                        self.logger.info(
+                            "🔁 [%s] Follow-up message dispatched successfully", model_name
+                        )
+                    else:
+                        self.logger.info(
+                            "🔁 [%s] Follow-up skipped by operator input", model_name
+                        )
+
+                if chunk.chunk_type == TaskChunkType.TOOL_RESULT:
+                    tool_result_seen = True
+                if chunk.chunk_type == TaskChunkType.TOOL_PROPOSAL:
+                    tool_proposal_seen = True
+                if chunk.chunk_kind in {CHUNK_KIND_PLAN_DELTA, CHUNK_KIND_PLAN_SUMMARY}:
+                    plan_seen = True
+                if (
+                    followup_sent
+                    and not followup_response_seen
+                    and followup_sent_sequence is not None
+                    and chunk.sequence_id > followup_sent_sequence
+                    and chunk.chunk_type in followup_response_types
+                ):
+                    followup_response_seen = True
+                if (
+                    followup_sent
+                    and followup_response_seen
+                    and not followup_session_closed
+                    and chunk.chunk_type == TaskChunkType.COMPLETE
+                ):
+                    self.logger.info(
+                        "🔚 [%s] Follow-up turn complete; closing live communicator",
+                        model_name,
+                    )
+                    if hasattr(communicator, "close"):
+                        try:
+                            communicator.close()
+                        except Exception as close_exc:  # pragma: no cover - diagnostic
+                            self.logger.warning(
+                                "⚠️ [%s] Failed to close communicator cleanly: %s",
+                                model_name,
+                                close_exc,
+                            )
+                    else:
+                        self.logger.debug(
+                            "🔚 [%s] Communicator exposes no close() method", model_name
+                        )
+                    followup_session_closed = True
+                    break
+                if (
+                    chunk.chunk_type == TaskChunkType.RESPONSE
+                    and isinstance(chunk.content, str)
+                    and chunk.content
+                ):
+                    final_response_preview = chunk.content[:240]
+
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            success = tool_result_seen and (not followup_sent or followup_response_seen)
+
+            self.logger.info(
+                "🔚 [%s] Live streaming finished | chunks=%s | plan=%s | tool_proposal=%s | tool_result=%s | followup_sent=%s | followup_response=%s | response_preview=%s",
+                model_name,
+                chunk_count,
+                plan_seen,
+                tool_proposal_seen,
+                tool_result_seen,
+                followup_sent,
+                followup_response_seen,
+                final_response_preview or "n/a",
+            )
+
+            status = "success" if success else "failed"
+            if success:
+                self.performance_metrics["successful_requests"] += 1
+                self.performance_metrics["tool_calls_detected"] += 1
+                self.logger.info(
+                    "✅ [%s] Live streaming test completed (plan=%s, tool_proposal=%s, tool_result=%s, followup_response=%s)",
+                    model_name,
+                    plan_seen,
+                    tool_proposal_seen,
+                    tool_result_seen,
+                    followup_response_seen,
+                )
+            else:
+                self.performance_metrics["failed_requests"] += 1
+                self.logger.error(
+                    "❌ [%s] Live streaming test failed (plan=%s, tool_proposal=%s, tool_result=%s, followup_response=%s)",
+                    model_name,
+                    plan_seen,
+                    tool_proposal_seen,
+                    tool_result_seen,
+                    followup_response_seen,
+                )
+
+            self.test_results.append(
+                {
+                    "test_case": test_case,
+                    "task_id": live_request.task_id,
+                    "model": model_name,
+                    "status": status,
+                    "execution_time": execution_time,
+                    "timestamp": datetime.now().isoformat(),
+                    "chunks": chunk_records,
+                    "metadata": {
+                        "plan_detected": plan_seen,
+                        "tool_proposal_detected": tool_proposal_seen,
+                        "tool_result_detected": tool_result_seen,
+                        "multi_turn_followup_sent": followup_sent,
+                        "multi_turn_followup_response_detected": followup_response_seen,
+                        "followup_message": (sent_followup_message or followup_message) if followup_sent else "",
+                        "tool_name": progressive_tool,
+                        "chunk_count": chunk_count,
+                    },
+                }
+            )
+
+            return success
+
+        except Exception as exc:
+            execution_time = (datetime.now() - start_time).total_seconds()
+            self.performance_metrics["total_requests"] += 1
+            self.performance_metrics["failed_requests"] += 1
+            self.performance_metrics["total_execution_time"] += execution_time
+
+            self.logger.error(f"❌ [{model_name}] Live streaming test encountered error: {exc}")
+            self.test_results.append(
+                {
+                    "test_case": test_case,
+                    "model": model_name,
+                    "status": "exception",
+                    "execution_time": execution_time,
+                    "error_message": str(exc),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+            return False
+
+        finally:
+            self.logger.info("🧹 [%s] Live streaming cleanup started", model_name)
+            if components:
+                if components.tool_service:
+                    self.logger.debug("🧹 [%s] Shutting down tool service...", model_name)
+                    await components.tool_service.shutdown()
+                    self.logger.debug("🧹 [%s] Tool service shutdown complete", model_name)
+                self.logger.debug("🧹 [%s] Shutting down framework adapters...", model_name)
+                await components.framework_registry.shutdown_all_adapters()
+                self.logger.debug("🧹 [%s] Framework adapters shutdown complete", model_name)
+            if server_proc:
+                self.logger.debug("🧹 [%s] Terminating MCP server process...", model_name)
+                _stop_real_mcp_server(server_proc)
+                self.logger.debug("🧹 [%s] MCP server process terminated", model_name)
+            self.logger.info("🧹 [%s] Live streaming cleanup finished", model_name)
 
     async def test_complex_conversation(self, model: str = None):
         """Test complex conversation with evaluation of response quality."""
@@ -938,8 +1470,9 @@ class CompleteE2ETestSuite:
             self.logger.info("       ├── Test 1: Simple Conversation")
             self.logger.info("       ├── Test 2: Multimodal Image Analysis")
             self.logger.info("       ├── Test 3: Tool Usage Request")
-            self.logger.info("       ├── Test 4: Complex Conversation")
-            self.logger.info("       └── Test 5: Agent Config Reuse")
+            self.logger.info("       ├── Test 4: Live Streaming Mode")
+            self.logger.info("       ├── Test 5: Complex Conversation")
+            self.logger.info("       └── Test 6: Agent Config Reuse")
         self.logger.info("5. Report Generation & Summary")
         self.logger.info("=" * 80)
         
@@ -970,53 +1503,81 @@ class CompleteE2ETestSuite:
                 
                 # Test 1: Simple conversation
                 self.logger.info(f"\n📋 [{model}] Starting Test 1: Simple Conversation...")
-                result1 = await self.test_simple_conversation(model)
-                model_results.append(("simple_conversation", result1))
-                
-                if result1:
-                    self.logger.info(f"✅ [{model}] Test 1 COMPLETED: Simple Conversation - SUCCESS")
+                if self._should_run("simple_conversation"):
+                    result1 = await self.test_simple_conversation(model)
+                    model_results.append(("simple_conversation", result1))
+                    if result1:
+                        self.logger.info(f"✅ [{model}] Test 1 COMPLETED: Simple Conversation - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 1 COMPLETED: Simple Conversation - FAILED")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 1 COMPLETED: Simple Conversation - FAILED")
+                    self._record_skip("simple_conversation", model)
+                    model_results.append(("simple_conversation", True))
                 
                 # Test 2: Multimodal image analysis
                 self.logger.info(f"\n📋 [{model}] Starting Test 2: Multimodal Image Analysis...")
-                result2 = await self.test_multimodal_image_analysis(model)
-                model_results.append(("multimodal_image_analysis", result2))
-                
-                if result2:
-                    self.logger.info(f"✅ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - SUCCESS")
+                if self._should_run("multimodal_image_analysis"):
+                    result2 = await self.test_multimodal_image_analysis(model)
+                    model_results.append(("multimodal_image_analysis", result2))
+                    if result2:
+                        self.logger.info(f"✅ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - FAILED")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 2 COMPLETED: Multimodal Image Analysis - FAILED")
+                    self._record_skip("multimodal_image_analysis", model)
+                    model_results.append(("multimodal_image_analysis", True))
                 
                 # Test 3: Tool usage
                 self.logger.info(f"\n📋 [{model}] Starting Test 3: Tool Usage...")
-                result3 = await self.test_tool_usage_request(model)
-                model_results.append(("tool_usage_request", result3))
+                if self._should_run("tool_usage_request"):
+                    result3 = await self.test_tool_usage_request(model)
+                    model_results.append(("tool_usage_request", result3))
+                    if result3:
+                        self.logger.info(f"✅ [{model}] Test 3 COMPLETED: Tool Usage - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 3 COMPLETED: Tool Usage - FAILED")
+                else:
+                    self._record_skip("tool_usage_request", model)
+                    model_results.append(("tool_usage_request", True))
                 
-                if result3:
-                    self.logger.info(f"✅ [{model}] Test 3 COMPLETED: Tool Usage - SUCCESS")
+                # Test 4: Live streaming mode
+                self.logger.info(f"\n📡 [{model}] Starting Test 4: Live Streaming Mode...")
+                if self._should_run("live_streaming_mode"):
+                    result_stream = await self.test_live_streaming_mode(model)
+                    model_results.append(("live_streaming_mode", result_stream))
+                    if result_stream:
+                        self.logger.info(f"✅ [{model}] Test 4 COMPLETED: Live Streaming Mode - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 4 COMPLETED: Live Streaming Mode - FAILED")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 3 COMPLETED: Tool Usage - FAILED")
-                
-                # Test 4: Complex conversation
-                self.logger.info(f"\n📋 [{model}] Starting Test 4: Complex Conversation...")
-                result4 = await self.test_complex_conversation(model)
-                model_results.append(("complex_conversation", result4))
+                    self._record_skip("live_streaming_mode", model)
+                    model_results.append(("live_streaming_mode", True))
 
-                if result4:
-                    self.logger.info(f"✅ [{model}] Test 4 COMPLETED: Complex Conversation - SUCCESS")
+                # Test 5: Complex conversation
+                self.logger.info(f"\n📋 [{model}] Starting Test 5: Complex Conversation...")
+                if self._should_run("complex_conversation"):
+                    result4 = await self.test_complex_conversation(model)
+                    model_results.append(("complex_conversation", result4))
+                    if result4:
+                        self.logger.info(f"✅ [{model}] Test 5 COMPLETED: Complex Conversation - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 5 COMPLETED: Complex Conversation - FAILED")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 4 COMPLETED: Complex Conversation - FAILED")
+                    self._record_skip("complex_conversation", model)
+                    model_results.append(("complex_conversation", True))
 
-                # Test 5: Agent config reuse behaviour
-                self.logger.info(f"\n📋 [{model}] Starting Test 5: Agent Config Reuse...")
-                result5 = await self.test_agent_reuse_same_config(model)
-                model_results.append(("agent_reuse_same_config", result5))
-
-                if result5:
-                    self.logger.info(f"✅ [{model}] Test 5 COMPLETED: Agent Config Reuse - SUCCESS")
+                # Test 6: Agent config reuse behaviour
+                self.logger.info(f"\n📋 [{model}] Starting Test 6: Agent Config Reuse...")
+                if self._should_run("agent_reuse_same_config"):
+                    result5 = await self.test_agent_reuse_same_config(model)
+                    model_results.append(("agent_reuse_same_config", result5))
+                    if result5:
+                        self.logger.info(f"✅ [{model}] Test 6 COMPLETED: Agent Config Reuse - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 6 COMPLETED: Agent Config Reuse - FAILED")
                 else:
-                    self.logger.error(f"❌ [{model}] Test 5 COMPLETED: Agent Config Reuse - FAILED")
+                    self._record_skip("agent_reuse_same_config", model)
+                    model_results.append(("agent_reuse_same_config", True))
                 
                 # Calculate model success rate
                 model_success_count = sum(1 for _, success in model_results if success)
@@ -1128,6 +1689,12 @@ Examples:
         action="store_true", 
         help="List all supported models and exit"
     )
+
+    parser.add_argument(
+        "--tests",
+        nargs="+",
+        help="Run only the specified test cases (e.g. simple_conversation live_streaming_mode)"
+    )
     
     return parser.parse_args()
 
@@ -1171,6 +1738,10 @@ async def main():
             models=args.models,
             run_all_models=args.all_models
         )
+
+        if args.tests:
+            test_suite.logger.info(f"Running selected tests only: {', '.join(args.tests)}")
+            test_suite.selected_tests = set(args.tests)
         
         print(f"🎯 Target Models: {', '.join(test_suite.test_models)}")
         print()

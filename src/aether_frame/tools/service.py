@@ -4,7 +4,7 @@
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from ..contracts import ToolRequest, ToolResult, ToolStatus
+from ..contracts import ErrorCode, ToolRequest, ToolResult, ToolStatus, build_error
 from ..contracts.enums import TaskChunkType
 from ..contracts.streaming import TaskStreamChunk
 from .base.tool import Tool
@@ -86,11 +86,18 @@ class ToolService:
         # Find tool
         tool = self._tools.get(full_name)
         if not tool:
+            error_payload = build_error(
+                ErrorCode.TOOL_NOT_DECLARED,
+                f"Tool {full_name} not found",
+                source="tool_service.execute",
+                details={"tool": full_name},
+            )
             return ToolResult(
                 tool_name=tool_request.tool_name,
                 tool_namespace=tool_request.tool_namespace,
                 status=ToolStatus.NOT_FOUND,
-                error_message=f"Tool {full_name} not found",
+                error_message=error_payload.message,
+                error=error_payload,
             )
 
         try:
@@ -107,11 +114,18 @@ class ToolService:
             
             # Validate parameters
             if not await tool.validate_parameters(tool_request.parameters):
+                error_payload = build_error(
+                    ErrorCode.TOOL_PARAMETERS,
+                    "Invalid tool parameters",
+                    source="tool_service.validate",
+                    details={"tool": full_name},
+                )
                 return ToolResult(
                     tool_name=tool_request.tool_name,
                     tool_namespace=tool_request.tool_namespace,
                     status=ToolStatus.ERROR,
-                    error_message="Invalid tool parameters",
+                    error_message=error_payload.message,
+                    error=error_payload,
                 )
 
             # Execute tool
@@ -130,11 +144,18 @@ class ToolService:
             return result
 
         except Exception as e:
+            error_payload = build_error(
+                ErrorCode.TOOL_EXECUTION,
+                f"Tool execution failed: {str(e)}",
+                source="tool_service.execute",
+                details={"tool": full_name},
+            )
             return ToolResult(
                 tool_name=tool_request.tool_name,
                 tool_namespace=tool_request.tool_namespace,
                 status=ToolStatus.ERROR,
-                error_message=f"Tool execution failed: {str(e)}",
+                error_message=error_payload.message,
+                error=error_payload,
             )
 
     async def list_tools(self, namespace: Optional[str] = None) -> List[str]:
@@ -232,17 +253,25 @@ class ToolService:
 
         tool = self._tools.get(full_name)
         if not tool:
+            error_payload = build_error(
+                ErrorCode.TOOL_NOT_DECLARED,
+                f"Tool {full_name} not found",
+                source="tool_service.execute_stream",
+                details={"tool": full_name},
+            )
             yield TaskStreamChunk(
                 task_id=f"tool_execution_{full_name}",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=f"Tool {full_name} not found",
+                content=error_payload.to_dict(),
                 is_final=True,
                 metadata={
                     "tool_name": tool_request.tool_name,
                     "tool_namespace": tool_request.tool_namespace,
                     "status": ToolStatus.NOT_FOUND.value,
+                    "stage": "tool",
                 },
+                chunk_kind="tool.error",
             )
             return
 
@@ -252,17 +281,25 @@ class ToolService:
 
         # Validate parameters prior to execution, mirroring execute_tool
         if not await tool.validate_parameters(parameters):
+            error_payload = build_error(
+                ErrorCode.TOOL_PARAMETERS,
+                "Invalid tool parameters",
+                source="tool_service.execute_stream",
+                details={"tool": full_name},
+            )
             yield TaskStreamChunk(
                 task_id=f"tool_execution_{full_name}",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content="Invalid tool parameters",
+                content=error_payload.to_dict(),
                 is_final=True,
                 metadata={
                     "tool_name": full_name,
                     "tool_namespace": tool.namespace,
                     "status": ToolStatus.ERROR.value,
+                    "stage": "tool",
                 },
+                chunk_kind="tool.error",
             )
             return
 
@@ -291,17 +328,25 @@ class ToolService:
                         "error": str(exc),
                     },
                 )
+                error_payload = build_error(
+                    ErrorCode.TOOL_EXECUTION,
+                    f"Streaming execution failed: {exc}",
+                    source="tool_service.execute_stream",
+                    details={"tool": full_name},
+                )
                 yield TaskStreamChunk(
                     task_id=f"tool_execution_{full_name}",
                     chunk_type=TaskChunkType.ERROR,
                     sequence_id=0,
-                    content=f"Streaming execution failed: {exc}",
+                    content=error_payload.to_dict(),
                     is_final=True,
                     metadata={
                         "tool_name": full_name,
                         "tool_namespace": tool.namespace,
                         "status": ToolStatus.ERROR.value,
+                        "stage": "tool",
                     },
+                    chunk_kind="tool.error",
                 )
                 return
 
@@ -327,11 +372,16 @@ class ToolService:
             "tool_namespace": result.tool_namespace or tool.namespace,
             "status": result.status.value,
             "fallback_to_sync": True,
+            "stage": "tool",
         }
         if result.metadata:
             metadata["tool_metadata"] = result.metadata
         if result.execution_time is not None:
             metadata["execution_time"] = result.execution_time
+
+        chunk_kind = "tool.result" if is_success else "tool.error"
+        if not is_success and result.error:
+            content = result.error.to_dict()
 
         yield TaskStreamChunk(
             task_id=f"tool_execution_{result.tool_name or full_name}",
@@ -340,6 +390,7 @@ class ToolService:
             content=content if content is not None else "",
             is_final=True,
             metadata=metadata,
+            chunk_kind=chunk_kind,
         )
 
     async def health_check(self) -> Dict[str, Any]:

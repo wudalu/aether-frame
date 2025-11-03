@@ -471,7 +471,20 @@ class MCPClient:
         Returns:
             True if connected, False otherwise
         """
-        return self._connected and self._session is not None
+        return self._connected
+
+    @is_connected.setter
+    def is_connected(self, value: bool) -> None:
+        """Allow tests or callers to override connection flag."""
+        self._connected = bool(value)
+        if not value:
+            self._session = None
+
+    @is_connected.deleter
+    def is_connected(self) -> None:
+        """Reset connection state (used by tests during patch cleanup)."""
+        self._connected = False
+        self._session = None
     
     @property
     def supports_streaming(self) -> bool:

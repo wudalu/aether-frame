@@ -59,50 +59,53 @@ async def real_time_data_stream(duration: int = 5, ctx: Context[ServerSession, N
 
 @mcp.tool()
 async def progressive_search(query: str, max_results: int = 5, ctx: Context[ServerSession, None] = None) -> str:
-    """Simulate progressive search with real-time result discovery and progress reporting."""
+    """Simulate progressive search with real-time result discovery and progress reporting.
+
+    为了方便上游 ADK 模型总结，这里会返回包含标题、简短摘要和关联度的结构化文本。
+    """
+    if max_results is None or max_results <= 0:
+        max_results = 5
+
     if ctx:
         await ctx.info(f"🔍 Starting progressive search for '{query}'")
-    
-    results = []
-    
-    # Initial search start
-    results.append(f"🔍 Starting search for '{query}'...")
-    if ctx:
-        await ctx.report_progress(0.0, 1.0, "Initializing search...")
-    
+
+    await ctx.report_progress(0.0, 1.0, "Initializing search...") if ctx else None
     await asyncio.sleep(0.3)
-    
-    # Progressive result discovery with progress reporting
-    for i in range(max_results):
-        progress = i / max_results
+
+    synthesized_results = []
+    for index in range(max_results):
+        progress = index / max_results
         if ctx:
-            await ctx.report_progress(
-                progress=progress,
-                total=1.0,
-                message=f"Searching result {i+1}/{max_results}"
-            )
-        
-        await asyncio.sleep(0.8)  # Simulate search time per result
-        
-        result = f"📄 Result {i+1}: Document about '{query}' (relevance: {95-i*5}%)"
-        results.append(result)
-        
-        if ctx:
-            await ctx.debug(f"Found: {result}")
-        
-        # Add processing indicator
-        if i < max_results - 1:
-            results.append(f"   ⏳ Searching for more results...")
-    
-    # Search completion
-    await asyncio.sleep(0.2)
-    results.append(f"✅ Search completed. Found {max_results} results for '{query}'")
-    
+            await ctx.report_progress(progress, 1.0, f"Collecting insight {index+1}/{max_results}")
+
+        await asyncio.sleep(0.6)
+
+        relevance = max(55, 95 - index * 5)
+        synthesized_results.append(
+            {
+                "title": f"Insight {index + 1}: {query.title()} Trend",
+                "relevance": relevance,
+                "summary": (
+                    f"Vendors are piloting {query} initiatives聚焦 {index + 1}，"
+                    "highlighting低延迟、成本优化与隐私安全结合的落地案例。"
+                    "运营团队通过分层缓存、联邦学习及自适应码率，"
+                    "让实时流媒体在不同网络下仍保持稳定体验。"
+                ),
+            }
+        )
+
     if ctx:
         await ctx.report_progress(1.0, 1.0, "Search completed")
-        await ctx.info(f"✅ Found {max_results} results for '{query}'")
-    
-    return "\n".join(results)
+        await ctx.info(f"✅ Found {max_results} synthesized insights for '{query}'")
+
+    lines = [f"🔍 Summary for '{query}':"]
+    for item in synthesized_results:
+        lines.append(
+            "• {title} (relevance: {relevance}%)\n  {summary}".format(**item)
+        )
+
+    lines.append("✅ Search completed. Generated structured insights ready for analysis.")
+    return "\n".join(lines)
 
 
 @mcp.tool()

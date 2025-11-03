@@ -63,12 +63,36 @@ def setup_logging(
 
         logging_config["handlers"]["file"] = {
             "class": "logging.handlers.RotatingFileHandler",
-            "level": level,
+            "level": "DEBUG",
             "formatter": "json",
             "filename": log_file_path,
             "maxBytes": 10485760,  # 10MB
             "backupCount": 5,
         }
+
+    if log_file_path:
+        lite_handlers = ["file"]
+        lite_propagate = False
+    else:
+        lite_handlers = []
+        lite_propagate = True
+    logging_config["loggers"] = {
+        "LiteLLM": {
+            "level": "DEBUG",
+            "handlers": lite_handlers,
+            "propagate": lite_propagate,
+        },
+        "litellm": {
+            "level": "DEBUG",
+            "handlers": lite_handlers,
+            "propagate": lite_propagate,
+        },
+        "aether_frame.framework.adk.deepseek_streaming_llm": {
+            "level": "DEBUG",
+            "handlers": lite_handlers or handlers,
+            "propagate": False,
+        },
+    }
 
     logging.config.dictConfig(logging_config)
 

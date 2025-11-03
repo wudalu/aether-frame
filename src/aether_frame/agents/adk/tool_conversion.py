@@ -2,6 +2,7 @@
 """Helpers for converting UniversalTools into ADK FunctionTool objects."""
 
 import inspect
+import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...contracts import ToolRequest
@@ -12,6 +13,7 @@ def create_function_tools(
     tool_service: Any,
     universal_tools: Iterable[Any],
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
+    approval_callback: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
 ) -> List[Any]:
     """Convert UniversalTool objects into ADK FunctionTool instances."""
     if not tool_service:
@@ -27,7 +29,28 @@ def create_function_tools(
     for universal_tool in universal_tools:
 
         def create_async_wrapper(tool):
+            tool_metadata = getattr(tool, "metadata", {}) or {}
+            requires_approval = bool(tool_metadata.get("requires_approval", True))
+
             async def async_adk_tool(**kwargs):
+                if requires_approval and approval_callback:
+                    approval_result = await approval_callback(tool, kwargs)
+                    if isinstance(approval_result, dict):
+                        if not approval_result.get("approved", True):
+                            return approval_result
+                        approval_metadata = approval_result
+                    else:
+                        if approval_result is False:
+                            return {
+                                "status": "cancelled",
+                                "error": "Tool invocation cancelled by approval flow",
+                                "tool_name": tool.name,
+                                "namespace": tool.namespace,
+                            }
+                        approval_metadata = None
+                else:
+                    approval_metadata = {"requires_approval": requires_approval}
+
                 tool_request = (
                     request_factory(tool, kwargs)
                     if request_factory
@@ -51,18 +74,29 @@ def create_function_tools(
 
                 status_value = "error"
                 error_message = "Tool execution failed"
+                error_payload = None
                 if result:
                     status_value = (
                         result.status.value if hasattr(result.status, "value") else result.status
                     )
                     error_message = result.error_message or error_message
+                    if getattr(result, "error", None):
+                        try:
+                            error_payload = result.error.to_dict()  # type: ignore[attr-defined]
+                        except Exception:
+                            error_payload = None
 
-                return {
+                payload = {
                     "status": status_value,
                     "error": error_message,
                     "tool_name": tool.name,
                     "namespace": tool.namespace,
                 }
+                if error_payload:
+                    payload["error_payload"] = error_payload
+                if approval_metadata and isinstance(approval_metadata, dict):
+                    payload.setdefault("approval_metadata", approval_metadata)
+                return payload
 
             async_adk_tool.__name__ = tool.name.split(".")[-1] if "." in tool.name else tool.name
             async_adk_tool.__doc__ = tool.description or f"Tool: {tool.name}"
@@ -83,6 +117,9 @@ def create_function_tools(
     return adk_tools
 
 
+logger = logging.getLogger(__name__)
+
+
 def build_adk_agent(
     *,
     name: str,
@@ -93,6 +130,9 @@ def build_adk_agent(
     universal_tools: Optional[Iterable[Any]] = None,
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
     settings: Any = None,
+    enable_streaming: bool = False,
+    model_config: Optional[Dict[str, Any]] = None,
+    framework_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Create an ADK Agent with the provided configuration and tools."""
     try:
@@ -101,19 +141,87 @@ def build_adk_agent(
     except ImportError:
         return None
 
-    model = AdkModelFactory.create_model(model_identifier, settings)
+    model = AdkModelFactory.create_model(
+        model_identifier,
+        settings,
+        enable_streaming=enable_streaming,
+        model_config=model_config,
+    )
 
     tools: List[Any] = []
     if universal_tools:
-        tools = create_function_tools(tool_service, universal_tools, request_factory=request_factory)
+        tools = create_function_tools(
+            tool_service, universal_tools, request_factory=request_factory
+        )
+    planner = None
+    planner_cfg: Optional[Dict[str, Any]] = None
+    if framework_config:
+        raw_planner = framework_config.get("planner")
+        if isinstance(raw_planner, bool):
+            planner_cfg = {"type": "built_in"} if raw_planner else None
+        elif isinstance(raw_planner, str):
+            planner_cfg = {"type": raw_planner}
+        elif isinstance(raw_planner, dict):
+            planner_cfg = dict(raw_planner)
+        elif raw_planner is not None:
+            logger.warning("Unsupported planner configuration type: %s", type(raw_planner))
 
-    return Agent(
-        name=name,
-        description=description,
-        instruction=instruction,
-        model=model,
-        tools=tools,
-    )
+    if planner_cfg:
+        planner_type = str(planner_cfg.get("type", "built_in")).lower()
+        planner_kwargs = dict(planner_cfg.get("kwargs", {}) or {})
+        thinking_cfg_data = planner_cfg.get("thinking_config")
+        thinking_config = None
+        if thinking_cfg_data:
+            try:
+                from google.genai import types as genai_types  # type: ignore
+
+                if isinstance(thinking_cfg_data, dict):
+                    thinking_kwargs = {
+                        key: value
+                        for key, value in thinking_cfg_data.items()
+                        if value is not None
+                    }
+                    if thinking_kwargs:
+                        thinking_config = genai_types.ThinkingConfig(**thinking_kwargs)
+                else:
+                    logger.warning(
+                        "Ignoring non-dict thinking_config for planner: %s",
+                        thinking_cfg_data,
+                    )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logger.warning("Failed to build ThinkingConfig for planner: %s", exc)
+
+        if thinking_config is not None and "thinking_config" not in planner_kwargs:
+            planner_kwargs["thinking_config"] = thinking_config
+
+        try:
+            from google.adk.planners import (  # type: ignore
+                BuiltInPlanner,
+                PlanReActPlanner,
+            )
+
+            if planner_type in {"built_in", "builtin", "built-in"}:
+                planner = BuiltInPlanner(**planner_kwargs)
+            elif planner_type in {"planreact", "plan_react", "plan-react"}:
+                planner = PlanReActPlanner(**planner_kwargs)
+            else:
+                logger.warning("Unsupported planner type '%s'; skipping planner", planner_type)
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            logger.warning("Planner requested but google-adk planners unavailable: %s", exc)
+        except Exception as exc:  # pragma: no cover - planner init failure
+            logger.warning("Failed to initialize planner '%s': %s", planner_type, exc)
+
+    agent_kwargs = {
+        "name": name,
+        "description": description,
+        "instruction": instruction,
+        "model": model,
+        "tools": tools,
+    }
+    if planner is not None:
+        agent_kwargs["planner"] = planner
+
+    return Agent(**agent_kwargs)
 
 
 def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Signature]:
@@ -138,7 +246,7 @@ def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Sig
         if name in required_fields:
             default = inspect._empty
         else:
-            default = None
+            default = prop.get("default", None)
         parameters.append(
             inspect.Parameter(
                 name,

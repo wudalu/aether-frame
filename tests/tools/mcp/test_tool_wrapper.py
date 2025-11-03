@@ -339,7 +339,8 @@ class TestMCPToolWrapper:
         # Should get one error chunk
         assert len(chunks) == 1
         assert chunks[0].chunk_type == TaskChunkType.ERROR
-        assert "not connected" in chunks[0].content
+        assert isinstance(chunks[0].content, dict)
+        assert "not connected" in chunks[0].content.get("message", "")
         assert chunks[0].is_final is True
         assert chunks[0].metadata["error_type"] == "MCPConnectionError"
     
@@ -375,7 +376,8 @@ class TestMCPToolWrapper:
         # Should get one error chunk
         assert len(chunks) == 1
         assert chunks[0].chunk_type == TaskChunkType.ERROR
-        assert chunks[0].content == "Streaming failed"
+        assert isinstance(chunks[0].content, dict)
+        assert chunks[0].content.get("message") == "Streaming failed"
         assert chunks[0].is_final is True
         assert chunks[0].metadata["error_type"] == "MCPToolError"
     

@@ -7,12 +7,15 @@ from datetime import datetime
 
 from ..config.settings import Settings
 from ..contracts import (
+    ErrorCode,
     ExecutionContext,
     LiveExecutionResult,
     TaskRequest,
     TaskResult,
     TaskStatus,
+    build_error,
 )
+from ..streaming import StreamSession, create_stream_session
 from ..framework.framework_registry import FrameworkRegistry
 from .task_router import TaskRouter
 
@@ -56,10 +59,17 @@ class ExecutionEngine:
                 "session_id": task_request.session_id,
                 "has_agent_config": bool(task_request.agent_config),
             }
+            error_payload = build_error(
+                ErrorCode.REQUEST_VALIDATION,
+                error_msg,
+                source="execution_engine.validate_context",
+                details=provided_context,
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_msg,
+                error=error_payload,
                 metadata={
                     "error_stage": "execution_engine.validate_context",
                     "provided_context": provided_context,
@@ -80,10 +90,17 @@ class ExecutionEngine:
             if not framework_adapter:
                 error_msg = f"Framework {strategy.framework_type} not available"
                 self.logger.error(f"Framework adapter not available - {error_msg}")
+                error_payload = build_error(
+                    ErrorCode.FRAMEWORK_UNAVAILABLE,
+                    error_msg,
+                    source="execution_engine.get_adapter",
+                    details={"framework": strategy.framework_type.value},
+                )
                 return TaskResult(
                     task_id=task_request.task_id,
                     status=TaskStatus.ERROR,
                     error_message=error_msg,
+                    error=error_payload,
                     metadata={
                         "error_stage": "execution_engine.get_adapter",
                         "framework": strategy.framework_type.value,
@@ -109,10 +126,17 @@ class ExecutionEngine:
                 framework_type = strategy.framework_type.value  # type: ignore[name-defined]
             except Exception:
                 framework_type = None
+            error_payload = build_error(
+                ErrorCode.INTERNAL_ERROR,
+                error_msg,
+                source="execution_engine.execute_task",
+                details={"error_type": error_type, "framework": framework_type},
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_msg,
+                error=error_payload,
                 session_id=task_request.session_id,
                 agent_id=task_request.agent_id,
                 metadata={
@@ -172,6 +196,19 @@ class ExecutionEngine:
         except Exception as e:
             # Let the exception bubble up for proper error handling
             raise RuntimeError(f"Live execution failed: {str(e)}") from e
+
+    async def execute_task_live_session(
+        self, task_request: TaskRequest, context: ExecutionContext
+    ) -> StreamSession:
+        """
+        Execute a task in live mode and return a high-level StreamSession wrapper.
+
+        This helper wraps ``execute_task_live`` and returns a ``StreamSession``
+        object that exposes iteration, approval submission, and cancellation
+        helpers geared toward API/service layers.
+        """
+        live_result = await self.execute_task_live(task_request, context)
+        return create_stream_session(task_request.task_id, live_result)
 
     async def get_execution_status(self, task_id: str) -> Optional[TaskResult]:
         """Get the status of a running or completed task."""

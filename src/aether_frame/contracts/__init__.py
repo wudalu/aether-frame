@@ -43,9 +43,18 @@ from .enums import (
     TaskStatus,
     ToolStatus,
 )
+from .errors import ErrorCode, ErrorPayload, build_error
 from .requests import AgentRequest, TaskRequest, ToolRequest
 from .responses import AgentResponse, TaskResult, ToolResult
 from .streaming import (
+    CHUNK_KIND_PLAN_DELTA,
+    CHUNK_KIND_PLAN_SUMMARY,
+    CHUNK_KIND_TOOL_COMPLETE,
+    CHUNK_KIND_TOOL_PROGRESS,
+    CHUNK_KIND_TOOL_PROPOSAL,
+    CHUNK_KIND_TOOL_RESULT,
+    CHUNK_KIND_TOOL_ERROR,
+    DEFAULT_CHUNK_VERSION,
     InteractionRequest,
     InteractionResponse,
     LiveExecutionResult,
@@ -58,6 +67,10 @@ __all__ = [
     "TaskRequest",
     "AgentRequest",
     "ToolRequest",
+    # Errors
+    "ErrorCode",
+    "ErrorPayload",
+    "build_error",
     # Response types
     "TaskResult",
     "AgentResponse",
@@ -86,6 +99,14 @@ __all__ = [
     "InteractionResponse",
     "LiveSession",
     "LiveExecutionResult",
+    "DEFAULT_CHUNK_VERSION",
+    "CHUNK_KIND_PLAN_DELTA",
+    "CHUNK_KIND_PLAN_SUMMARY",
+    "CHUNK_KIND_TOOL_PROPOSAL",
+    "CHUNK_KIND_TOOL_RESULT",
+    "CHUNK_KIND_TOOL_PROGRESS",
+    "CHUNK_KIND_TOOL_COMPLETE",
+    "CHUNK_KIND_TOOL_ERROR",
     # Enums
     "FrameworkType",
     "TaskStatus",

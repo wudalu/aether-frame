@@ -143,6 +143,52 @@ sequenceDiagram
     AI-->>USER: TaskResult (ready for follow-up)
 ```
 
+### Detailed Execution Flows (Sync & Live)
+
+#### Sync Execution Overview
+- **Request Path**: `TaskRequest → ExecutionEngine → AdkFrameworkAdapter → AdkDomainAgent`
+- **Runner Coordination**: RunnerManager either reuses an existing runner/session or provisions a new one based on `agent_id`/`agent_config`.
+- **Tool Use**: Domain agent resolves the relevant tool set on-demand via `ToolService` and executes synchronously inside the ADK runtime.
+- **Result Packaging**: ADK response is flattened into a single `TaskResult` (no incremental streaming) and returned to the caller.
+
+```mermaid
+flowchart LR
+    Client -->|TaskRequest| ExecutionEngine -->|Strategy| AdkAdapter
+    AdkAdapter -->|Lookup/Create| AgentManager
+    AdkAdapter -->|Runner/session| RunnerManager
+    RunnerManager --> ADKRuntime --> ToolService
+    ADKRuntime -->|TaskResult| AdkAdapter --> ExecutionEngine --> Client
+```
+
+#### Live Execution + Tool Use
+- **Streaming Lifecycle**: `execute_task_live` yields an async generator of `TaskStreamChunk`s while a paired communicator sends user or approval messages back through the ADK `LiveRequestQueue`.
+- **Chunk Taxonomy**:  
+  `plan.delta / plan.summary → tool.proposal → tool.result → response.delta → turn.complete`
+- **Tool Invocation Flow**: Tool proposals are emitted prior to tool execution. When upstream frameworks omit proposals, the domain agent synthesizes a `tool_proposal` chunk before producing the real `tool_result`.
+- **HITL Bridge**: After the first turn completes, the suite prompts the operator (stdin) to decide whether to inject another user turn; responses are forwarded through `communicator.send_user_message`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant ExecutionEngine
+    participant DomainAgent
+    participant ADKLive as ADK Live Runtime
+    participant ToolSvc as Tool Service
+    participant Operator as HITL
+
+    Client->>ExecutionEngine: execute_task_live(request)
+    ExecutionEngine->>DomainAgent: AgentRequest + runtime
+    DomainAgent->>ADKLive: start_live_session(queue)
+    ADKLive-->>DomainAgent: plan/tool chunks (stream)
+    DomainAgent-->>ExecutionEngine: TaskStreamChunk(plan.delta)
+    DomainAgent-->>ToolSvc: execute(progressive_search)
+    ToolSvc-->>DomainAgent: tool response
+    DomainAgent-->>ExecutionEngine: TaskStreamChunk(tool.proposal/tool.result)
+    ExecutionEngine-->>Client: streaming chunks
+    Operator-->>DomainAgent: follow-up (via communicator)
+    ADKLive-->>DomainAgent: response.final + turn.complete
+```
+
 ## Core Components (Current Implementation)
 
 ### Framework Abstraction Layer
@@ -207,6 +253,30 @@ sequenceDiagram
 - **Current Support**: Builtin tools (echo, timestamp, chat_log)
 - **Planned Support**: MCP tools, ADK native tools, external API tools
 - **Integration**: Ready for agent tool execution
+
+#### Streaming & HITL Design (✅ Instrumented)
+- **TaskStreamChunk Envelope**  
+  - `chunk_type`: semantic category (`PLAN_DELTA`, `TOOL_PROPOSAL`, …)  
+  - `chunk_kind`: fine-grained identifier (`plan.delta`, `tool.result`, …)  
+  - `metadata`: `stage`, `author`, `interaction_id`, tool descriptors, and ADK event hints  
+  - `interaction_id`: stable key linking proposals to results (generated when upstream signals are absent)
+- **Chunk Kinds in Live Sessions**
+
+  | `chunk_kind`        | Description                                  | Primary Source                     |
+  |---------------------|----------------------------------------------|------------------------------------|
+  | `plan.delta` / `plan.summary` | Incremental reasoning plan            | ADK event metadata or fallback text detector |
+  | `tool.proposal`     | Tool invocation intent                       | ADK `function_call` event or synthesized by domain agent |
+  | `tool.result`       | Materialized tool output                     | Tool execution payload             |
+  | `response.delta` / `response.final` | Assistant natural language output       | ADK streaming events               |
+  | `turn.complete`     | Turn boundary indicator                      | ADK runtime                        |
+- **Fallback Semantics**
+  - `_fallback_plan_event` promotes free-form "Plan Step…" text into structured plan chunks so downstream telemetry remains consistent.
+  - `_try_convert_tool_result` now synthesizes a proposal chunk when upstream frameworks skip explicit proposals, ensuring `tool_proposal_detected` stays accurate.
+- **HITL Integration**
+  - `CompleteE2ETestSuite._prompt_user_input` bridges standard input into async execution, allowing operators to approve/skip follow-up messages mid-stream.
+  - Default values guarantee non-interactive environments still progress deterministically (auto-approve).
+- **Planner Compatibility**
+  - Planner configuration is optional and carried through `framework_config["planner"]`. Even when models do not emit native plan metadata, the fallback layer ensures plan visualization remains available.
 
 ### Infrastructure Layer (✅ Implemented)
 
@@ -379,90 +449,90 @@ Real-time bidirectional communication implemented through framework adapters, en
 
 | Problem Domain | Technical Challenge | Short-term Solution | Specific Implementation | Complexity | Risk |
 |---|---|---|---|---|---|
-| **ADK Runner/Runtime管理** | 单用户需要多个ADK Runner实例，每个Agent一个Runner | 构建ADKRuntimeManager统一管理Runner池 | `ADKRuntimeManager`类 + `RunnerPool`组件 + Runner生命周期管理 | Medium | **HIGH** |
-| **Session协调与切换** | UI需要在多个Agent对话间切换，保持上下文 | 实现UserSessionCoordinator管理用户的多个Session | `UserSessionCoordinator`类 + Session状态缓存 + 切换API | Medium | Medium |
-| **ADK Session状态管理** | ADK Session重启后状态丢失，需要持久化 | SessionStateManager提供状态快照和恢复 | `SessionStateManager`类 + 内存缓存 + 定期快照机制 | Low | Medium |
-| **资源控制与监控** | 多Runner可能消耗过多系统资源 | ResourceGovernor实现配额管理和监控 | `ResourceGovernor`类 + 用户配额 + 资源监控组件 | Low | Low |
-| **工具注册与安全执行** | 动态工具需要安全隔离执行环境 | ToolRegistry + 子进程隔离执行 | `SecureToolRegistry`类 + `ToolExecutor`组件 + 权限验证 | Medium | **HIGH** |
-| **非Streaming请求处理** | 当前系统主要支持streaming，需要同步请求模式 | 在ADK Adapter中添加同步执行模式 | `execute_task_sync()`方法 + 结果等待机制 | Low | Low |
+| **ADK Runner / Runtime Management** | A single user may require multiple ADK runner instances, one per agent | Build `ADKRuntimeManager` to orchestrate a shared runner pool | `ADKRuntimeManager` class + `RunnerPool` component + runner lifecycle management | Medium | **HIGH** |
+| **Session Coordination and Switching** | The UI must hop between agent conversations without losing context | Implement `UserSessionCoordinator` to manage a user's sessions | `UserSessionCoordinator` class + session state cache + switching API | Medium | Medium |
+| **ADK Session State Persistence** | ADK sessions lose state after restarts and need persistence | Provide snapshots and restoration via `SessionStateManager` | `SessionStateManager` class + in-memory cache + periodic snapshot mechanism | Low | Medium |
+| **Resource Control and Monitoring** | Multiple runners can exhaust system resources | Implement quotas and monitoring through `ResourceGovernor` | `ResourceGovernor` class + user quota enforcement + resource monitoring component | Low | Low |
+| **Tool Registration and Secure Execution** | Dynamically loaded tools require isolation | Use `SecureToolRegistry` with subprocess isolation | `SecureToolRegistry` class + `ToolExecutor` component + permission checks | Medium | **HIGH** |
+| **Non-Streaming Request Handling** | The system currently favours streaming and needs a sync mode | Add a synchronous execution path in the ADK adapter | `execute_task_sync()` method + result wait mechanics | Low | Low |
 
 ### Critical Path Dependencies
 
-**Phase 1 (优先级顺序)**:
-1. **ADK Runner/Runtime管理** - 基础设施，必须先完成
-2. **非Streaming请求支持** - 简化MVP实现
-3. **Session协调与切换** - 核心用户体验
-4. **工具注册与安全** - 安全基础
+**Phase 1 (priority order)**:
+1. **ADK Runner / Runtime management** – foundational infrastructure, must ship first.
+2. **Non-streaming request support** – simplifies the MVP experience.
+3. **Session coordination and switching** – core UX requirement.
+4. **Tool registration and safety** – baseline security.
 
-**Phase 2 (生产就绪)**:
-5. **资源控制与监控** - 生产环境必需
-6. **Session状态持久化** - 可靠性保障
-7. **Streaming支持** - 用户体验增强
+**Phase 2 (production readiness)**:
+5. **Resource control and monitoring** – mandatory for production deployments.
+6. **Session state persistence** – reliability requirement.
+7. **Streaming enhancements** – polish for user experience.
 
 ### Specific Implementation Modules
 
-#### 1. ADK Runtime Manager (最高优先级)
+#### 1. ADK Runtime Manager (highest priority)
 ```python
-# 位置: src/aether_frame/framework/adk/runtime_manager.py
+# Location: src/aether_frame/framework/adk/runtime_manager.py
 class ADKRuntimeManager:
-    """统一管理ADK Runner实例的生命周期"""
+    """Manage the lifecycle of ADK runner instances."""
     
 class RunnerPool:
-    """Runner实例池，支持复用和预热"""
+    """Runner pool with reuse and warm-up support."""
     
 class RunnerLifecycleController:
-    """Runner创建、初始化、清理的生命周期控制"""
+    """Create, initialise, and clean up runner instances."""
 ```
 
 #### 2. User Session Coordinator  
 ```python
-# 位置: src/aether_frame/agents/user_session_coordinator.py
+# Location: src/aether_frame/agents/user_session_coordinator.py
 class UserSessionCoordinator:
-    """管理单用户的多Agent Session协调"""
+    """Coordinate multiple agent sessions for a single user."""
     
 class SessionSwitcher:
-    """处理Session间的切换逻辑"""
+    """Handle transitions between active sessions."""
 ```
 
 #### 3. Session State Manager
 ```python  
-# 位置: src/aether_frame/infrastructure/session_state_manager.py
+# Location: src/aether_frame/infrastructure/session_state_manager.py
 class SessionStateManager:
-    """ADK Session状态的持久化和恢复"""
+    """Persist and restore ADK session state."""
     
 class StateSnapshotScheduler:
-    """定期状态快照调度器"""
+    """Schedule recurring state snapshots."""
 ```
 
 #### 4. Resource Governance
 ```python
-# 位置: src/aether_frame/infrastructure/resource_governor.py 
+# Location: src/aether_frame/infrastructure/resource_governor.py 
 class ResourceGovernor:
-    """资源配额管理和监控"""
+    """Enforce resource quotas and monitor usage."""
     
 class UserQuotaManager:
-    """用户级别的资源配额管理"""
+    """Track per-user quota consumption."""
 ```
 
 #### 5. Tool Registry & Security
 ```python
-# 位置: src/aether_frame/tools/secure_tool_registry.py
+# Location: src/aether_frame/tools/secure_tool_registry.py
 class SecureToolRegistry:
-    """工具注册和安全执行管理"""
+    """Register tools and manage secure execution."""
     
 class ToolExecutor:
-    """工具的隔离执行环境"""
+    """Provide an isolated execution environment for tools."""
 ```
 
 ### Risk Mitigation Strategy
 
-**高风险项目**:
-- **ADK Runner管理**: Week 1前3天构建原型，验证多Runner资源消耗
-- **工具安全执行**: 优先使用subprocess隔离，避免复杂容器化方案
+**High-risk items**:
+- **ADK runner management**: Build a prototype in the first three days of week one to validate multi-runner resource usage.
+- **Tool execution security**: Prefer subprocess isolation first, avoiding complex containerisation for the MVP.
 
-**中等风险项目**:
-- **Session状态管理**: 先用内存缓存，后续迁移到持久存储
-- **Session协调**: 先支持基本切换，后续优化性能
+**Medium-risk items**:
+- **Session state management**: Start with an in-memory cache, migrate to durable storage later.
+- **Session coordination**: Ship basic switching support first, then optimise performance.
 
 ## Performance Targets
 

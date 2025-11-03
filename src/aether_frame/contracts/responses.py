@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .contexts import ExecutionContext, UniversalMessage
 from .enums import TaskStatus, ToolStatus
+from .errors import ErrorPayload
 
 
 @dataclass
@@ -20,6 +21,7 @@ class TaskResult:
     tool_results: List["ToolResult"] = field(default_factory=list)
     execution_context: Optional[ExecutionContext] = None
     error_message: Optional[str] = None
+    error: Optional[ErrorPayload] = None
     execution_time: Optional[float] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -55,6 +57,7 @@ class ToolResult:
     tool_namespace: Optional[str] = None
     result_data: Optional[Any] = None
     error_message: Optional[str] = None
+    error: Optional[ErrorPayload] = None
     execution_time: Optional[float] = None
     created_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)

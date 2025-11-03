@@ -2,7 +2,7 @@
 """ADK Model Factory for custom model handling."""
 
 import os
-from typing import Any, Union
+from typing import Any, Dict, Optional, Union
 
 
 class AdkModelFactory:
@@ -14,7 +14,12 @@ class AdkModelFactory:
     """
     
     @staticmethod
-    def create_model(model_identifier: str, settings=None, enable_streaming: bool = False) -> Union[str, Any]:
+    def create_model(
+        model_identifier: str,
+        settings=None,
+        enable_streaming: bool = False,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> Union[str, Any]:
         """
         Create appropriate model instance based on identifier.
         
@@ -22,39 +27,61 @@ class AdkModelFactory:
             model_identifier: Model identifier string
             settings: Application settings (optional)
             enable_streaming: Whether to enable streaming support
+            model_config: Optional per-model configuration overrides
             
         Returns:
             Either the original string for native ADK models,
             or a custom wrapper for external models
         """
         model_lower = model_identifier.lower()
+        model_kwargs: Dict[str, Any] = {}
+        if model_config:
+            model_kwargs = {
+                key: value
+                for key, value in model_config.items()
+                if key != "model" and value is not None
+            }
         
         # Handle DeepSeek models
         if "deepseek" in model_lower:
-            if enable_streaming:
-                # Use custom streaming wrapper
-                try:
-                    from .deepseek_streaming_llm import DeepSeekStreamingLLM
-                    if settings:
-                        api_key = getattr(settings, "deepseek_api_key", None)
-                        base_url = getattr(settings, "deepseek_base_url", "https://api.deepseek.com/v1")
-                        return DeepSeekStreamingLLM(
-                            model=model_identifier,
-                            api_key=api_key,
-                            base_url=base_url
-                        )
-                    else:
-                        return DeepSeekStreamingLLM(model=model_identifier)
-                except ImportError:
-                    # Fall back to LiteLLM if streaming wrapper unavailable
-                    pass
-            
-            # Use LiteLLM for non-streaming or fallback
+            api_key = getattr(settings, "deepseek_api_key", None) if settings else None
+            base_url = getattr(settings, "deepseek_base_url", None) if settings else None
+            if api_key:
+                os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
+            if base_url:
+                os.environ.setdefault("DEEPSEEK_API_BASE", base_url)
+
+            model_name = model_identifier if model_identifier.startswith("deepseek/") else f"deepseek/{model_identifier}"
+
             try:
+                if enable_streaming:
+                    from .deepseek_streaming_llm import DeepSeekStreamingLLM
+
+                    stream_kwargs = dict(model_kwargs)
+                    if api_key:
+                        stream_kwargs.setdefault("api_key", api_key)
+                    if base_url:
+                        stream_kwargs.setdefault("api_base", base_url)
+                    return DeepSeekStreamingLLM(
+                        model=model_name,
+                        **stream_kwargs,
+                    )
+
                 from google.adk.models.lite_llm import LiteLlm
-                return LiteLlm(model=f"deepseek/{model_identifier}")
-            except ImportError:
-                # LiteLLM not available, fallback to string
+
+                extra_kwargs = {}
+                if api_key:
+                    extra_kwargs["api_key"] = api_key
+                if base_url:
+                    extra_kwargs["api_base"] = base_url
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
+                return LiteLlm(model=model_name, **extra_kwargs)
+            except ImportError as exc:
+                if enable_streaming:
+                    raise RuntimeError(
+                        "DeepSeek streaming requested but google-adk lite_llm dependencies are not available."
+                    ) from exc
                 return model_identifier
         
         # Handle OpenAI models
@@ -63,7 +90,10 @@ class AdkModelFactory:
         ]):
             try:
                 from google.adk.models.lite_llm import LiteLlm
-                return LiteLlm(model=model_identifier)
+                extra_kwargs = {"stream": enable_streaming}
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
+                return LiteLlm(model=model_identifier, **{k: v for k, v in extra_kwargs.items() if v is not None})
             except ImportError:
                 # LiteLLM not available, fallback to string
                 return model_identifier
@@ -87,7 +117,10 @@ class AdkModelFactory:
                     azure_model = model_identifier.replace("azure-", "azure/")
                 else:
                     azure_model = model_identifier
-                return LiteLlm(model=azure_model)
+                extra_kwargs = {"stream": enable_streaming}
+                if model_kwargs:
+                    extra_kwargs.update(model_kwargs)
+                return LiteLlm(model=azure_model, **{k: v for k, v in extra_kwargs.items() if v is not None})
             except ImportError:
                 # LiteLLM not available, fallback to string
                 return model_identifier
@@ -124,9 +157,17 @@ class AdkModelFactory:
                     extra_args["api_key"] = api_key
                 if base_url:
                     extra_args["api_base"] = base_url
+                if enable_streaming:
+                    extra_args["stream"] = True
+                if model_kwargs:
+                    extra_args.update(model_kwargs)
 
                 return LiteLlm(model=qwen_model, **extra_args)
             except ImportError:
+                if enable_streaming:
+                    raise RuntimeError(
+                        "Qwen streaming requested but google-adk lite_llm dependencies are not available."
+                    )
                 return model_identifier
 
         # For Gemini and other ADK-native models, return as-is

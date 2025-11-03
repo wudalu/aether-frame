@@ -67,8 +67,12 @@ class TaskChunkType(Enum):
     """Streaming task chunk types for live execution."""
 
     PROCESSING = "processing"
+    PLAN_DELTA = "plan_delta"
+    PLAN_SUMMARY = "plan_summary"
     TOOL_CALL_REQUEST = "tool_call_request"
     TOOL_APPROVAL_REQUEST = "tool_approval_request"
+    TOOL_PROPOSAL = "tool_proposal"
+    TOOL_RESULT = "tool_result"
     USER_INPUT_REQUEST = "user_input_request"
     RESPONSE = "response"
     PROGRESS = "progress"

@@ -1,128 +1,128 @@
-# ADK 多模态聊天支持实现总结
+# ADK Multimodal Chat Support – Implementation Summary
 
-## 概述
+## Overview
 
-本实现为Aether Frame框架的ADK适配器添加了完整的多模态聊天支持，主要支持图片处理，并兼容GPT-4系列模型的最佳实践。
+This implementation extends the Aether Frame ADK adapter with full multimodal chat support, with a primary focus on image handling while keeping parity with GPT-4 family best practices.
 
-## 主要功能
+## Key Features
 
-### 1. 多模态工具模块
-- `multimodal_utils.py`: 处理base64图片编码、MIME类型检测和格式验证
-- 支持JPEG、PNG、WebP、GIF、BMP格式
-- 自动检测图片格式
-- 安全的base64解码
+### 1. Multimodal utility module
+- `multimodal_utils.py`: Base64 encoding/decoding helpers, MIME detection, and format validation.
+- Supports JPEG, PNG, WebP, GIF, and BMP images.
+- Automatically detects image formats.
+- Provides safe Base64 decoding guards.
 
-### 2. 消息转换系统
-- `AdkEventConverter`: 增强的事件转换器，支持多模态内容
-- 将前端发送的base64图片转换为ADK/Gemini兼容格式
-- 支持文本+图片混合消息
-- 向后兼容纯文本消息
+### 2. Message conversion pipeline
+- `AdkEventConverter`: Enhanced event converter with multimodal awareness.
+- Transforms Base64 images from the client into ADK/Gemini-compatible payloads.
+- Handles mixed text + image messages seamlessly.
+- Remains backward compatible with text-only conversations.
 
-### 3. 前端集成支持
-- `ImageReference.from_base64()`: 便捷的工厂方法
-- 支持前端直接发送base64编码的图片
-- 自动处理数据URL格式（`data:image/jpeg;base64,...`）
+### 3. Front-end integration helpers
+- `ImageReference.from_base64()`: Convenience factory for client uploads.
+- Allows the front end to post Base64-encoded images directly.
+- Transparently handles data URLs such as `data:image/jpeg;base64,...`.
 
-### 4. GPT-4兼容性
-- `Gpt4MultimodalConverter`: GPT-4格式转换器
-- 支持OpenAI API的多模态消息格式
-- 便于模型切换和跨平台兼容
+### 4. GPT-4 compatibility layer
+- `Gpt4MultimodalConverter`: Dedicated converter for GPT-4 style payloads.
+- Produces OpenAI API compliant multimodal messages.
+- Simplifies model switching and cross-platform compatibility.
 
-## 架构设计
+## Architecture
 
-### 消息流程
+### Message flow
 ```
-前端 (Base64图片) → UniversalMessage → ADK Content → Gemini/GPT-4
+Front-end (Base64 image) → UniversalMessage → ADK Content → Gemini/GPT-4
 ```
 
-### 关键组件
-1. **multimodal_utils**: 图片处理工具
-2. **AdkEventConverter**: 消息转换核心
-3. **ImageReference**: 图片引用抽象
-4. **Gpt4MultimodalConverter**: GPT-4兼容层
+### Core components
+1. **multimodal_utils** – image processing helpers.
+2. **AdkEventConverter** – conversion core.
+3. **ImageReference** – image reference abstraction.
+4. **Gpt4MultimodalConverter** – GPT-4 compatibility layer.
 
-## 使用示例
+## Usage Examples
 
-### 前端发送多模态消息
+### Client sends a multimodal message
 ```python
-# 前端创建包含图片的消息
+# Build a message that includes an image
 image_ref = ImageReference.from_base64(
     base64_data="data:image/jpeg;base64,/9j/4AAQSkZJ...",
-    image_format="jpeg"
+    image_format="jpeg",
 )
 
 message = UniversalMessage(
     role="user",
     content=[
-        ContentPart(text="分析这张图片"),
-        ContentPart(image_reference=image_ref)
-    ]
+        ContentPart(text="Please analyse this picture."),
+        ContentPart(image_reference=image_ref),
+    ],
 )
 ```
 
-### ADK格式转换
+### Convert to ADK format
 ```python
 converter = AdkEventConverter()
 adk_message = converter.convert_universal_message_to_adk(message)
-# 输出ADK兼容的格式，包含inline_data
+# Produces ADK-compatible content with inline_data payloads
 ```
 
-### GPT-4格式转换
+### Convert to GPT-4 format
 ```python
 gpt4_message = converter.convert_universal_messages_to_gpt4_format([message])
-# 输出OpenAI API兼容格式
+# Produces payloads compatible with the OpenAI API
 ```
 
-## 测试覆盖
+## Test Coverage
 
-- **单元测试**: 覆盖所有工具函数和转换逻辑
-- **集成测试**: 验证完整消息流程
-- **格式兼容性测试**: 确保ADK和GPT-4格式正确性
-- **错误处理测试**: 验证异常情况的处理
+- **Unit tests** – cover all helper functions and conversion logic.
+- **Integration tests** – verify the end-to-end message pipeline.
+- **Format compatibility tests** – assert ADK and GPT-4 schema correctness.
+- **Error-handling tests** – ensure graceful degradation paths.
 
-## 性能特性
+## Performance Characteristics
 
-1. **简洁设计**: 避免过度封装，遵循项目原则
-2. **向后兼容**: 纯文本消息保持原有性能
-3. **内存效率**: 避免重复的base64编解码
-4. **错误恢复**: 图片处理失败时优雅降级为文本
+1. **Lean design** – avoids excessive abstraction in line with project guidelines.
+2. **Backward compatibility** – text-only conversations keep existing performance.
+3. **Memory efficiency** – limits redundant Base64 encode/decode operations.
+4. **Error resilience** – downgrades to text content when image processing fails.
 
-## 支持的图片格式
+## Supported Image Formats
 
-- **JPEG/JPG**: 完全支持
-- **PNG**: 完全支持  
-- **WebP**: 完全支持
-- **GIF**: 完全支持
-- **BMP**: 完全支持
+- **JPEG/JPG** – fully supported.
+- **PNG** – fully supported.
+- **WebP** – fully supported.
+- **GIF** – fully supported.
+- **BMP** – fully supported.
 
-## 文件结构
+## File Layout
 
 ```
 src/aether_frame/
 ├── framework/adk/
-│   └── multimodal_utils.py          # 多模态工具
+│   └── multimodal_utils.py          # Multimodal helpers
 ├── framework/gpt4/
-│   └── multimodal_converter.py      # GPT-4兼容层
+│   └── multimodal_converter.py      # GPT-4 compatibility layer
 ├── agents/adk/
-│   └── adk_event_converter.py       # 增强的事件转换器
+│   └── adk_event_converter.py       # Enhanced event converter
 ├── contracts/
-│   └── contexts.py                  # 扩展的ImageReference
+│   └── contexts.py                  # Extended ImageReference
 tests/unit/
-└── test_adk_multimodal.py          # 完整测试套件
+└── test_adk_multimodal.py           # Full unit suite
 examples/
-└── multimodal_chat_example.py      # 使用示例
+└── multimodal_chat_example.py       # Usage example
 ```
 
-## 下一步扩展
+## Next Steps
 
-1. **音频支持**: 可扩展支持音频文件
-2. **视频支持**: 未来可添加视频处理
-3. **文档支持**: 可添加PDF等文档处理
-4. **批量处理**: 支持多图片批处理优化
+1. **Audio support** – extend the pipeline to audio attachments.
+2. **Video support** – plan for future video ingestion.
+3. **Document support** – add PDF and other document conversions.
+4. **Batch processing** – optimise for multiple images per request.
 
-## 兼容性
+## Compatibility Matrix
 
-- **ADK**: 原生支持Gemini模型多模态
-- **GPT-4**: 通过转换器支持OpenAI格式
-- **前端**: 支持标准base64图片上传
-- **向后兼容**: 不影响现有纯文本功能
+- **ADK** – native support for Gemini multimodal models.
+- **GPT-4** – converter outputs OpenAI-compatible payloads.
+- **Front-end** – accepts standard Base64 uploads.
+- **Backward compatibility** – no regression for text-only workflows.
