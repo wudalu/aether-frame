@@ -101,6 +101,12 @@ async def test_agent_creation_with_tools_executes_mcp_tool(monkeypatch):
             universal_tools,
             request_factory,
             settings,
+            enable_streaming=False,
+            model_config=None,
+            framework_config=None,
+            before_agent_callback=None,
+            before_model_callback=None,
+            after_model_callback=None,
         ):
             captured["build_called"] = True
             universal_list = list(universal_tools or [])

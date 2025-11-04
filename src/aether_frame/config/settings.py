@@ -160,3 +160,6 @@ class Settings(BaseSettings):
     default_adk_model: str = "gemini-1.5-flash"
     default_autogen_model: str = "gpt-4"
     default_langgraph_model: str = "gpt-4"
+
+    # ADK observability toggles
+    capture_adk_llm_payloads: bool = False

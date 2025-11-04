@@ -133,6 +133,9 @@ def build_adk_agent(
     enable_streaming: bool = False,
     model_config: Optional[Dict[str, Any]] = None,
     framework_config: Optional[Dict[str, Any]] = None,
+    before_agent_callback: Any = None,
+    before_model_callback: Any = None,
+    after_model_callback: Any = None,
 ) -> Optional[Any]:
     """Create an ADK Agent with the provided configuration and tools."""
     try:
@@ -220,6 +223,13 @@ def build_adk_agent(
     }
     if planner is not None:
         agent_kwargs["planner"] = planner
+
+    if before_agent_callback:
+        agent_kwargs["before_agent_callback"] = before_agent_callback
+    if before_model_callback:
+        agent_kwargs["before_model_callback"] = before_model_callback
+    if after_model_callback:
+        agent_kwargs["after_model_callback"] = after_model_callback
 
     return Agent(**agent_kwargs)
 

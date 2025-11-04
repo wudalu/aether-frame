@@ -128,6 +128,21 @@ class AdkDomainAgent(DomainAgent):
         tool_service = self.runtime_context.get("tool_service")
         settings = self._get_settings()
 
+        before_agent_cb = None
+        before_model_cb = None
+        after_model_cb = None
+
+        capture_llm_payloads = bool(
+            getattr(settings, "capture_adk_llm_payloads", False) if settings else False
+        )
+        if capture_llm_payloads:
+            try:
+                from .llm_callbacks import build_llm_capture_callbacks
+
+                before_agent_cb, before_model_cb, after_model_cb = build_llm_capture_callbacks(self)
+            except Exception:  # pragma: no cover - defensive in case ADK missing
+                self.logger.debug("Failed to build ADK LLM capture callbacks.", exc_info=True)
+
         self.adk_agent = build_adk_agent(
             name=self.config.get("name", self.agent_id),
             description=self.config.get("description", "ADK Domain Agent"),
@@ -140,6 +155,9 @@ class AdkDomainAgent(DomainAgent):
             enable_streaming=True,
             model_config=model_config,
             framework_config=framework_config,
+            before_agent_callback=before_agent_cb,
+            before_model_callback=before_model_cb,
+            after_model_callback=after_model_cb,
         )
 
         if self.adk_agent:
