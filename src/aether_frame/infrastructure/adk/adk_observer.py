@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """ADK Observer - Integration with ADK monitoring and observability."""
 
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ...contracts import AgentRequest, TaskResult
+
+logger = logging.getLogger("aether_frame.infrastructure.adk.observer")
 
 
 class AdkObserver:
@@ -48,9 +51,25 @@ class AdkObserver:
                 self._metrics["execution_events"] = []
             self._metrics["execution_events"].append(event)
 
+            logger.info(
+                "ADK execution start: task_id=%s agent_id=%s metadata=%s",
+                task_id,
+                agent_id,
+                metadata,
+                extra={
+                    "execution_id": task_id,
+                    "flow_step": "ADK_START",
+                    "component": "AdkObserver",
+                    "key_data": {
+                        "agent_id": agent_id,
+                        "metadata": metadata or {},
+                    },
+                },
+            )
+
         except Exception as e:
             # Don't let monitoring failures break execution
-            pass
+            logger.debug("Failed to record execution start: %s", e, exc_info=True)
 
     async def record_execution_completion(
         self, task_id: str, result: TaskResult, execution_time: Optional[float]
@@ -91,9 +110,36 @@ class AdkObserver:
                 self._metrics["execution_events"] = []
             self._metrics["execution_events"].append(event)
 
+            key_data = {
+                "status": result.status.value,
+            }
+            if execution_time is not None:
+                key_data["execution_time"] = execution_time
+            if result.error_message:
+                key_data["error_message"] = result.error_message
+            token_usage = None
+            if result.metadata:
+                token_usage = result.metadata.get("token_usage")
+            if token_usage:
+                key_data["token_usage"] = token_usage
+
+            logger.info(
+                "ADK execution complete: task_id=%s status=%s execution_time=%s token_usage=%s",
+                task_id,
+                result.status.value,
+                execution_time,
+                token_usage,
+                extra={
+                    "execution_id": task_id,
+                    "flow_step": "ADK_COMPLETE",
+                    "component": "AdkObserver",
+                    "key_data": key_data,
+                },
+            )
+
         except Exception as e:
             # Don't let monitoring failures break execution
-            pass
+            logger.debug("Failed to record execution completion: %s", e, exc_info=True)
 
     async def record_execution_error(
         self, task_id: str, error: Exception, agent_id: str
@@ -124,9 +170,27 @@ class AdkObserver:
                 self._metrics["execution_errors"] = []
             self._metrics["execution_errors"].append(event)
 
-        except Exception:
+            logger.warning(
+                "ADK execution error: task_id=%s agent_id=%s error_type=%s message=%s",
+                task_id,
+                agent_id,
+                type(error).__name__,
+                str(error),
+                extra={
+                    "execution_id": task_id,
+                    "flow_step": "ADK_ERROR",
+                    "component": "AdkObserver",
+                    "key_data": {
+                        "agent_id": agent_id,
+                        "error_type": type(error).__name__,
+                        "error_message": str(error),
+                    },
+                },
+            )
+
+        except Exception as log_error:
             # Suppress errors in error tracking
-            pass
+            logger.debug("Failed to record execution error: %s", log_error, exc_info=True)
 
     async def start_trace(self, operation: str, metadata: Dict[str, Any]) -> str:
         """

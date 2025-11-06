@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from ...contracts import (
     AgentRequest,
     ErrorCode,
+    FrameworkType,
     LiveExecutionResult,
     TaskResult,
     TaskStatus,
@@ -62,6 +63,8 @@ class AdkDomainAgent(DomainAgent):
         self._tools_initialized = False  # Track if tools have been initialized
         self._active_task_request = None  # Track current TaskRequest context
         self._tool_approval_policy: Dict[str, bool] = {}
+        self._last_usage_metadata: Optional[Dict[str, Any]] = None
+        self._last_input_snapshot: Optional[List[Dict[str, Any]]] = None
 
     # === Core Interface Methods ===
 
@@ -137,7 +140,7 @@ class AdkDomainAgent(DomainAgent):
         )
         if capture_llm_payloads:
             try:
-                from .llm_callbacks import build_llm_capture_callbacks
+                from ...framework.adk.llm_callbacks import build_llm_capture_callbacks
 
                 before_agent_cb, before_model_cb, after_model_cb = build_llm_capture_callbacks(self)
             except Exception:  # pragma: no cover - defensive in case ADK missing
@@ -364,6 +367,8 @@ class AdkDomainAgent(DomainAgent):
 
         try:
             start_time = datetime.now()
+            self._last_usage_metadata = None
+            self._last_input_snapshot = None
 
             # Pre-execution hooks
             await self.hooks.before_execution(agent_request)
@@ -440,6 +445,10 @@ class AdkDomainAgent(DomainAgent):
         """
         previous_task_request = self._active_task_request
         self._active_task_request = task_request
+        self._last_usage_metadata = None
+        self._last_input_snapshot = self._summarize_input_messages(
+            task_request.messages or []
+        )
 
         try:
             # Get runtime components provided by adapter
@@ -451,6 +460,17 @@ class AdkDomainAgent(DomainAgent):
                 return self._create_error_live_result(
                     task_request.task_id, "ADK runtime context not available for live execution"
                 )
+
+            agent_request = AgentRequest(
+                agent_type=self.config.get("agent_type", "general"),
+                framework_type=FrameworkType.ADK,
+                task_request=task_request,
+                session_id=session_id,
+                runtime_options=self.runtime_context,
+                metadata=task_request.metadata or {},
+            )
+
+            await self.hooks.before_execution(agent_request)
 
             # Create LiveRequestQueue in agent layer (ADK best practice)
             try:
@@ -465,6 +485,7 @@ class AdkDomainAgent(DomainAgent):
             async def adk_live_stream():
                 from ...contracts import TaskChunkType, TaskStreamChunk
 
+                execution_error: Optional[Exception] = None
                 try:
                     # Convert messages to ADK format and send initial message
                     adk_content = self._convert_messages_to_adk_content(
@@ -486,6 +507,12 @@ class AdkDomainAgent(DomainAgent):
                     sequence_id = 0
                     async with aclosing(live_events) as adk_events:
                         async for adk_event in adk_events:
+                            if self._last_usage_metadata is None:
+                                usage = getattr(adk_event, "usage_metadata", None)
+                                normalized_usage = self._usage_to_dict(usage)
+                                if normalized_usage:
+                                    self._last_usage_metadata = normalized_usage
+
                             chunks = self.event_converter.convert_adk_event_to_chunk(
                                 adk_event, task_request.task_id, sequence_id
                             )
@@ -498,17 +525,59 @@ class AdkDomainAgent(DomainAgent):
                                 yield chunk
                                 sequence_id += 1
 
+                except GeneratorExit:
+                    # Consumer closed the stream; treat as successful completion
+                    pass
                 except Exception as e:
-                    yield TaskStreamChunk(
-                        task_id=task_request.task_id,
-                        chunk_type=TaskChunkType.ERROR,
-                        sequence_id=0,
-                        content=f"ADK live execution failed: {str(e)}",
-                        is_final=True,
-                        metadata={"error_type": "execution_error", "framework": "adk"},
-                    )
+                    execution_error = e
+                    try:
+                        await self.hooks.on_error(agent_request, e)
+                    finally:
+                        yield TaskStreamChunk(
+                            task_id=task_request.task_id,
+                            chunk_type=TaskChunkType.ERROR,
+                            sequence_id=0,
+                            content=f"ADK live execution failed: {str(e)}",
+                            is_final=True,
+                            metadata={"error_type": "execution_error", "framework": "adk"},
+                        )
                 finally:
                     live_request_queue.close()
+
+                if execution_error is None:
+                    result_metadata = {
+                        "framework": "adk",
+                        "agent_id": self.agent_id,
+                        "chat_session_id": task_request.session_id,
+                        "adk_session_id": session_id,
+                    }
+                    if self._last_input_snapshot:
+                        result_metadata["input_preview"] = self._last_input_snapshot
+                    if self._last_usage_metadata:
+                        result_metadata["token_usage"] = self._last_usage_metadata
+
+                    result = TaskResult(
+                        task_id=task_request.task_id,
+                        status=TaskStatus.SUCCESS,
+                        metadata=result_metadata,
+                        agent_id=self.agent_id,
+                        session_id=session_id,
+                        result_data={
+                            "framework": "adk",
+                            "agent_id": self.agent_id,
+                            "token_usage": self._last_usage_metadata,
+                        }
+                        if self._last_usage_metadata
+                        else {"framework": "adk", "agent_id": self.agent_id},
+                    )
+
+                    try:
+                        await self.hooks.after_execution(agent_request, result)
+                    except Exception:
+                        self.logger.debug(
+                            "Failed to finalize ADK live execution cleanly.",
+                            exc_info=True,
+                        )
 
             # Use framework-level communicator with agent-created queue
             from ...framework.adk.live_communicator import AdkLiveCommunicator
@@ -654,6 +723,10 @@ class AdkDomainAgent(DomainAgent):
                     session_id,
                 )
 
+            self._last_input_snapshot = self._summarize_input_messages(
+                messages_for_execution
+            )
+
             # Convert our message format to ADK format
             adk_content = self._convert_messages_to_adk_content(messages_for_execution)
 
@@ -663,9 +736,23 @@ class AdkDomainAgent(DomainAgent):
             )
 
             # Convert ADK response back to our format
-            return self._convert_adk_response_to_task_result(
+            task_result = self._convert_adk_response_to_task_result(
                 adk_response, task_request.task_id
             )
+
+            # Attach execution metadata (inputs, tokens) for observability
+            task_result.metadata.setdefault("agent_context", {})
+            task_result.metadata["agent_context"]["user_id"] = user_id
+            task_result.metadata["agent_context"]["session_id"] = session_id
+
+            if task_result.messages:
+                first_message = task_result.messages[0]
+                if hasattr(first_message, "metadata") and first_message.metadata:
+                    usage = first_message.metadata.get("usage")
+                    if usage:
+                        task_result.metadata["token_usage"] = usage
+
+            return task_result
 
         except Exception as e:
             error_type = type(e).__name__
@@ -740,8 +827,19 @@ class AdkDomainAgent(DomainAgent):
 
             # Process events to get final response with enhanced selection logic
             all_responses = []
+            token_usage: Optional[Dict[str, Any]] = None
             
             async for event in events:
+                event_usage = getattr(event, "usage_metadata", None) or getattr(event, "usage", None)
+                if event_usage and not token_usage:
+                    token_usage = self._usage_to_dict(event_usage)
+                if not token_usage:
+                    event_metadata = getattr(event, "metadata", None) or getattr(event, "custom_metadata", None)
+                    if isinstance(event_metadata, dict):
+                        meta_usage = event_metadata.get("usage") or event_metadata.get("usage_metadata")
+                        if meta_usage:
+                            token_usage = self._usage_to_dict(meta_usage)
+
                 # Process all events with content
                 if event.content:
                     # Extract text from parts
@@ -799,14 +897,18 @@ class AdkDomainAgent(DomainAgent):
                     return score
                 
                 best_response = max(all_responses, key=score_response)
+                self._last_usage_metadata = token_usage
                 return best_response['text']
             else:
+                self._last_usage_metadata = token_usage
                 return "No valid response received from ADK"
 
         except ImportError:
             # ADK not available, return mock response
+            self._last_usage_metadata = None
             return f"Mock ADK processed: {adk_content}"
         except Exception as e:
+            self._last_usage_metadata = None
             raise RuntimeError(f"ADK Runner execution failed: {str(e)}")
 
     def _extract_user_query(
@@ -966,6 +1068,67 @@ class AdkDomainAgent(DomainAgent):
             self.logger.error(f"Failed to convert multimodal content: {e}")
             return "Hello"
 
+    def _summarize_input_messages(
+        self, messages_for_execution: List[UniversalMessage]
+    ) -> List[Dict[str, Any]]:
+        """Return a compact summary of the input messages for observability."""
+        summaries: List[Dict[str, Any]] = []
+
+        if not messages_for_execution:
+            return summaries
+
+        for msg in messages_for_execution:
+            role = getattr(msg, "role", None) or (
+                msg.get("role") if isinstance(msg, dict) else "unknown"
+            )
+            content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
+
+            preview = ""
+            if isinstance(content, str):
+                preview = content
+            elif isinstance(content, list):
+                preview_parts = []
+                for part in content:
+                    if hasattr(part, "text") and part.text:
+                        preview_parts.append(part.text)
+                preview = " ".join(preview_parts)
+            else:
+                preview = str(content) if content is not None else ""
+
+            if preview:
+                preview = preview[:200]
+
+            summaries.append(
+                {
+                    "role": role,
+                    "preview": preview,
+                }
+            )
+
+        return summaries
+
+    @staticmethod
+    def _usage_to_dict(usage: Any) -> Optional[Dict[str, Any]]:
+        """Normalize usage metadata into a serializable dictionary."""
+        if not usage:
+            return None
+
+        if isinstance(usage, dict):
+            prompt = usage.get("prompt_token_count") or usage.get("prompt_tokens")
+            completion = usage.get("candidates_token_count") or usage.get("completion_tokens")
+            total = usage.get("total_token_count") or usage.get("total_tokens")
+        else:
+            prompt = getattr(usage, "prompt_token_count", None) or getattr(usage, "prompt_tokens", None)
+            completion = getattr(usage, "candidates_token_count", None) or getattr(usage, "completion_tokens", None)
+            total = getattr(usage, "total_token_count", None) or getattr(usage, "total_tokens", None)
+
+        result = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
+        return {k: v for k, v in result.items() if v is not None}
+
     def _convert_adk_response_to_task_result(
         self, adk_response, task_id: str
     ) -> TaskResult:
@@ -978,7 +1141,7 @@ class AdkDomainAgent(DomainAgent):
                 metadata={"framework": "adk", "agent_id": self.agent_id},
             )
 
-            return TaskResult(
+            result = TaskResult(
                 task_id=task_id,
                 status=TaskStatus.SUCCESS,
                 result_data={
@@ -990,6 +1153,15 @@ class AdkDomainAgent(DomainAgent):
                 messages=[response_message],
                 metadata={"framework": "adk", "agent_id": self.agent_id},
             )
+
+            if self._last_input_snapshot:
+                result.metadata["input_preview"] = self._last_input_snapshot
+
+            if self._last_usage_metadata:
+                result.metadata["token_usage"] = self._last_usage_metadata
+                result.result_data["token_usage"] = self._last_usage_metadata
+
+            return result
 
         except Exception as e:
             error_message = f"Failed to convert ADK response: {str(e)}"

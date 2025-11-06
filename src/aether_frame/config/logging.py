@@ -92,6 +92,16 @@ def setup_logging(
             "handlers": lite_handlers or handlers,
             "propagate": False,
         },
+        "google.adk": {
+            "level": level,
+            "handlers": handlers,
+            "propagate": False,
+        },
+        "google_adk": {
+            "level": level,
+            "handlers": handlers,
+            "propagate": False,
+        },
     }
 
     logging.config.dictConfig(logging_config)

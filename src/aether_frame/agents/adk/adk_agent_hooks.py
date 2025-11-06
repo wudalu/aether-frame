@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 """ADK Agent Hooks Implementation."""
 
+import logging
 from typing import TYPE_CHECKING
 
 from ...contracts import AgentRequest, TaskResult
 from ..base.agent_hooks import AgentHooks
+from ...infrastructure.adk.adk_observer import AdkObserver
 
 if TYPE_CHECKING:
     from .adk_domain_agent import AdkDomainAgent
+
+
+logger = logging.getLogger(__name__)
 
 
 class AdkAgentHooks(AgentHooks):
@@ -23,7 +28,9 @@ class AdkAgentHooks(AgentHooks):
         self.agent = agent
         self.adk_context = None
         self.memory_adapter = None
-        self.observer = None
+        self.observer = AdkObserver(
+            getattr(agent, "adk_client", None)
+        )
 
     async def on_agent_created(self):
         """Hook called when ADK agent is created."""
@@ -148,39 +155,42 @@ class AdkAgentHooks(AgentHooks):
     async def _record_execution_start(self, agent_request: AgentRequest):
         """Record execution start in ADK observer."""
         if self.observer:
-            # TODO: Record execution metrics
-            # await self.observer.record_execution_start(
-            #     task_id=agent_request.task_request.task_id,
-            #     agent_id=self.agent.agent_id,
-            #     metadata=agent_request.metadata
-            # )
-            pass
+            task = agent_request.task_request
+            task_id = task.task_id if task else "unknown"
+            agent_id = getattr(self.agent, "agent_id", "adk-agent")
+            metadata = agent_request.metadata if agent_request else {}
+            await self.observer.record_execution_start(
+                task_id=task_id,
+                agent_id=agent_id,
+                metadata=metadata,
+            )
 
     async def _record_execution_completion(
         self, agent_request: AgentRequest, result: TaskResult
     ):
         """Record execution completion in ADK observer."""
         if self.observer:
-            # TODO: Record completion metrics
-            # await self.observer.record_execution_completion(
-            #     task_id=agent_request.task_request.task_id,
-            #     result=result,
-            #     execution_time=result.execution_time
-            # )
-            pass
+            task = agent_request.task_request
+            task_id = task.task_id if task else result.task_id
+            await self.observer.record_execution_completion(
+                task_id=task_id,
+                result=result,
+                execution_time=result.execution_time,
+            )
 
     async def _record_execution_error(
         self, agent_request: AgentRequest, error: Exception
     ):
         """Record execution error in ADK observer."""
         if self.observer:
-            # TODO: Record error metrics
-            # await self.observer.record_execution_error(
-            #     task_id=agent_request.task_request.task_id,
-            #     error=error,
-            #     agent_id=self.agent.agent_id
-            # )
-            pass
+            task = agent_request.task_request if agent_request else None
+            task_id = task.task_id if task else "unknown"
+            agent_id = getattr(self.agent, "agent_id", "adk-agent")
+            await self.observer.record_execution_error(
+                task_id=task_id,
+                error=error,
+                agent_id=agent_id,
+            )
 
     async def _preprocess_request(self, agent_request: AgentRequest):
         """Apply ADK-specific request preprocessing."""

@@ -342,7 +342,7 @@ class CompleteE2ETestSuite:
         model_config: Optional[Dict[str, Any]] = None,
         available_tools: Optional[List[str]] = None,
         evaluate_response=None,
-        seed_creation_with_first_message: bool = True,
+        seed_creation_with_first_message: bool = False,
     ) -> bool:
         """Create agent lazily and execute a conversation test."""
         start_time = datetime.now()
@@ -1055,6 +1055,27 @@ class CompleteE2ETestSuite:
                         self.logger.info(
                             "🔁 [%s] Follow-up skipped by operator input", model_name
                         )
+                        if hasattr(communicator, "close"):
+                            try:
+                                communicator.close()
+                            except Exception as close_exc:  # pragma: no cover - diagnostic
+                                self.logger.warning(
+                                    "⚠️ [%s] Failed to close communicator after skip: %s",
+                                    model_name,
+                                    close_exc,
+                                )
+                        else:
+                            self.logger.debug(
+                                "🔚 [%s] Communicator exposes no close() method", model_name
+                            )
+                        if (
+                            chunk.chunk_type == TaskChunkType.RESPONSE
+                            and isinstance(chunk.content, str)
+                            and chunk.content
+                        ):
+                            final_response_preview = chunk.content[:240]
+                        followup_session_closed = True
+                        break
 
                 if chunk.chunk_type == TaskChunkType.TOOL_RESULT:
                     tool_result_seen = True
