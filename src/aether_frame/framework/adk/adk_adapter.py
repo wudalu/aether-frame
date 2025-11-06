@@ -12,6 +12,7 @@ from uuid import uuid4
 from ...contracts import (
     AgentConfig,
     ErrorCode,
+    ErrorCategory,
     ExecutionContext,
     FrameworkType,
     LiveExecutionResult,
@@ -244,6 +245,43 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if task_request.session_id and not task_request.agent_id:
             return "session_only"
         return "unknown"
+
+    def _build_error_metadata(
+        self,
+        *,
+        stage: str,
+        category: ErrorCategory,
+        failure_reason: str,
+        task_request: Optional[TaskRequest] = None,
+        retriable: Optional[bool] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create normalized error metadata for observability logging."""
+        metadata: Dict[str, Any] = {
+            "framework": "adk",
+            "error_stage": stage,
+            "error_category": category.value,
+            "failure_reason": failure_reason,
+        }
+        if retriable is not None:
+            metadata["is_retriable"] = retriable
+
+        if task_request:
+            if task_request.agent_id:
+                metadata["agent_id"] = task_request.agent_id
+            request_mode = self._derive_request_mode(task_request)
+            if request_mode != "unknown":
+                metadata["request_mode"] = request_mode
+            if task_request.session_id:
+                metadata.setdefault("agent_context", {})
+                metadata["agent_context"] = {
+                    "session_id": task_request.session_id,
+                }
+
+        if extra:
+            metadata.update(extra)
+
+        return metadata
     
     def _get_agent_and_runner(self, agent_id: str, task_request: TaskRequest):
         """Get domain agent and runner for given agent_id. Raises ExecutionError if not found."""
@@ -561,11 +599,17 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                             "Create the agent first, then start a conversation by calling the "
                             "chat endpoint with that agent_id and your chat_session_id."
                         ),
-                        metadata={
-                            "error_stage": "adk_adapter.validate_request",
-                            "request_mode": "agent_creation_with_messages",
-                            "message_count": len(task_request.messages),
-                        },
+                        metadata=self._build_error_metadata(
+                            stage="adk_adapter.validate_request",
+                            category=ErrorCategory.INITIALIZATION,
+                            failure_reason="agent_creation_with_messages",
+                            task_request=task_request,
+                            retriable=False,
+                            extra={
+                                "request_mode": "agent_creation_with_messages",
+                                "message_count": len(task_request.messages),
+                            },
+                        ),
                     )
                 return await self._handle_agent_creation(task_request, strategy)
             
@@ -588,11 +632,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                         "or agent_id+session_id for conversation reuse."
                     ),
                     agent_id=task_request.agent_id,
-                    metadata={
-                        "error_stage": "adk_adapter.validate_request",
-                        "request_mode": self._derive_request_mode(task_request),
-                        "provided_context": provided_context,
-                    },
+                    metadata=self._build_error_metadata(
+                        stage="adk_adapter.validate_request",
+                        category=ErrorCategory.INITIALIZATION,
+                        failure_reason="invalid_task_request",
+                        task_request=task_request,
+                        retriable=False,
+                        extra={"provided_context": provided_context},
+                    ),
                 )
 
         except self.ExecutionError as e:
@@ -606,12 +653,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 error_message=error_message,
                 session_id=getattr(e.task_request, 'session_id', None),
                 agent_id=getattr(e.task_request, 'agent_id', None),
-                metadata={
-                    "error_stage": "adk_adapter.execute_task",
-                    "error_type": type(e).__name__,
-                    "request_mode": request_mode,
-                    "session_id": getattr(e.task_request, "session_id", None),
-                },
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.execute_task",
+                    category=ErrorCategory.SYSTEM,
+                    failure_reason="execution_error",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={
+                        "error_type": type(e).__name__,
+                        "root_cause": e.message,
+                        "session_id": getattr(e.task_request, "session_id", None),
+                    },
+                ),
             )
         except Exception as e:
             error_type = type(e).__name__
@@ -624,13 +677,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 error_message=error_message,
                 session_id=task_request.session_id,  # Keep original session_id if any
                 agent_id=task_request.agent_id,  # Keep original agent_id if any
-                metadata={
-                    "error_stage": "adk_adapter.execute_task",
-                    "error_type": error_type,
-                    "request_mode": request_mode,
-                    "session_id": task_request.session_id,
-                    "agent_id": task_request.agent_id,
-                },
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.execute_task",
+                    category=ErrorCategory.SYSTEM,
+                    failure_reason="execute_task_failed",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={
+                        "error_type": error_type,
+                        "session_id": task_request.session_id,
+                        "agent_id": task_request.agent_id,
+                    },
+                ),
             )
 
     async def _handle_agent_creation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
@@ -1029,14 +1087,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 error_message=error_message,
                 session_id=runtime_context.session_id,
                 agent_id=runtime_context.agent_id,
-                metadata={
-                    "framework": "adk",
-                    "agent_id": runtime_context.agent_id,
-                    "error_stage": "adk_adapter.domain_agent",
-                    "error_type": error_type,
-                    "request_mode": request_mode,
-                    "session_id": runtime_context.session_id,
-                },
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.domain_agent",
+                    category=ErrorCategory.SYSTEM,
+                    failure_reason="domain_agent_execution_failed",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={
+                        "error_type": error_type,
+                        "session_id": runtime_context.session_id,
+                        "agent_id": runtime_context.agent_id,
+                    },
+                ),
             )
 
     async def _create_domain_agent_for_config(
@@ -1155,7 +1217,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return self._create_live_error_result(
                 task_request,
                 "ADK live execution requires both agent_id and session_id",
-                metadata={"error_stage": "adk_adapter.validate_live_request"},
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.validate_live_request",
+                    category=ErrorCategory.INITIALIZATION,
+                    failure_reason="missing_agent_or_session",
+                    task_request=task_request,
+                    retriable=False,
+                ),
             )
 
         # Ensure execution context references are preserved for downstream consumers
@@ -1191,7 +1259,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return self._create_live_error_result(
                 task_request,
                 f"Failed to coordinate live session: {str(exc)}",
-                metadata={"error_stage": "adk_adapter.coordinate_live_session"},
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.coordinate_live_session",
+                    category=ErrorCategory.RUNTIME_CONTEXT,
+                    failure_reason="coordinate_live_session_failed",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={"error_type": type(exc).__name__},
+                ),
             )
 
         # Swap in the ADK session ID to build runtime context, then restore
@@ -1215,7 +1290,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return self._create_live_error_result(
                 task_request,
                 f"Failed to prepare live runtime context: {str(exc)}",
-                metadata={"error_stage": "adk_adapter.runtime_context_live"},
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.runtime_context_live",
+                    category=ErrorCategory.RUNTIME_CONTEXT,
+                    failure_reason="prepare_runtime_context_failed",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={"error_type": type(exc).__name__},
+                ),
             )
         finally:
             # Restore original business session ID on request object
@@ -1253,7 +1335,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return self._create_live_error_result(
                 task_request,
                 f"ADK live execution failed: {str(exc)}",
-                metadata={"error_stage": "adk_adapter.execute_live"},
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.execute_live",
+                    category=ErrorCategory.SYSTEM,
+                    failure_reason="execute_live_failed",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={"error_type": type(exc).__name__},
+                ),
             )
 
     async def _execute_live_with_domain_agent(
@@ -1270,10 +1359,14 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             return self._create_live_error_result(
                 task_request,
                 "Domain agent not available for live execution",
-                metadata={
-                    "error_stage": "adk_adapter.fetch_domain_agent",
-                    "agent_id": runtime_context.agent_id,
-                },
+                metadata=self._build_error_metadata(
+                    stage="adk_adapter.fetch_domain_agent",
+                    category=ErrorCategory.RUNTIME_CONTEXT,
+                    failure_reason="domain_agent_not_found",
+                    task_request=task_request,
+                    retriable=False,
+                    extra={"agent_id": runtime_context.agent_id},
+                ),
             )
 
         # Update the domain agent runtime context in-place

@@ -22,6 +22,17 @@ class TaskStatus(Enum):
     CANCELLED = "cancelled"
 
 
+class ErrorCategory(Enum):
+    """High-level error classification for observability."""
+
+    INITIALIZATION = "initialization"
+    RUNTIME_CONTEXT = "runtime_context"
+    MODEL_INVOCATION = "model_invocation"
+    TOOL_CALL = "tool_call"
+    STREAM_INTERRUPTED = "stream_interrupted"
+    SYSTEM = "system"
+
+
 class ToolStatus(Enum):
     """Tool execution status."""
 

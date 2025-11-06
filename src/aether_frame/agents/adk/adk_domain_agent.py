@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from ...contracts import (
     AgentRequest,
     ErrorCode,
+    ErrorCategory,
     FrameworkType,
     LiveExecutionResult,
     TaskResult,
@@ -389,13 +390,24 @@ class AdkDomainAgent(DomainAgent):
             # Execute through ADK using runtime context
             result = await self._execute_with_adk_runner(agent_request)
 
-            # Post-execution hooks
-            await self.hooks.after_execution(agent_request, result)
-
             # Calculate execution time
             execution_time = (datetime.now() - start_time).total_seconds()
             result.execution_time = execution_time
             result.created_at = datetime.now()
+
+            session_id = (
+                agent_request.session_id
+                or (self.runtime_context or {}).get("session_id")
+            )
+            user_id = (self.runtime_context or {}).get("user_id")
+            self._apply_common_success_metadata(
+                result,
+                session_id=session_id,
+                user_id=user_id,
+            )
+
+            # Post-execution hooks
+            await self.hooks.after_execution(agent_request, result)
 
             return result
 
@@ -411,20 +423,28 @@ class AdkDomainAgent(DomainAgent):
                 source="adk_domain_agent.execute",
                 details={"agent_id": self.agent_id, "error_type": error_type},
             )
+            session_id = (
+                agent_request.session_id
+                or (self.runtime_context or {}).get("session_id")
+            )
+            metadata = self._build_error_metadata(
+                stage="adk_domain_agent.execute",
+                error_type=error_type,
+                category=ErrorCategory.SYSTEM,
+                failure_reason="domain_agent_execute_failed",
+                session_id=session_id,
+            )
             error_result = TaskResult(
                 task_id=agent_request.task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
                 error=error_payload,
                 created_at=datetime.now(),
-                session_id=agent_request.session_id or self.runtime_context.get("session_id"),
-                metadata={
-                    "framework": "adk",
-                    "agent_id": self.agent_id,
-                    "error_stage": "adk_domain_agent.execute",
-                    "error_type": error_type,
-                },
+                session_id=session_id,
+                agent_id=self.agent_id,
+                metadata=metadata,
             )
+            error_result.execution_time = (datetime.now() - start_time).total_seconds()
 
             # Error handling hooks
             await self.hooks.on_error(agent_request, e)
@@ -449,6 +469,7 @@ class AdkDomainAgent(DomainAgent):
         self._last_input_snapshot = self._summarize_input_messages(
             task_request.messages or []
         )
+        start_time = datetime.now()
 
         try:
             # Get runtime components provided by adapter
@@ -570,6 +591,15 @@ class AdkDomainAgent(DomainAgent):
                         if self._last_usage_metadata
                         else {"framework": "adk", "agent_id": self.agent_id},
                     )
+                    result.execution_time = (
+                        datetime.now() - start_time
+                    ).total_seconds()
+                    result.created_at = datetime.now()
+                    self._apply_common_success_metadata(
+                        result,
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
 
                     try:
                         await self.hooks.after_execution(agent_request, result)
@@ -685,18 +715,23 @@ class AdkDomainAgent(DomainAgent):
                 source="adk_domain_agent.runtime_context",
                 details={"agent_id": self.agent_id, "missing_components": missing_parts},
             )
+            metadata = self._build_error_metadata(
+                stage="adk_domain_agent.runtime_context",
+                error_type="RuntimeContextMissing",
+                category=ErrorCategory.RUNTIME_CONTEXT,
+                failure_reason="missing_runtime_components",
+                session_id=session_id,
+                retriable=False,
+                extra={"missing_components": missing_parts},
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
                 error=error_payload,
                 session_id=session_id,
-                metadata={
-                    "framework": "adk",
-                    "agent_id": self.agent_id,
-                    "error_stage": "adk_domain_agent.runtime_context",
-                    "missing_components": missing_parts,
-                },
+                agent_id=self.agent_id,
+                metadata=metadata,
             )
 
         try:
@@ -739,19 +774,18 @@ class AdkDomainAgent(DomainAgent):
             task_result = self._convert_adk_response_to_task_result(
                 adk_response, task_request.task_id
             )
-
-            # Attach execution metadata (inputs, tokens) for observability
-            task_result.metadata.setdefault("agent_context", {})
-            task_result.metadata["agent_context"]["user_id"] = user_id
-            task_result.metadata["agent_context"]["session_id"] = session_id
-
             if task_result.messages:
                 first_message = task_result.messages[0]
                 if hasattr(first_message, "metadata") and first_message.metadata:
                     usage = first_message.metadata.get("usage")
                     if usage:
-                        task_result.metadata["token_usage"] = usage
+                        self._last_usage_metadata = usage
 
+            self._apply_common_success_metadata(
+                task_result,
+                session_id=session_id,
+                user_id=user_id,
+            )
             return task_result
 
         except Exception as e:
@@ -766,18 +800,21 @@ class AdkDomainAgent(DomainAgent):
                 source="adk_domain_agent.runner_execution",
                 details={"agent_id": self.agent_id, "session_id": session_id, "error_type": error_type},
             )
+            metadata = self._build_error_metadata(
+                stage="adk_domain_agent.runner_execution",
+                error_type=error_type,
+                category=ErrorCategory.MODEL_INVOCATION,
+                failure_reason="runner_execution_failed",
+                session_id=session_id,
+            )
             return TaskResult(
                 task_id=task_request.task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
                 error=error_payload,
                 session_id=session_id,
-                metadata={
-                    "framework": "adk",
-                    "agent_id": self.agent_id,
-                    "error_stage": "adk_domain_agent.runner_execution",
-                    "error_type": error_type,
-                },
+                agent_id=self.agent_id,
+                metadata=metadata,
             )
 
     async def _run_adk_with_runner_and_agent(
@@ -1068,6 +1105,108 @@ class AdkDomainAgent(DomainAgent):
             self.logger.error(f"Failed to convert multimodal content: {e}")
             return "Hello"
 
+    def _apply_common_success_metadata(
+        self,
+        result: TaskResult,
+        *,
+        session_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Attach consistent observability metadata to successful results."""
+        metadata = result.metadata or {}
+        metadata.setdefault("framework", "adk")
+        metadata.setdefault("agent_id", self.agent_id)
+
+        agent_context = self._build_agent_context(
+            session_id=session_id,
+            user_id=user_id,
+        )
+        if agent_context:
+            existing_context = metadata.get("agent_context", {})
+            metadata["agent_context"] = {**existing_context, **agent_context}
+
+        if self._last_input_snapshot and "input_preview" not in metadata:
+            metadata["input_preview"] = self._last_input_snapshot
+
+        if self._last_usage_metadata and "token_usage" not in metadata:
+            metadata["token_usage"] = self._last_usage_metadata
+            result.result_data = result.result_data or {}
+            result.result_data.setdefault("token_usage", self._last_usage_metadata)
+
+        result.metadata = metadata
+        if session_id and not result.session_id:
+            result.session_id = session_id
+        if not result.agent_id:
+            result.agent_id = self.agent_id
+
+    def _build_agent_context(
+        self,
+        *,
+        session_id: Optional[str],
+        user_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Collect agent-context fields for observability metadata."""
+        context: Dict[str, Any] = {}
+        runtime_ctx = self.runtime_context or {}
+
+        if session_id:
+            context["session_id"] = session_id
+        if runtime_ctx.get("session_id"):
+            context["adk_session_id"] = runtime_ctx.get("session_id")
+        if user_id:
+            context["user_id"] = user_id
+        if runtime_ctx.get("runner_id"):
+            context["runner_id"] = runtime_ctx.get("runner_id")
+        if runtime_ctx.get("execution_id"):
+            context["execution_id"] = runtime_ctx.get("execution_id")
+        if runtime_ctx.get("request_mode"):
+            context["request_mode"] = runtime_ctx.get("request_mode")
+        if runtime_ctx.get("phase"):
+            context["phase"] = runtime_ctx.get("phase")
+
+        return context
+
+    def _build_error_metadata(
+        self,
+        *,
+        stage: str,
+        error_type: str,
+        category: ErrorCategory,
+        failure_reason: Optional[str],
+        session_id: Optional[str],
+        retriable: Optional[bool] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create structured metadata for failure scenarios."""
+        metadata: Dict[str, Any] = {
+            "framework": "adk",
+            "agent_id": self.agent_id,
+            "error_stage": stage,
+            "error_type": error_type,
+            "error_category": category.value,
+        }
+        if failure_reason:
+            metadata["failure_reason"] = failure_reason
+        if retriable is not None:
+            metadata["is_retriable"] = retriable
+
+        if self._last_input_snapshot and "input_preview" not in metadata:
+            metadata["input_preview"] = self._last_input_snapshot
+        if self._last_usage_metadata and "token_usage" not in metadata:
+            metadata["token_usage"] = self._last_usage_metadata
+
+        agent_context = self._build_agent_context(
+            session_id=session_id,
+            user_id=(self.runtime_context or {}).get("user_id"),
+        )
+        if agent_context:
+            metadata["agent_context"] = agent_context
+
+        if extra:
+            metadata.update(extra)
+
+        return metadata
+
     def _summarize_input_messages(
         self, messages_for_execution: List[UniversalMessage]
     ) -> List[Dict[str, Any]]:
@@ -1171,12 +1310,20 @@ class AdkDomainAgent(DomainAgent):
                 source="adk_domain_agent.convert_response",
                 details={"agent_id": self.agent_id},
             )
+            metadata = self._build_error_metadata(
+                stage="adk_domain_agent.convert_response",
+                error_type=type(e).__name__,
+                category=ErrorCategory.SYSTEM,
+                failure_reason="convert_response_failed",
+                session_id=(self.runtime_context or {}).get("session_id"),
+            )
             return TaskResult(
                 task_id=task_id,
                 status=TaskStatus.ERROR,
                 error_message=error_message,
                 error=error_payload,
-                metadata={"framework": "adk", "agent_id": self.agent_id},
+                agent_id=self.agent_id,
+                metadata=metadata,
             )
 
     # === Live Execution Helpers ===

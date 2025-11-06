@@ -24,7 +24,7 @@ class AdkObserver:
         self._performance_data: List[Dict[str, Any]] = []
 
     async def record_execution_start(
-        self, task_id: str, agent_id: str, metadata: Dict[str, Any]
+        self, task_id: str, agent_id: str, metadata: Optional[Dict[str, Any]] = None
     ):
         """
         Record execution start event.
@@ -35,6 +35,8 @@ class AdkObserver:
             metadata: Additional metadata
         """
         try:
+            metadata = metadata or {}
+
             event = {
                 "event_type": "execution_start",
                 "task_id": task_id,
@@ -51,19 +53,16 @@ class AdkObserver:
                 self._metrics["execution_events"] = []
             self._metrics["execution_events"].append(event)
 
+            key_data = {"task_id": task_id, "agent_id": agent_id}
+            key_data.update(metadata)
+
             logger.info(
-                "ADK execution start: task_id=%s agent_id=%s metadata=%s",
-                task_id,
-                agent_id,
-                metadata,
+                "ADK execution start",
                 extra={
-                    "execution_id": task_id,
+                    "execution_id": metadata.get("execution_id", task_id),
                     "flow_step": "ADK_START",
                     "component": "AdkObserver",
-                    "key_data": {
-                        "agent_id": agent_id,
-                        "metadata": metadata or {},
-                    },
+                    "key_data": key_data,
                 },
             )
 
@@ -72,7 +71,11 @@ class AdkObserver:
             logger.debug("Failed to record execution start: %s", e, exc_info=True)
 
     async def record_execution_completion(
-        self, task_id: str, result: TaskResult, execution_time: Optional[float]
+        self,
+        task_id: str,
+        result: TaskResult,
+        execution_time: Optional[float],
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Record execution completion event.
@@ -83,23 +86,32 @@ class AdkObserver:
             execution_time: Execution time in seconds
         """
         try:
+            metadata = metadata or {}
+
+            stats = metadata.get("execution_stats") if metadata else {}
+            derived_execution_time = (
+                execution_time
+                if execution_time is not None
+                else (stats.get("duration_seconds") if isinstance(stats, dict) else None)
+            )
+
             event = {
                 "event_type": "execution_completion",
                 "task_id": task_id,
                 "status": result.status.value,
-                "execution_time": execution_time,
+                "execution_time": derived_execution_time,
                 "timestamp": datetime.now().isoformat(),
-                "result_metadata": result.metadata,
+                "result_metadata": metadata or result.metadata,
             }
 
             # TODO: Integrate with ADK monitoring
             # await self.adk_client.monitoring.record_completion(event)
 
             # Store performance data
-            if execution_time:
+            if derived_execution_time:
                 performance_event = {
                     "task_id": task_id,
-                    "execution_time": execution_time,
+                    "execution_time": derived_execution_time,
                     "timestamp": datetime.now().isoformat(),
                     "status": result.status.value,
                 }
@@ -111,26 +123,30 @@ class AdkObserver:
             self._metrics["execution_events"].append(event)
 
             key_data = {
+                "task_id": task_id,
+                "agent_id": metadata.get("agent_id")
+                if metadata.get("agent_id")
+                else result.metadata.get("agent_id") if result.metadata else None,
                 "status": result.status.value,
             }
-            if execution_time is not None:
-                key_data["execution_time"] = execution_time
+            if derived_execution_time is not None:
+                key_data["execution_time"] = derived_execution_time
             if result.error_message:
                 key_data["error_message"] = result.error_message
-            token_usage = None
-            if result.metadata:
+            token_usage = metadata.get("token_usage") if metadata else None
+            if not token_usage and result.metadata:
                 token_usage = result.metadata.get("token_usage")
             if token_usage:
                 key_data["token_usage"] = token_usage
+            if stats:
+                key_data["execution_stats"] = stats
+
+            key_data.update(metadata)
 
             logger.info(
-                "ADK execution complete: task_id=%s status=%s execution_time=%s token_usage=%s",
-                task_id,
-                result.status.value,
-                execution_time,
-                token_usage,
+                "ADK execution complete",
                 extra={
-                    "execution_id": task_id,
+                    "execution_id": metadata.get("execution_id", task_id),
                     "flow_step": "ADK_COMPLETE",
                     "component": "AdkObserver",
                     "key_data": key_data,
@@ -142,7 +158,11 @@ class AdkObserver:
             logger.debug("Failed to record execution completion: %s", e, exc_info=True)
 
     async def record_execution_error(
-        self, task_id: str, error: Exception, agent_id: str
+        self,
+        task_id: str,
+        error: Exception,
+        agent_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Record execution error event.
@@ -153,13 +173,19 @@ class AdkObserver:
             agent_id: Agent identifier
         """
         try:
+            metadata = metadata or {}
+            metadata.setdefault("error_type", type(error).__name__)
+            metadata.setdefault("error_message", str(error))
+            metadata.setdefault("status", "error")
+
             event = {
                 "event_type": "execution_error",
                 "task_id": task_id,
                 "agent_id": agent_id,
-                "error_type": type(error).__name__,
-                "error_message": str(error),
+                "error_type": metadata.get("error_type"),
+                "error_message": metadata.get("error_message"),
                 "timestamp": datetime.now().isoformat(),
+                "metadata": metadata,
             }
 
             # TODO: Integrate with ADK error tracking
@@ -170,21 +196,16 @@ class AdkObserver:
                 self._metrics["execution_errors"] = []
             self._metrics["execution_errors"].append(event)
 
+            key_data = {"task_id": task_id, "agent_id": agent_id}
+            key_data.update(metadata)
+
             logger.warning(
-                "ADK execution error: task_id=%s agent_id=%s error_type=%s message=%s",
-                task_id,
-                agent_id,
-                type(error).__name__,
-                str(error),
+                "ADK execution error",
                 extra={
-                    "execution_id": task_id,
+                    "execution_id": metadata.get("execution_id", task_id),
                     "flow_step": "ADK_ERROR",
                     "component": "AdkObserver",
-                    "key_data": {
-                        "agent_id": agent_id,
-                        "error_type": type(error).__name__,
-                        "error_message": str(error),
-                    },
+                    "key_data": key_data,
                 },
             )
 

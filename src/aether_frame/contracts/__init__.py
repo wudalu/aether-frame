@@ -35,6 +35,7 @@ from .contexts import (
 )
 from .enums import (
     AgentStatus,
+    ErrorCategory,
     ExecutionMode,
     FrameworkType,
     InteractionType,
@@ -111,6 +112,7 @@ __all__ = [
     "FrameworkType",
     "TaskStatus",
     "ToolStatus",
+    "ErrorCategory",
     "TaskComplexity",
     "ExecutionMode",
     "AgentStatus",
