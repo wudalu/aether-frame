@@ -96,3 +96,14 @@ _Later waves can extend to framework placeholders (AutoGen, LangGraph) once ADK-
 6. Create follow-up tickets for any uncovered branches deferred due to the 2,000 LOC limit.
 
 By following this staged plan we can iteratively raise unit coverage, unlock faster regressions, and keep changes reviewable even as we span the full architecture stack.
+
+## Active Wave – May 2025 Coverage Push
+
+| Step | Target Modules | Success Criteria | Planned Test Activities |
+|------|----------------|------------------|-------------------------|
+| 1 | `agents/adk/adk_domain_agent.py` | ≥65% module coverage with live/streaming error cases validated | Extend unit suites to cover `_run_adk_with_runner_and_agent`, `_execute_with_adk_runner` error branches, and `_create_error_live_result` streaming fallbacks using stub runners plus synthetic ADK events. |
+| 2 | `framework/adk/adk_adapter.py`, `framework/adk/adk_session_manager.py` | Adapter ≥55%, Session Manager ≥65% | Build adapter-focused tests that simulate runner/session lifecycles (`_execute_task`, recovery replay, idle cleanup) and reuse fixtures in `tests/unit/test_adk_session_manager_core.py` to validate archive/injection/teardown paths. |
+| 3 | `framework/adk/model_factory.py`, `framework/adk/multimodal_utils.py` | Model factory ≥40%, multimodal utils ≥75% | Introduce isolates for provider selection (happy path + fallback) and multimodal payload transforms (text/image/error), using Settings stubs to emulate environment toggles. |
+| 4 | `tools/builtin/chat_log_tool.py`, `tools/mcp/tool_wrapper.py` | Each ≥80% | Add append-mode/validation/error coverage for the chat log tool and exercise MCP wrapper streaming, metadata propagation, and timeout handling. Only `tests/` modifications (plus this document) are permitted per user guidance. |
+
+Each step follows the agreed cadence: (a) modify files under `tests/`, (b) run targeted `pytest -k <scope>` selections, (c) execute `python3 -m pytest tests/unit --cov src/aether_frame --cov-report=term`, (d) commit, then proceed to the next step. Document coverage deltas here after finishing every step.

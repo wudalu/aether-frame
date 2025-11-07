@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 
 import builtins
 import pytest
+import sys
 
 from aether_frame.agents.adk.adk_domain_agent import AdkDomainAgent
 from aether_frame.contracts import (
@@ -210,3 +211,100 @@ async def test_create_error_live_result_emits_error_chunk():
 
     assert communicator.send_user_message("noop") is None
     assert communicator.send_user_response({"text": "noop"}) is None
+
+
+@pytest.mark.asyncio
+async def test_execute_handles_runner_exception(monkeypatch):
+    agent = AdkDomainAgent(agent_id="agent-exec", config={})
+    agent.runtime_context = {"runner": object(), "session_id": "sess-1", "user_id": "user"}
+    agent._tools_initialized = True
+
+    async def failing_execute(*args, **kwargs):
+        raise RuntimeError("runner failed")
+
+    monkeypatch.setattr(agent, "_execute_with_adk_runner", failing_execute)
+
+    task_request = TaskRequest(task_id="t-exec", task_type="chat", description="desc")
+    agent_request = AgentRequest(task_request=task_request)
+
+    result = await agent.execute(agent_request)
+    assert result.status == TaskStatus.ERROR
+    assert result.metadata["error_stage"] == "adk_domain_agent.execute"
+    assert result.metadata["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_execute_with_adk_runner_initializes_tools(monkeypatch):
+    agent = AdkDomainAgent(agent_id="agent-tools", config={})
+    agent.runtime_context = {"runner": SimpleNamespace(), "session_id": "sess-2", "user_id": "user"}
+    created_payloads = []
+
+    async def fake_create(tools=None):
+        created_payloads.append(tools)
+
+    async def fake_run(*args, **kwargs):
+        return "response text"
+
+    monkeypatch.setattr(agent, "_create_adk_agent", fake_create)
+    monkeypatch.setattr(agent, "_run_adk_with_runner_and_agent", fake_run)
+    async def fake_memory(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(agent, "_retrieve_memory_snippets", fake_memory)
+    monkeypatch.setattr(agent, "_convert_messages_to_adk_content", lambda msgs: "converted")
+
+    universal_tool = SimpleNamespace(name="demo.tool")
+    task_request = TaskRequest(
+        task_id="t-tools",
+        task_type="chat",
+        description="desc",
+        available_tools=[universal_tool],
+        messages=[UniversalMessage(role="user", content="hi")],
+    )
+    agent_request = AgentRequest(task_request=task_request)
+
+    result = await agent.execute(agent_request)
+    assert result.status == TaskStatus.SUCCESS
+    assert agent._tools_initialized is True
+    assert created_payloads[0][0] is universal_tool
+
+
+@pytest.mark.asyncio
+async def test_execute_live_without_runner_returns_error():
+    agent = AdkDomainAgent(agent_id="agent-live-error", config={})
+    agent.runtime_context = {"session_id": "sess-3", "user_id": "user"}
+
+    task_request = TaskRequest(task_id="t-live", task_type="chat", description="desc")
+
+    stream, _ = await agent.execute_live(task_request)
+    chunk = await stream.__anext__()
+    assert chunk.chunk_type == TaskChunkType.ERROR
+    assert chunk.is_final is True
+    assert chunk.metadata.get("framework") == "adk"
+
+
+@pytest.mark.asyncio
+async def test_execute_live_missing_live_queue(monkeypatch):
+    agent = AdkDomainAgent(agent_id="agent-live-import", config={})
+    agent.runtime_context = {
+        "runner": SimpleNamespace(),
+        "session_id": "sess-4",
+        "user_id": "user",
+    }
+
+    # Ensure import fails
+    monkeypatch.setitem(sys.modules, "google", ModuleType("google"))
+    task_request = TaskRequest(task_id="t-live2", task_type="chat", description="desc")
+
+    stream, _ = await agent.execute_live(task_request)
+    chunk = await stream.__anext__()
+    assert chunk.chunk_type == TaskChunkType.ERROR
+    assert chunk.is_final is True
+    assert chunk.metadata.get("framework") == "adk"
+
+
+def test_convert_adk_response_success():
+    agent = AdkDomainAgent(agent_id="agent-convert-ok", config={})
+    result = agent._convert_adk_response_to_task_result("payload", "task-success")
+    assert result.status == TaskStatus.SUCCESS
+    assert result.messages[0].content == "payload"
