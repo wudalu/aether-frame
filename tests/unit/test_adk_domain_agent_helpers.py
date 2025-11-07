@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Unit tests for AdkDomainAgent helper utilities."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from aether_frame.contracts import (
     SessionContext,
     TaskRequest,
     UserContext,
+    UniversalMessage,
     UniversalTool,
 )
 
@@ -149,3 +151,69 @@ async def test_await_tool_approval_uses_broker(domain_agent):
         SimpleNamespace(name="demo.search"), {}
     )
     assert response["approved"] is True
+
+
+def test_convert_messages_to_adk_content_text_only(domain_agent):
+    messages = [
+        UniversalMessage(role="user", content="Hello"),
+        UniversalMessage(role="assistant", content="Hi"),
+    ]
+    text = domain_agent._convert_messages_to_adk_content(messages)
+    assert text.strip().startswith("Hello")
+
+
+def _install_genai_stub(monkeypatch):
+    if "google.genai" in sys.modules:
+        return
+    genai_module = ModuleType("google.genai")
+    types_module = ModuleType("google.genai.types")
+
+    class Part:
+        def __init__(self, text=None, inline_data=None):
+            self.text = text
+            self.inline_data = inline_data
+
+    class Content:
+        def __init__(self, role, parts):
+            self.role = role
+            self.parts = parts
+
+    class Blob:
+        def __init__(self, mime_type, data):
+            self.mime_type = mime_type
+            self.data = data
+
+    types_module.Part = Part
+    types_module.Content = Content
+    types_module.Blob = Blob
+    genai_module.types = types_module
+    monkeypatch.setitem(sys.modules, "google", ModuleType("google"))
+    sys.modules["google"].genai = genai_module
+    monkeypatch.setitem(sys.modules, "google.genai", genai_module)
+    monkeypatch.setitem(sys.modules, "google.genai.types", types_module)
+
+
+def test_convert_messages_to_adk_content_multimodal(monkeypatch, domain_agent):
+    _install_genai_stub(monkeypatch)
+    domain_agent.event_converter.convert_universal_message_to_adk = lambda msg: {
+        "parts": [{"text": "image description"}]
+    }
+    part = SimpleNamespace(text="image description")
+    messages = [UniversalMessage(role="user", content=[part])]
+    content = domain_agent._convert_messages_to_adk_content(messages)
+    assert hasattr(content, "parts")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memory_snippets(domain_agent):
+    class MemoryService:
+        async def search_memory(self, app_name, user_id, query):
+            return SimpleNamespace(results=[SimpleNamespace(text="Snippet 1"), SimpleNamespace(content="Snippet 2")])
+
+    domain_agent.runtime_context["runner_context"] = {
+        "memory_service": MemoryService(),
+        "session_user_ids": {"session-1": "user-a"},
+        "app_name": "app",
+    }
+    snippets = await domain_agent._retrieve_memory_snippets("hello", "session-1")
+    assert snippets == ["Snippet 1", "Snippet 2"]
