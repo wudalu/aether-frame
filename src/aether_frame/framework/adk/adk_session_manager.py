@@ -1096,10 +1096,12 @@ class AdkSessionManager:
             
             # Get SessionService instance from runner context
             session_service = runner_context.get("session_service")
+            cached_session = runner_context.get("sessions", {}).get(session_id)
             if not session_service:
-                self.logger.warning(f"SessionService not found in runner {runner_id}")
-                return None
-            
+                self.logger.warning(f"SessionService not found in runner {runner_id}; falling back to cached session state")
+                fallback_history = self._extract_history_from_session_state(cached_session)
+                return fallback_history
+
             # Get app_name and user_id from runner context
             app_name = runner_context.get("app_name")
             session_user_map = runner_context.get("session_user_ids", {})
@@ -1252,7 +1254,8 @@ class AdkSessionManager:
             # Get SessionService instance
             session_service = runner_context.get("session_service")
             if not session_service:
-                self.logger.warning(f"SessionService not found in runner {runner_id}")
+                self.logger.warning(f"SessionService not found in runner {runner_id}; storing history directly on cached session state")
+                self._inject_history_into_session_state(runner_context, session_id, chat_history)
                 return
             
             # Get app_name and user_id
@@ -1321,6 +1324,70 @@ class AdkSessionManager:
             
         except Exception as e:
             self.logger.error(f"Failed to inject chat history into session {session_id}: {e}")
+
+    def _extract_history_from_session_state(self, session_obj):
+        """Fallback extractor when SessionService is unavailable."""
+        if not session_obj:
+            return []
+
+        state = getattr(session_obj, "state", None)
+        if not isinstance(state, dict):
+            return []
+
+        def _messages_from_list(messages):
+            normalized = []
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                normalized.append(self._normalize_message_dict(msg))
+            return [m for m in normalized if m]
+
+        for key in ("conversation_history", "messages"):
+            value = state.get(key)
+            if isinstance(value, list) and value:
+                extracted = _messages_from_list(value)
+                if extracted:
+                    return extracted
+
+        for value in state.values():
+            if isinstance(value, list):
+                extracted = _messages_from_list(value)
+                if extracted:
+                    return extracted
+
+        return []
+
+    def _normalize_message_dict(self, message: Dict[str, Any]):
+        """Normalize arbitrary message dict to expected structure."""
+        role = message.get("role")
+        if not role:
+            author = message.get("author")
+            if author:
+                role = "assistant" if author != "user" else "user"
+        content = message.get("content") or message.get("text")
+        if role and content is not None:
+            normalized = {"role": role, "content": content}
+            if "timestamp" in message:
+                normalized["timestamp"] = message["timestamp"]
+            return normalized
+        return None
+
+    def _inject_history_into_session_state(self, runner_context, session_id: str, chat_history):
+        """Fallback injector when SessionService is unavailable."""
+        sessions = runner_context.setdefault("sessions", {})
+        session_obj = sessions.get(session_id)
+        if not session_obj:
+            session_obj = SimpleNamespace(state={})
+            sessions[session_id] = session_obj
+
+        state = getattr(session_obj, "state", None)
+        if not isinstance(state, dict):
+            state = {}
+            session_obj.state = state
+
+        history_copy = [dict(msg) for msg in chat_history]
+        state["conversation_history"] = history_copy
+        state["messages"] = list(history_copy)
 
     async def _create_event_from_message(self, message):
         """
