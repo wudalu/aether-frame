@@ -56,5 +56,20 @@ async def test_chat_log_tool_writes_files(tmp_path, monkeypatch):
     contents = file_path.read_text()
     assert '"message": "hi"' in contents
 
-    invalid = await tool.execute(ToolRequest(tool_name="chat_log", parameters={}))
+    # Text format without append
+    request_text = ToolRequest(
+        tool_name="chat_log",
+        parameters={
+            "content": "plain text",
+            "format": "text",
+            "append": False,
+            "filename": "custom.log",
+        },
+    )
+    text_result = await tool.execute(request_text)
+    text_file = Path(text_result.result_data["file_path"])
+    assert text_file.exists()
+    assert "plain text" in text_file.read_text()
+
+    invalid = await tool.execute(ToolRequest(tool_name="chat_log", parameters={"format": "yaml"}))
     assert invalid.status == ToolStatus.ERROR

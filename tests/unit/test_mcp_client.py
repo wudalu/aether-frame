@@ -170,3 +170,41 @@ async def test_call_tool_stream_requires_connection():
     with pytest.raises(MCPConnectionError):
         async for _ in client.call_tool_stream("search", {}):
             pass
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cleans_up(monkeypatch):
+    client = MCPClient(make_config())
+    client.is_connected = True
+    client._session = object()
+    queue = asyncio.Queue()
+    client._progress_handlers = {"token": queue}
+
+    class DummyContext:
+        def __init__(self):
+            self.closed = False
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            self.closed = True
+            return False
+
+    session_ctx = DummyContext()
+    stream_ctx = DummyContext()
+    client._session_context = session_ctx
+    client._stream_context = stream_ctx
+
+    await client.disconnect()
+    assert client._progress_handlers == {}
+    assert client._session is None
+    assert session_ctx.closed is True
+    assert stream_ctx.closed is True
+
+
+@pytest.mark.asyncio
+async def test_notification_handler_covers_branches(capsys):
+    client = MCPClient(make_config())
+    message = SimpleNamespace(method="notifications/message", params={"level": "info", "data": "log"})
+    await client._notification_handler(message)
+
+    typed = SimpleNamespace(root=SimpleNamespace(params=SimpleNamespace(level="info", data="typed")))
+    await client._notification_handler(typed)
