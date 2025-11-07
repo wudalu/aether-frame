@@ -3,6 +3,8 @@
 
 import logging
 
+import pytest
+
 from aether_frame.common import unified_logging
 
 
@@ -45,3 +47,28 @@ def test_execution_context_logs_flow_and_writes_file(tmp_path):
     assert "STEP 1: Load Data" in contents
     assert "EXECUTION SUCCESS" in contents
     assert '"status": "ok"' in contents
+
+
+def test_setup_logger_and_execution_flow_formatter(capsys):
+    logger = unified_logging.setup_logger("test.logger", level="INFO")
+    logger.info("hello world")
+    captured = capsys.readouterr().out
+    assert "hello world" in captured
+
+    formatter = unified_logging.ExecutionFlowFormatter()
+    record = logging.LogRecord(
+        name="exec",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=10,
+        msg="test message",
+        args=(),
+        exc_info=None,
+    )
+    record.execution_id = "exec-1"
+    record.flow_step = "STEP-01"
+    record.component = "COMP"
+    record.key_data = {"foo": "bar"}
+    formatted = formatter.format(record)
+    assert "STEP-01" in formatted
+    assert "foo" in formatted
