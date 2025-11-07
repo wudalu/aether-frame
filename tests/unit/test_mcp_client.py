@@ -3,12 +3,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 import sys
-from types import ModuleType, SimpleNamespace
 
 
 def _ensure_mcp_stubs():
@@ -208,3 +207,182 @@ async def test_notification_handler_covers_branches(capsys):
 
     typed = SimpleNamespace(root=SimpleNamespace(params=SimpleNamespace(level="info", data="typed")))
     await client._notification_handler(typed)
+
+
+@pytest.mark.asyncio
+async def test_connect_invokes_open_session(monkeypatch):
+    client = MCPClient(make_config())
+    called = []
+
+    async def fake_open():
+        client._session = object()
+        called.append(True)
+
+    monkeypatch.setattr(client, "_open_persistent_session", fake_open)
+    await client.connect()
+    assert client.is_connected is True
+    assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_raises_when_error_chunk_emitted(monkeypatch):
+    client = MCPClient(make_config())
+    client.is_connected = True
+    client._session = object()
+
+    async def stream_with_error(name, arguments, extra_headers=None):
+        yield {"type": "stream_start"}
+        yield {"type": "error", "is_final": True, "error": "bad news"}
+
+    monkeypatch.setattr(client, "call_tool_stream", stream_with_error)
+
+    with pytest.raises(MCPToolError, match="bad news"):
+        await client.call_tool("search", {})
+
+
+@pytest.mark.asyncio
+async def test_call_tool_stream_drains_remaining_progress(monkeypatch):
+    client = MCPClient(make_config())
+    client.is_connected = True
+    client._session = object()
+
+    async def fake_call_tool(name, arguments, progress_callback=None):
+        if progress_callback:
+            await progress_callback(0.25, 1.0, "quarter")
+            await progress_callback(1.0, 1.0, "done")
+        await asyncio.sleep(0)
+        return SimpleNamespace(
+            content=[SimpleNamespace(text="chunk-a"), SimpleNamespace(text="chunk-b")]
+        )
+
+    @asynccontextmanager
+    async def fake_session_scope(self, extra_headers=None):
+        yield SimpleNamespace(call_tool=fake_call_tool)
+
+    monkeypatch.setattr(MCPClient, "_session_scope", fake_session_scope, raising=False)
+
+    chunks = [
+        chunk async for chunk in client.call_tool_stream("search", {"q": "info"})
+    ]
+
+    progress_chunks = [chunk for chunk in chunks if chunk["type"] == "progress_update"]
+    assert len(progress_chunks) == 2  # one from live loop, one from drain loop
+    assert chunks[-1]["type"] == "complete_result"
+    assert chunks[-1]["content"][0].text == "chunk-a"
+    assert client._progress_handlers == {}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_stream_cleans_handlers_on_scope_failure(monkeypatch):
+    client = MCPClient(make_config())
+    client.is_connected = True
+    client._session = object()
+
+    @asynccontextmanager
+    async def failing_scope(self, extra_headers=None):
+        raise RuntimeError("scope failure")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(MCPClient, "_session_scope", failing_scope, raising=False)
+
+    chunks = [
+        chunk async for chunk in client.call_tool_stream("broken", {"value": 1})
+    ]
+
+    assert chunks[0]["type"] == "stream_start"
+    assert chunks[-1]["type"] == "error"
+    assert client._progress_handlers == {}
+
+
+@pytest.mark.asyncio
+async def test_session_scope_merges_extra_headers(monkeypatch):
+    recorded = {}
+
+    class FakeStreamContext:
+        def __init__(self, headers):
+            recorded["headers"] = headers
+            self.closed = False
+
+        async def __aenter__(self):
+            return ("read", "write", None)
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            self.closed = True
+            recorded["stream_closed"] = True
+
+    class FakeClientSession:
+        def __init__(self, read_stream, write_stream, message_handler):
+            self.message_handler = message_handler
+            self.closed = False
+
+        async def __aenter__(self):
+            recorded["session_entered"] = True
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            self.closed = True
+            recorded["session_closed"] = True
+
+        async def initialize(self):
+            recorded["initialized"] = True
+
+    monkeypatch.setattr(
+        "aether_frame.tools.mcp.client.streamablehttp_client",
+        lambda **kwargs: FakeStreamContext(kwargs["headers"]),
+    )
+    monkeypatch.setattr(
+        "aether_frame.tools.mcp.client.ClientSession", FakeClientSession
+    )
+
+    client = MCPClient(make_config())
+
+    async with client._session_scope(extra_headers={"X-Test": "123"}) as session:
+        assert session is not None
+        assert recorded["initialized"] is True
+
+    assert recorded["headers"]["Authorization"] == "Bearer token"
+    assert recorded["headers"]["X-Test"] == "123"
+    assert recorded["session_closed"] is True
+    assert recorded["stream_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_notification_handler_typed_notifications(monkeypatch):
+    client = MCPClient(make_config())
+
+    class LoggingNotification:
+        def __init__(self):
+            self.params = SimpleNamespace(level="debug", data="typed log")
+
+    class ResourceUpdatedNotification:
+        def __init__(self):
+            self.params = SimpleNamespace(uri="doc://1")
+
+    class ResourceListChangedNotification:
+        pass
+
+    class ProgressNotification:
+        def __init__(self):
+            self.params = SimpleNamespace(progress=1, total=2, message="halfway")
+
+    class ServerNotification:
+        def __init__(self, root):
+            self.root = root
+
+    fake_types = SimpleNamespace(
+        ServerNotification=ServerNotification,
+        LoggingMessageNotification=LoggingNotification,
+        ResourceUpdatedNotification=ResourceUpdatedNotification,
+        ResourceListChangedNotification=ResourceListChangedNotification,
+        ProgressNotification=ProgressNotification,
+    )
+    monkeypatch.setattr("aether_frame.tools.mcp.client.types", fake_types)
+
+    for notification_cls in (
+        LoggingNotification,
+        ResourceUpdatedNotification,
+        ResourceListChangedNotification,
+        ProgressNotification,
+    ):
+        message = ServerNotification(notification_cls())
+        await client._notification_handler(message)
