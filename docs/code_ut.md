@@ -124,3 +124,13 @@ By following this staged plan we can iteratively raise unit coverage, unlock fas
 | 4 | `tools/builtin/chat_log_tool.py`, `tools/mcp/tool_wrapper.py` | Each ≥80% | Add append-mode/validation/error coverage for the chat log tool and exercise MCP wrapper streaming, metadata propagation, and timeout handling. Only `tests/` modifications (plus this document) are permitted per user guidance. |
 
 Each step follows the agreed cadence: (a) modify files under `tests/`, (b) run targeted `pytest -k <scope>` selections, (c) execute `python3 -m pytest tests/unit --cov src/aether_frame --cov-report=term`, (d) commit, then proceed to the next step. Document coverage deltas here after finishing every step.
+
+### Current Test Batch Planning (≤2,000 LOC per wave)
+
+| Phase | Focus | Included Files (tests/) | Approx. Added LOC |
+|-------|-------|-------------------------|-------------------|
+| **Phase A – ADK Agent & Session Core** | Domain agent execution、session manager与 runner 测试 | `unit/test_adk_domain_agent_execution_paths.py`, `unit/test_adk_domain_agent_helpers.py`, `unit/test_adk_session_manager_core.py`, `unit/test_adk_adapter_core.py`, `unit/test_runner_manager_core.py`, `unit/test_runner_manager_unit.py`, `unit/test_adk_model_factory.py`, `unit/test_multimodal_utils.py` | ~1,730 |
+| **Phase B – Tooling & MCP Stack** | ToolService、ToolResolver、MCP client/wrapper 等 | `unit/test_tool_service_core.py`, `unit/test_tool_service_streaming.py`, `unit/test_tool_resolver.py`, `unit/test_mcp_client.py`, `unit/test_mcp_config.py`, `unit/test_mcp_tool_wrapper.py`, `unit/test_adk_tool_conversion.py`, `unit/test_adk_memory_adapter.py`, `unit/test_adk_observer.py`, `unit/test_adk_approval_broker.py` | ~1,600 |
+| **Phase C – Common/Base/Execution Layer** | 其余已新增的 base/common/execution UT | `fixtures/factories.py`, `unit/test_agent_manager.py`, `unit/test_execution_engine_unit.py`, `unit/test_task_router.py`, `unit/test_bootstrap_flow.py`, `unit/test_common_utils.py`, `unit/test_config_modules.py`, `unit/test_contracts_contexts.py`, `unit/test_contracts_errors.py`, `unit/test_contracts_requests_responses.py`, `unit/test_stream_session_wrapper.py`, `unit/test_ai_assistant_unit.py`, `unit/test_base_domain_agent.py`, `unit/test_base_framework_adapter.py`, `unit/test_base_tool_contract.py`, `unit/test_builtin_tools.py`, `unit/test_interaction_logger.py`, `unit/test_main_entrypoint.py`, `unit/test_task_factory.py`, `unit/test_tool_resolver.py` (additional cases), `unit/test_unified_logging.py`, etc. | ~2,100 (可再拆 C1/C2 保证 ≤2,000) |
+
+> 在执行上述批次时，保持“单批 ≤2,000 LOC → 针对性 pytest → 全量 pytest+cov → 更新本表 → 提交”的节奏，确保与用户要求一致。
