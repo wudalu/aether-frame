@@ -86,6 +86,23 @@ _Later waves can extend to framework placeholders (AutoGen, LangGraph) once ADK-
 - Add coverage thresholds to `pyproject.toml` (e.g., `[tool.pytest.ini_options] addopts = "--cov=src/aether_frame --cov-report=term-missing --cov-fail-under=65"` and update per wave).
 - Integrate coverage trend tracking into `docs/code_ut.md` after each wave: append a short log entry with date, scope, and coverage delta.
 - Keep manual debugging suites (`tests/manual`, `tests/debug`) untouched; as coverage improves, consider migrating any stable logic from manual suites into automated ones.
+- **Running the full unit suite with coverage:**  
+  ```
+  python3 -m pytest tests/unit --cov src/aether_frame --cov-report=term --cov-report=xml --cov-report=html
+  ```
+  This command produces terminal output plus `coverage.xml` and `htmlcov/` which can be archived per wave (e.g., `reports/coverage/<timestamp>/`) for historical comparisons.
+- **SonarQube integration:**  
+  1. Generate the XML report via the command above (ensure it lands at the root as `coverage.xml`).  
+  2. Run the scanner (example):  
+     ```
+     sonar-scanner \
+       -Dsonar.projectKey=aether-frame \
+       -Dsonar.sources=src \
+       -Dsonar.tests=tests \
+       -Dsonar.python.coverage.reportPaths=coverage.xml
+     ```
+  3. For local validation, use `sonar-scanner -Dsonar.host.url=<server> -Dsonar.login=<token>`; in CI, configure the same flags plus branch metadata.  
+  4. Update this plan after each sonar run to log the reported coverage delta and any code smells that need follow-up tests.
 
 ## Reference Checklist per Wave
 1. Confirm targeted files and expected LOC additions.
