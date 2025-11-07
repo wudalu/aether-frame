@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from aether_frame.contracts import ToolRequest, ToolResult, ToolStatus
+from aether_frame.contracts.enums import TaskChunkType
 from aether_frame.tools.base.tool import Tool
 from aether_frame.tools.service import ToolService
 
@@ -118,3 +119,34 @@ async def test_execute_tool_handles_execution_errors():
 
     assert result.status == ToolStatus.ERROR
     assert result.error.code == "tool.execution"
+
+
+@pytest.mark.asyncio
+async def test_get_tool_schema_and_capabilities():
+    service = ToolService()
+    tool = DummyTool()
+    await service.register_tool(tool)
+
+    schema = await service.get_tool_schema("echo", "builtin")
+    assert schema == {"type": "object"}
+
+    capabilities = await service.get_tool_capabilities("echo", "builtin")
+    assert capabilities == []
+
+    missing_schema = await service.get_tool_schema("missing")
+    assert missing_schema is None
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_stream_parameter_validation_error():
+    service = ToolService()
+    tool = DummyTool(validate=False)
+    await service.register_tool(tool)
+
+    request = ToolRequest(tool_name="echo", tool_namespace="builtin")
+    chunks = [chunk async for chunk in service.execute_tool_stream(request)]
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.chunk_type == TaskChunkType.ERROR
+    assert chunk.content["code"] == "tool.invalid_parameters"

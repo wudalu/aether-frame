@@ -142,4 +142,4 @@ async def test_execute_tool_stream_missing_tool():
     chunk = chunks[0]
     assert chunk.chunk_type == TaskChunkType.ERROR
     assert chunk.is_final is True
-    assert "Tool missing_tool not found" in chunk.content
+    assert chunk.content["message"] == "Tool missing_tool not found"

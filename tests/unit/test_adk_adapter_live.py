@@ -178,7 +178,7 @@ async def test_execute_task_live_requires_agent_and_session(execution_context):
 
     assert len(chunks) == 1
     assert chunks[0].chunk_type == TaskChunkType.ERROR
-    assert "requires both agent_id and session_id" in chunks[0].content
+    assert chunks[0].content["message"] == "ADK live execution requires both agent_id and session_id"
     assert hasattr(communicator, "send_user_response")
 
 
