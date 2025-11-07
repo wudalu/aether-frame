@@ -32,6 +32,7 @@ def uuid_stub(value):
         def __str__(self):
             return self._text
 
+        @property
         def hex(self):
             return self._text.replace("-", "")
 
