@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 try:  # Optional dependency at runtime
     from google.adk.agents.callback_context import CallbackContext  # type: ignore
@@ -22,6 +22,8 @@ logger = logging.getLogger("aether_frame.adk.llm_capture")
 
 # Key used to stash per-invocation metadata on the callback context state.
 CAPTURE_STATE_KEY = "aether_frame_llm_capture"
+
+BeforeModelCallback = Callable[[CallbackContext, LlmRequest], Optional[LlmResponse]]
 
 
 def build_llm_capture_callbacks(
@@ -144,3 +146,64 @@ def _emit_record(record_type: str, metadata: Dict[str, Any], payload: Any) -> No
     # the single choke point to extend. For example:
     #     mq_publisher.publish(log_data)
     # Keep the call non-blocking and swallow exceptions to avoid perturbing the request path.
+
+
+def chain_before_model_callbacks(*callbacks: Optional[BeforeModelCallback]) -> Optional[BeforeModelCallback]:
+    """Chain multiple before_model callbacks while preserving ADK short-circuit semantics."""
+    valid_callbacks = [cb for cb in callbacks if cb]
+    if not valid_callbacks:
+        return None
+
+    def _chained_callback(ctx: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+        for callback in valid_callbacks:
+            result = callback(ctx, llm_request)
+            if result is not None:
+                return result
+        return None
+
+    return _chained_callback
+
+
+def build_identity_strip_callback(domain_agent: Any) -> BeforeModelCallback:
+    """Return a callback that strips ADK identity boilerplate from system instructions."""
+
+    def _strip_identity(_: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+        _strip_adk_identity(domain_agent, llm_request)
+        return None
+
+    return _strip_identity
+
+
+def _strip_adk_identity(domain_agent: Any, llm_request: LlmRequest) -> None:
+    """Remove ADK-injected identity lines from the LLM system instructions."""
+    config = getattr(llm_request, "config", None)
+    if not config or not getattr(config, "system_instruction", None):
+        return
+
+    agent = getattr(domain_agent, "adk_agent", None)
+    agent_name = getattr(agent, "name", None) or getattr(domain_agent, "agent_id", None)
+    agent_description = getattr(agent, "description", None) or (
+        domain_agent.config.get("description") if isinstance(domain_agent.config, dict) else None
+    )
+
+    patterns = []
+    if agent_name:
+        name_line = f'You are an agent. Your internal name is "{agent_name}".'
+        patterns.append(name_line)
+        if agent_description:
+            description_line = f' The description about you is "{agent_description}"'
+            patterns.insert(0, f"{name_line}\n\n{description_line}")
+            patterns.append(description_line)
+    else:
+        name_line = None
+
+    instruction = config.system_instruction
+    updated_instruction = instruction
+    for pattern in patterns:
+        updated_instruction = updated_instruction.replace(pattern, "") if pattern else updated_instruction
+
+    if updated_instruction == instruction:
+        return
+
+    sanitized_parts = [segment.strip() for segment in updated_instruction.split("\n\n") if segment.strip()]
+    config.system_instruction = "\n\n".join(sanitized_parts)

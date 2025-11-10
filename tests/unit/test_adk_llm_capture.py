@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from aether_frame.framework.adk.llm_callbacks import (
     CAPTURE_STATE_KEY,
     build_llm_capture_callbacks,
+    build_identity_strip_callback,
+    chain_before_model_callbacks,
 )
 from aether_frame.contracts.requests import TaskRequest
 from aether_frame.contracts.contexts import UserContext
@@ -65,3 +68,48 @@ async def test_llm_capture_callbacks_stash_metadata_and_log(caplog):
     assert len(records) == 2
     assert "Captured ADK LLM request" in records[0].message
     assert "Captured ADK LLM response" in records[1].message
+
+
+def test_chain_before_model_callbacks_respects_short_circuit():
+    call_order = []
+
+    def cb1(ctx, request):
+        call_order.append("cb1")
+        return {"forced": "response"}
+
+    def cb2(ctx, request):
+        call_order.append("cb2")
+        return None
+
+    chained = chain_before_model_callbacks(cb1, cb2)
+    ctx = _DummyContext()
+    request = SimpleNamespace()
+
+    result = chained(ctx, request)
+
+    assert result == {"forced": "response"}
+    assert call_order == ["cb1"]
+
+
+def test_identity_strip_callback_removes_adk_boilerplate():
+    domain_agent = SimpleNamespace(
+        adk_agent=SimpleNamespace(name="agent-123", description="Domain Agent"),
+        config={"description": "fallback"},
+        agent_id="agent-123",
+    )
+    callback = build_identity_strip_callback(domain_agent)
+
+    system_instruction = (
+        "Original instruction."
+        "\n\nYou are an agent. Your internal name is \"agent-123\"."
+        "\n\n The description about you is \"Domain Agent\""
+        "\n\nAnother line."
+    )
+    request = SimpleNamespace(config=SimpleNamespace(system_instruction=system_instruction))
+
+    callback(_DummyContext(), request)
+
+    assert "Your internal name" not in request.config.system_instruction
+    assert "The description about you" not in request.config.system_instruction
+    assert "Original instruction." in request.config.system_instruction
+    assert "Another line." in request.config.system_instruction

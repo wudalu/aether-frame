@@ -37,6 +37,11 @@ from ..base.domain_agent import DomainAgent
 from .adk_agent_hooks import AdkAgentHooks
 from .adk_event_converter import AdkEventConverter
 from .tool_conversion import build_adk_agent, create_function_tools
+from ...framework.adk.llm_callbacks import (
+    build_identity_strip_callback,
+    build_llm_capture_callbacks,
+    chain_before_model_callbacks,
+)
 
 
 class AdkDomainAgent(DomainAgent):
@@ -137,11 +142,12 @@ class AdkDomainAgent(DomainAgent):
         )
         if capture_llm_payloads:
             try:
-                from .llm_callbacks import build_llm_capture_callbacks
-
                 before_agent_cb, before_model_cb, after_model_cb = build_llm_capture_callbacks(self)
             except Exception:  # pragma: no cover - defensive in case ADK missing
                 self.logger.debug("Failed to build ADK LLM capture callbacks.", exc_info=True)
+
+        identity_strip_cb = build_identity_strip_callback(self)
+        before_model_cb = chain_before_model_callbacks(before_model_cb, identity_strip_cb)
 
         self.adk_agent = build_adk_agent(
             name=self.config.get("name", self.agent_id),
