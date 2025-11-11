@@ -91,6 +91,26 @@ def test_chain_before_model_callbacks_respects_short_circuit():
     assert call_order == ["cb1"]
 
 
+def test_chain_before_model_callbacks_supports_keyword_args():
+    order = []
+
+    def cb1(**kwargs):
+        order.append("cb1")
+        return None
+
+    def cb2(**kwargs):
+        order.append("cb2")
+        return "ok"
+
+    chained = chain_before_model_callbacks(cb1, cb2)
+    ctx = _DummyContext()
+    request = SimpleNamespace()
+
+    result = chained(callback_context=ctx, llm_request=request)
+    assert result == "ok"
+    assert order == ["cb1", "cb2"]
+
+
 def test_identity_strip_callback_removes_adk_boilerplate():
     domain_agent = SimpleNamespace(
         adk_agent=SimpleNamespace(name="agent-123", description="Domain Agent"),
@@ -108,6 +128,17 @@ def test_identity_strip_callback_removes_adk_boilerplate():
     request = SimpleNamespace(config=SimpleNamespace(system_instruction=system_instruction))
 
     callback(_DummyContext(), request)
+
+    assert "Your internal name" not in request.config.system_instruction
+    assert "The description about you" not in request.config.system_instruction
+
+    # keyword call
+    request_kw = SimpleNamespace(config=SimpleNamespace(system_instruction=system_instruction))
+    callback(callback_context=_DummyContext(), llm_request=request_kw)
+    assert "Your internal name" not in request_kw.config.system_instruction
+    assert "The description about you" not in request_kw.config.system_instruction
+    assert "Original instruction." in request_kw.config.system_instruction
+    assert "Another line." in request_kw.config.system_instruction
 
     assert "Your internal name" not in request.config.system_instruction
     assert "The description about you" not in request.config.system_instruction

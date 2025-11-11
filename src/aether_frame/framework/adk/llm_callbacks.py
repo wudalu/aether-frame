@@ -154,9 +154,9 @@ def chain_before_model_callbacks(*callbacks: Optional[BeforeModelCallback]) -> O
     if not valid_callbacks:
         return None
 
-    def _chained_callback(ctx: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    def _chained_callback(*args, **kwargs) -> Optional[LlmResponse]:
         for callback in valid_callbacks:
-            result = callback(ctx, llm_request)
+            result = callback(*args, **kwargs)
             if result is not None:
                 return result
         return None
@@ -167,11 +167,25 @@ def chain_before_model_callbacks(*callbacks: Optional[BeforeModelCallback]) -> O
 def build_identity_strip_callback(domain_agent: Any) -> BeforeModelCallback:
     """Return a callback that strips ADK identity boilerplate from system instructions."""
 
-    def _strip_identity(_: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
-        _strip_adk_identity(domain_agent, llm_request)
+    def _strip_identity(*args, **kwargs) -> Optional[LlmResponse]:
+        llm_request = _extract_llm_request(args, kwargs)
+        if llm_request is not None:
+            _strip_adk_identity(domain_agent, llm_request)
         return None
 
     return _strip_identity
+
+
+def _extract_llm_request(args: tuple, kwargs: Dict[str, Any]) -> Optional[LlmRequest]:
+    if "llm_request" in kwargs:
+        return kwargs["llm_request"]
+    if len(args) >= 2:
+        return args[1]
+    if args:
+        candidate = args[-1]
+        if hasattr(candidate, "config"):
+            return candidate
+    return None
 
 
 def _strip_adk_identity(domain_agent: Any, llm_request: LlmRequest) -> None:
