@@ -8,9 +8,15 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from ...contracts import AgentRequest, TaskResult, TaskStatus
 from ..base.agent_hooks import AgentHooks
 from ...infrastructure.adk.adk_observer import AdkObserver
+from ...observability.adk_logging import (
+    initialize_execution_context,
+    inject_agent_snapshots,
+    derive_failure_details,
+)
 
 if TYPE_CHECKING:
     from .adk_domain_agent import AdkDomainAgent
+    from ...common.unified_logging import ExecutionContext
 
 
 logger = logging.getLogger(__name__)
@@ -118,12 +124,19 @@ class AdkAgentHooks(AgentHooks):
                 if getattr(agent_request, "metadata", None)
                 else None
             )
+            metadata_snapshot = self._build_observer_metadata(agent_request)
+            exec_context = initialize_execution_context(
+                getattr(self.agent, "agent_id", "adk-agent"),
+                metadata_snapshot,
+                execution_key,
+            )
             self._active_executions[execution_key] = {
                 "start_time": datetime.now(),
                 "task_id": getattr(
                     agent_request.task_request, "task_id", execution_key
                 ),
                 "execution_id": execution_id,
+                "exec_context": exec_context,
             }
 
             # Load session context from ADK memory
@@ -142,6 +155,8 @@ class AdkAgentHooks(AgentHooks):
     async def after_execution(self, agent_request: AgentRequest, result: TaskResult):
         """Hook called after task execution."""
         try:
+            if result.metadata is None:
+                result.metadata = {}
             self._attach_execution_stats(agent_request, result)
 
             # Save session state to ADK memory
@@ -233,10 +248,12 @@ class AdkAgentHooks(AgentHooks):
             agent_id = metadata.get(
                 "agent_id", getattr(self.agent, "agent_id", "adk-agent")
             )
+            exec_context = self._get_execution_context_for_request(agent_request)
             await self.observer.record_execution_start(
                 task_id=task_id,
                 agent_id=agent_id,
                 metadata=metadata,
+                execution_context=exec_context,
             )
 
     async def _record_execution_completion(
@@ -255,12 +272,16 @@ class AdkAgentHooks(AgentHooks):
 
             task = agent_request.task_request
             task_id = task.task_id if task else result.task_id
+            exec_context = self._get_execution_context_for_request(agent_request)
             await self.observer.record_execution_completion(
                 task_id=task_id,
                 result=result,
                 execution_time=result.execution_time,
                 metadata=metadata,
+                execution_context=exec_context,
             )
+            execution_key = self._resolve_execution_key(agent_request)
+            self._active_executions.pop(execution_key, None)
 
     async def _record_execution_error(
         self, agent_request: AgentRequest, error: Exception
@@ -276,6 +297,10 @@ class AdkAgentHooks(AgentHooks):
             )
             if stats:
                 metadata.setdefault("execution_stats", {}).update(stats)
+            inject_agent_snapshots(self.agent, metadata)
+            failure_details = derive_failure_details(error)
+            for key, value in failure_details.items():
+                metadata.setdefault(key, value)
             metadata.setdefault("error_type", type(error).__name__)
             metadata.setdefault("error_message", str(error))
             task = agent_request.task_request if agent_request else None
@@ -283,11 +308,13 @@ class AdkAgentHooks(AgentHooks):
             agent_id = metadata.get(
                 "agent_id", getattr(self.agent, "agent_id", "adk-agent")
             )
+            exec_context = execution_info.get("exec_context")
             await self.observer.record_execution_error(
                 task_id=task_id,
                 error=error,
                 agent_id=agent_id,
                 metadata=metadata,
+                execution_context=exec_context,
             )
 
     async def _preprocess_request(self, agent_request: AgentRequest):
@@ -337,7 +364,7 @@ class AdkAgentHooks(AgentHooks):
     ) -> None:
         """Populate execution statistics on TaskResult metadata."""
         execution_key = self._resolve_execution_key(agent_request)
-        execution_info = self._active_executions.pop(execution_key, {})
+        execution_info = self._active_executions.get(execution_key, {})
         start_time = execution_info.get("start_time")
 
         if result.execution_time is None and start_time:
@@ -352,6 +379,15 @@ class AdkAgentHooks(AgentHooks):
             result.metadata.setdefault("execution_stats", {}).update(stats)
             if "execution_id" in execution_info:
                 result.metadata.setdefault("execution_id", execution_info["execution_id"])
+
+    def _get_execution_context_for_request(
+        self, agent_request: AgentRequest
+    ) -> Optional["ExecutionContext"]:
+        execution_key = self._resolve_execution_key(agent_request)
+        execution_info = self._active_executions.get(execution_key)
+        if not execution_info:
+            return None
+        return execution_info.get("exec_context")
 
     @staticmethod
     def _compute_execution_stats(

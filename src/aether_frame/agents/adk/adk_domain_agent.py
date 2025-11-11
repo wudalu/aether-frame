@@ -507,6 +507,11 @@ class AdkDomainAgent(DomainAgent):
                 from ...contracts import TaskChunkType, TaskStreamChunk
 
                 execution_error: Optional[Exception] = None
+                generator_exit_detected = False
+                execution_identifier = self.runtime_context.get(
+                    "execution_id",
+                    task_request.task_id,
+                )
                 try:
                     # Convert messages to ADK format and send initial message
                     adk_content = self._convert_messages_to_adk_content(
@@ -548,7 +553,23 @@ class AdkDomainAgent(DomainAgent):
 
                 except GeneratorExit:
                     # Consumer closed the stream; treat as successful completion
-                    pass
+                    generator_exit_detected = True
+                    self.logger.info(
+                        "ADK live stream closed by consumer",
+                        extra={
+                            "execution_id": execution_identifier,
+                            "flow_step": "ADK_LIVE_STREAM",
+                            "component": "AdkDomainAgent",
+                            "key_data": {
+                                "task_id": task_request.task_id,
+                                "agent_id": self.agent_id,
+                                "chat_session_id": task_request.session_id,
+                                "adk_session_id": session_id,
+                                "failure_reason": "generator_exit",
+                                "status": "stream_interrupted",
+                            },
+                        },
+                    )
                 except Exception as e:
                     execution_error = e
                     try:
@@ -564,6 +585,58 @@ class AdkDomainAgent(DomainAgent):
                         )
                 finally:
                     live_request_queue.close()
+                    summary_payload = {
+                        "task_id": task_request.task_id,
+                        "agent_id": self.agent_id,
+                        "chat_session_id": task_request.session_id,
+                        "adk_session_id": session_id,
+                        "generator_exit": generator_exit_detected,
+                        "has_error": execution_error is not None,
+                    }
+                    if execution_error:
+                        summary_payload.update(
+                            {
+                                "failure_reason": type(execution_error).__name__,
+                                "error_message": str(execution_error),
+                                "status": "failure",
+                            }
+                        )
+                        self.logger.warning(
+                            "ADK live stream finished with error",
+                            extra={
+                                "execution_id": execution_identifier,
+                                "flow_step": "ADK_LIVE_STREAM",
+                                "component": "AdkDomainAgent",
+                                "key_data": summary_payload,
+                            },
+                        )
+                    elif generator_exit_detected:
+                        summary_payload.update(
+                            {
+                                "failure_reason": "generator_exit",
+                                "status": "stream_interrupted",
+                            }
+                        )
+                        self.logger.info(
+                            "ADK live stream interrupted by consumer",
+                            extra={
+                                "execution_id": execution_identifier,
+                                "flow_step": "ADK_LIVE_STREAM",
+                                "component": "AdkDomainAgent",
+                                "key_data": summary_payload,
+                            },
+                        )
+                    else:
+                        summary_payload["status"] = "completed"
+                        self.logger.info(
+                            "ADK live stream completed",
+                            extra={
+                                "execution_id": execution_identifier,
+                                "flow_step": "ADK_LIVE_STREAM",
+                                "component": "AdkDomainAgent",
+                                "key_data": summary_payload,
+                            },
+                        )
 
                 if execution_error is None:
                     result_metadata = {
@@ -576,6 +649,8 @@ class AdkDomainAgent(DomainAgent):
                         result_metadata["input_preview"] = self._last_input_snapshot
                     if self._last_usage_metadata:
                         result_metadata["token_usage"] = self._last_usage_metadata
+                    if generator_exit_detected:
+                        result_metadata["stream_closed_by_consumer"] = True
 
                     result = TaskResult(
                         task_id=task_request.task_id,
@@ -1337,6 +1412,7 @@ class AdkDomainAgent(DomainAgent):
             source="adk_domain_agent.live",
             details={"agent_id": self.agent_id},
         )
+        payload_dict = error_payload.to_dict()
 
         async def error_stream():
             from ...contracts import TaskChunkType, TaskStreamChunk
@@ -1345,9 +1421,14 @@ class AdkDomainAgent(DomainAgent):
                 task_id=task_id,
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=error_payload.to_dict(),
+                content=error_payload.message,
                 is_final=True,
-                metadata={"error_type": "runtime_error", "framework": "adk", "stage": "error"},
+                metadata={
+                    "error_type": "runtime_error",
+                    "framework": "adk",
+                    "stage": "error",
+                    "error_payload": payload_dict,
+                },
                 chunk_kind="error",
             )
 

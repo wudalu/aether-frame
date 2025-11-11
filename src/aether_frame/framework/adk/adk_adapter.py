@@ -1463,13 +1463,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 source="adk_adapter.live_error",
                 details=metadata or {},
             )
+            payload_dict = error_payload.to_dict()
             yield TaskStreamChunk(
                 task_id=task_request.task_id if task_request else "unknown",
                 chunk_type=TaskChunkType.ERROR,
                 sequence_id=0,
-                content=error_payload.to_dict(),
+                content=error_payload.message,
                 is_final=True,
-                metadata={"framework": "adk", **(metadata or {})},
+                metadata={
+                    "framework": "adk",
+                    **(metadata or {}),
+                    "error_payload": payload_dict,
+                },
             )
 
         class ErrorCommunicator:

@@ -3,9 +3,17 @@
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...contracts import AgentRequest, TaskResult
+from ...contracts import AgentRequest, TaskResult, TaskStatus
+from ...observability.adk_logging import (
+    log_context_execution_start,
+    log_context_execution_complete,
+    log_context_execution_error,
+)
+
+if TYPE_CHECKING:
+    from ...common.unified_logging import ExecutionContext
 
 logger = logging.getLogger("aether_frame.infrastructure.adk.observer")
 
@@ -24,7 +32,11 @@ class AdkObserver:
         self._performance_data: List[Dict[str, Any]] = []
 
     async def record_execution_start(
-        self, task_id: str, agent_id: str, metadata: Optional[Dict[str, Any]] = None
+        self,
+        task_id: str,
+        agent_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        execution_context: Optional["ExecutionContext"] = None,
     ):
         """
         Record execution start event.
@@ -65,6 +77,7 @@ class AdkObserver:
                     "key_data": key_data,
                 },
             )
+            log_context_execution_start(execution_context, key_data)
 
         except Exception as e:
             # Don't let monitoring failures break execution
@@ -76,6 +89,7 @@ class AdkObserver:
         result: TaskResult,
         execution_time: Optional[float],
         metadata: Optional[Dict[str, Any]] = None,
+        execution_context: Optional["ExecutionContext"] = None,
     ):
         """
         Record execution completion event.
@@ -152,6 +166,11 @@ class AdkObserver:
                     "key_data": key_data,
                 },
             )
+            log_context_execution_complete(
+                execution_context,
+                key_data,
+                success=result.status == TaskStatus.SUCCESS,
+            )
 
         except Exception as e:
             # Don't let monitoring failures break execution
@@ -163,6 +182,7 @@ class AdkObserver:
         error: Exception,
         agent_id: str,
         metadata: Optional[Dict[str, Any]] = None,
+        execution_context: Optional["ExecutionContext"] = None,
     ):
         """
         Record execution error event.
@@ -207,6 +227,11 @@ class AdkObserver:
                     "component": "AdkObserver",
                     "key_data": key_data,
                 },
+            )
+            log_context_execution_error(
+                execution_context,
+                error,
+                key_data,
             )
 
         except Exception as log_error:
