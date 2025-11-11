@@ -39,6 +39,12 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
    - Continue the “agent/runner reuse” strategy: clients must reuse the same `chat_session_id` and validate runner/agent status before reuse.
    - After idle cleanup we do **not** auto-rebuild the session. The next request that references the `chat_session_id` will trigger recovery if needed.
    - Leave a recovery API hook (now implemented) to reinject history, rebuild runners, and prepare for future capabilities like cached knowledge.
+   - Runtime flow in code today:
+     1. `AdkSessionManager.cleanup_chat_session()` extracts chat history and saves a `SessionRecoveryRecord` (runner/agent ids + serialized transcript) via the configured `SessionRecoveryStore` (defaults to Redis/in-memory).
+     2. When the next request arrives, `AdkFrameworkAdapter._handle_conversation()` calls `coordinate_chat_session`. If the session was previously cleared it triggers `recover_chat_session()` which loads the record back and instructs the session manager to create a fresh ADK session/runner.
+     3. After coordination succeeds, the adapter converts the stored transcript into `UniversalMessage`s (helper in `session_recovery.py`) and prepends them to the incoming `TaskRequest.messages` before the domain agent runs. This guarantees the very next LLM turn sees the recovered context even if the ADK SessionService is still catching up.
+     4. In parallel the session manager attempts `_maybe_apply_recovery_payload()` which uses the official ADK SessionService APIs to append events/state deltas when the runner exposes them. If event injection succeeds, the persisted snapshot is purged; if not, it is re-queued for a later attempt.
+   - Once ADK exposes a stable server-side “append event” contract we can move the primary recovery path there and keep the `TaskRequest.messages` injection as a fallback.
 
 3. **Observability (MVP scope)**
    - Extend existing DEBUG logs with idle-cleanup specific events (reason, idle duration, rebuild latency).

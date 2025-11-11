@@ -29,6 +29,7 @@ from .approval_broker import AdkApprovalBroker, ApprovalAwareCommunicator
 from .live_communicator import AdkLiveCommunicator
 from ...tools.resolver import ToolResolver, ToolNotFoundError
 from .adk_session_manager import AdkSessionManager, SessionClearedError
+from .session_recovery import recovery_record_to_messages
 
 if TYPE_CHECKING:
     # ADK imports for type checking only
@@ -847,6 +848,17 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     },
                 )
                 raise
+
+        if recovery_record:
+            restored_messages = recovery_record_to_messages(recovery_record)
+            if restored_messages:
+                existing_messages = task_request.messages or []
+                task_request.messages = restored_messages + existing_messages
+                metadata = task_request.metadata or {}
+                metadata = dict(metadata)
+                metadata["restored_history_count"] = len(restored_messages)
+                metadata["restored_history_injected"] = True
+                task_request.metadata = metadata
 
         if coordination_result is None:
             raise RuntimeError("Failed to coordinate chat session after recovery attempt")

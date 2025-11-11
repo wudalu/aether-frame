@@ -9,7 +9,7 @@ from threading import RLock
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
-from ...contracts import AgentConfig
+from ...contracts import AgentConfig, UniversalMessage
 
 
 @dataclass(frozen=True)
@@ -107,3 +107,53 @@ class InMemoryArchiveSessionService:
         """Expose underlying recovery store for lifecycle manager reuse."""
 
         return self.recovery_store
+
+
+def recovery_record_to_messages(
+    record: SessionRecoveryRecord,
+    *,
+    mark_restored: bool = True,
+) -> List[UniversalMessage]:
+    """
+    Convert a recovery record's chat history into UniversalMessage objects.
+
+    Args:
+        record: Recovery record containing serialized chat history.
+        mark_restored: Whether to annotate metadata with restored markers.
+
+    Returns:
+        List of UniversalMessage objects reconstructed from the archive.
+    """
+
+    restored_messages: List[UniversalMessage] = []
+    if not record or not record.chat_history:
+        return restored_messages
+
+    for entry in record.chat_history:
+        if not isinstance(entry, dict):
+            continue
+
+        role = entry.get("role")
+        if not role:
+            author = entry.get("author")
+            role = "assistant" if author and author != "user" else "user"
+
+        content = entry.get("content")
+        if not role or content is None:
+            continue
+
+        metadata = entry.get("metadata")
+        metadata_dict = dict(metadata) if isinstance(metadata, dict) else {}
+        if mark_restored:
+            metadata_dict.setdefault("restored_from_archive", True)
+            metadata_dict.setdefault("archived_at", record.archived_at.isoformat())
+
+        restored_messages.append(
+            UniversalMessage(
+                role=role,
+                content=content,
+                metadata=metadata_dict or None,
+            )
+        )
+
+    return restored_messages

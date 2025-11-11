@@ -12,6 +12,7 @@ from src.aether_frame.contracts import (
     TaskRequest,
     TaskResult,
     TaskStatus,
+    UniversalMessage,
     UserContext,
 )
 from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
@@ -246,6 +247,60 @@ async def test_session_recovery_agent_switch(monkeypatch):
     assert injected_history == recovery_record.chat_history
     assert recovery_store.load(chat_session_id) is None
     assert chat_session_id not in adapter.adk_session_manager._pending_recoveries
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_injects_messages_into_request(monkeypatch):
+    adapter, runner_manager, recovery_store, _ = _bootstrap_adapter(monkeypatch)
+
+    agent_id = "agent-history"
+    runner_id = "runner-history"
+    _register_agent(adapter, runner_manager, agent_id, runner_id)
+
+    chat_session_id = "chat-history"
+    archived_messages = [
+        {"role": "user", "content": "previous prompt"},
+        {"role": "assistant", "content": "previous reply"},
+        {"role": "user", "content": "deep dive question"},
+        {"role": "assistant", "content": "deep dive response"},
+    ]
+    recovery_record = SessionRecoveryRecord(
+        chat_session_id=chat_session_id,
+        user_id="user-history",
+        agent_id=agent_id,
+        agent_config=None,
+        chat_history=archived_messages,
+    )
+    recovery_store.save(recovery_record)
+    adapter.adk_session_manager._cleared_sessions[chat_session_id] = {"cleared_at": recovery_record.archived_at}
+
+    captured = {}
+
+    async def capture_execute(task_request: TaskRequest, runtime_context, domain_agent):
+        captured["messages"] = list(task_request.messages or [])
+        captured["metadata"] = dict(task_request.metadata or {})
+        return TaskResult(task_id=task_request.task_id, status=TaskStatus.SUCCESS, messages=[])
+
+    monkeypatch.setattr(adapter, "_execute_with_domain_agent", capture_execute)
+
+    task_request = TaskRequest(
+        task_id="recover-history",
+        task_type="chat",
+        description="resume conversation with history",
+        agent_id=agent_id,
+        session_id=chat_session_id,
+        messages=[UniversalMessage(role="user", content="current question")],
+        user_context=UserContext(user_id="user-history"),
+    )
+
+    result = await adapter._handle_conversation(task_request, strategy=None)
+
+    assert result.status == TaskStatus.SUCCESS
+    restored_msgs = captured["messages"]
+    assert len(restored_msgs) == len(archived_messages) + 1
+    assert [msg.content for msg in restored_msgs[:-1]] == [msg["content"] for msg in archived_messages]
+    assert restored_msgs[-1].content == "current question"
+    assert captured["metadata"]["restored_history_count"] == len(archived_messages)
 
 
 @pytest.mark.asyncio
