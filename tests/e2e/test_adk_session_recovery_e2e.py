@@ -180,7 +180,7 @@ async def test_session_recovery_same_agent(monkeypatch):
         agent_config=None,
         chat_history=[{"role": "user", "content": "hello again"}],
     )
-    recovery_store.save(recovery_record)
+    await recovery_store.save(recovery_record)
     adapter.adk_session_manager._cleared_sessions[chat_session_id] = {"cleared_at": recovery_record.archived_at}
 
     task_request = TaskRequest(
@@ -201,7 +201,7 @@ async def test_session_recovery_same_agent(monkeypatch):
     injected_runner, injected_session, injected_history = injections[0]
     assert injected_runner == runner_id
     assert injected_history == recovery_record.chat_history
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert chat_session_id not in adapter.adk_session_manager._pending_recoveries
 
 
@@ -225,7 +225,7 @@ async def test_session_recovery_agent_switch(monkeypatch):
         agent_config=None,
         chat_history=[{"role": "user", "content": "history before switch"}],
     )
-    recovery_store.save(recovery_record)
+    await recovery_store.save(recovery_record)
     adapter.adk_session_manager._cleared_sessions[chat_session_id] = {"cleared_at": recovery_record.archived_at}
 
     task_request = TaskRequest(
@@ -245,7 +245,7 @@ async def test_session_recovery_agent_switch(monkeypatch):
     injected_runner, injected_session, injected_history = injections[0]
     assert injected_runner == new_runner
     assert injected_history == recovery_record.chat_history
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert chat_session_id not in adapter.adk_session_manager._pending_recoveries
 
 
@@ -271,7 +271,7 @@ async def test_session_recovery_injects_messages_into_request(monkeypatch):
         agent_config=None,
         chat_history=archived_messages,
     )
-    recovery_store.save(recovery_record)
+    await recovery_store.save(recovery_record)
     adapter.adk_session_manager._cleared_sessions[chat_session_id] = {"cleared_at": recovery_record.archived_at}
 
     captured = {}
@@ -328,7 +328,7 @@ async def test_session_recovery_missing_snapshot(monkeypatch):
         await adapter._handle_conversation(task_request, strategy=None)
 
     assert excinfo.value.reason == "missing_recovery_record"
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert injections == []
 
 
@@ -357,7 +357,7 @@ async def test_session_recovery_injection_retry(monkeypatch):
         agent_config=None,
         chat_history=[{"role": "user", "content": "will retry"}],
     )
-    recovery_store.save(recovery_record)
+    await recovery_store.save(recovery_record)
     adapter.adk_session_manager._cleared_sessions[chat_session_id] = {"cleared_at": recovery_record.archived_at}
 
     task_request = TaskRequest(
@@ -374,7 +374,7 @@ async def test_session_recovery_injection_retry(monkeypatch):
     result_first = await adapter._handle_conversation(task_request, strategy=None)
     assert result_first.status == TaskStatus.SUCCESS
     assert failure_state["attempt"] == 1
-    assert recovery_store.load(chat_session_id) is not None
+    assert await recovery_store.load(chat_session_id) is not None
     assert chat_session_id in adapter.adk_session_manager._pending_recoveries
 
     # Drop the existing session to force recreation on next attempt
@@ -387,6 +387,6 @@ async def test_session_recovery_injection_retry(monkeypatch):
     result_second = await adapter._handle_conversation(task_request, strategy=None)
     assert result_second.status == TaskStatus.SUCCESS
     assert failure_state["attempt"] == 2
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert chat_session_id not in adapter.adk_session_manager._pending_recoveries
     assert len(injection_calls) == 2

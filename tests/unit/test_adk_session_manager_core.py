@@ -112,14 +112,14 @@ class DummyRecoveryStore:
         self.records = {}
         self.purged = []
 
-    def save(self, record):
+    async def save(self, record):
         self.saved.append(record)
         self.records[record.chat_session_id] = record
 
-    def load(self, chat_session_id):
+    async def load(self, chat_session_id):
         return self.records.get(chat_session_id)
 
-    def purge(self, chat_session_id):
+    async def purge(self, chat_session_id):
         self.purged.append(chat_session_id)
         self.records.pop(chat_session_id, None)
 
@@ -404,8 +404,16 @@ async def test_perform_idle_cleanup_archives_stale_sessions(monkeypatch):
         settings=SimpleNamespace(default_app_name="app", default_user_id="user"),
     )
     manager._idle_agent_manager = SimpleNamespace()
+    async def fake_store_load(chat_id):
+        return SimpleNamespace(archived_at=datetime.utcnow())
+
+    async def noop(*args, **kwargs):
+        return None
+
     manager._recovery_store = SimpleNamespace(
-        load=lambda chat_id: SimpleNamespace(archived_at=datetime.utcnow())
+        load=fake_store_load,
+        save=noop,
+        purge=noop,
     )
 
     calls = {"evaluate": []}

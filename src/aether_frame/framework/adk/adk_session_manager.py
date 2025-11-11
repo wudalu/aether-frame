@@ -228,7 +228,7 @@ class AdkSessionManager:
                     )
                     await self._cleanup_session_only(info, self._idle_runner_manager)
                     self.chat_sessions.pop(chat_session_id, None)
-                    archived_record = self._recovery_store.load(chat_session_id)
+                    archived_record = await self._recovery_store.load(chat_session_id)
                     archived_at = archived_record.archived_at if archived_record else None
                     self._mark_session_cleared(
                         chat_session_id,
@@ -408,7 +408,7 @@ class AdkSessionManager:
     async def recover_chat_session(self, chat_session_id: str, runner_manager) -> SessionRecoveryRecord:
         """Rehydrate chat session tracking from stored recovery payload."""
 
-        record = self._recovery_store.load(chat_session_id)
+        record = await self._recovery_store.load(chat_session_id)
         if not record:
             raise SessionClearedError(chat_session_id, datetime.now(), reason="missing_recovery_record")
 
@@ -741,7 +741,7 @@ class AdkSessionManager:
             agent_config=agent_config,
             chat_history=chat_history,
         )
-        self._recovery_store.save(record)
+        await self._recovery_store.save(record)
         self.logger.info(
             "Archived chat session state",
             extra={
@@ -761,7 +761,7 @@ class AdkSessionManager:
 
         record = self._pending_recoveries.pop(chat_session.chat_session_id, None)
         if not record:
-            record = self._recovery_store.load(chat_session.chat_session_id)
+            record = await self._recovery_store.load(chat_session.chat_session_id)
         if not record:
             return
 
@@ -780,7 +780,7 @@ class AdkSessionManager:
                         "history_count": len(record.chat_history),
                     },
                 )
-                self._recovery_store.purge(chat_session.chat_session_id)
+                await self._recovery_store.purge(chat_session.chat_session_id)
                 return
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning(
@@ -795,7 +795,7 @@ class AdkSessionManager:
                 return
 
         # No history to inject, simply purge the stored record
-        self._recovery_store.purge(chat_session.chat_session_id)
+        await self._recovery_store.purge(chat_session.chat_session_id)
 
     async def _sync_knowledge_to_memory(
         self,
@@ -1046,7 +1046,7 @@ class AdkSessionManager:
         
         # Remove from tracking
         del self.chat_sessions[chat_session_id]
-        archived_record = self._recovery_store.load(chat_session_id)
+        archived_record = await self._recovery_store.load(chat_session_id)
         archived_at = archived_record.archived_at if archived_record else None
         self._mark_session_cleared(chat_session_id, reason="explicit_cleanup", archived_at=archived_at)
         await self._evaluate_runner_agent_idle(

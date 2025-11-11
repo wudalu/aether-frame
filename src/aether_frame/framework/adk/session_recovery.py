@@ -43,13 +43,13 @@ class SessionRecoveryRecord:
 class SessionRecoveryStore:
     """Abstract persistence for session recovery records."""
 
-    def save(self, record: SessionRecoveryRecord) -> None:
+    async def save(self, record: SessionRecoveryRecord) -> None:
         raise NotImplementedError
 
-    def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
+    async def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
         raise NotImplementedError
 
-    def purge(self, chat_session_id: str) -> None:
+    async def purge(self, chat_session_id: str) -> None:
         raise NotImplementedError
 
 
@@ -60,17 +60,17 @@ class InMemorySessionRecoveryStore(SessionRecoveryStore):
         self._records: Dict[str, SessionRecoveryRecord] = {}
         self._lock = RLock()
 
-    def save(self, record: SessionRecoveryRecord) -> None:  # noqa: D401
+    async def save(self, record: SessionRecoveryRecord) -> None:  # noqa: D401
         """Store or overwrite the recovery record."""
 
         with self._lock:
             self._records[record.chat_session_id] = record
 
-    def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
+    async def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
         with self._lock:
             return self._records.get(chat_session_id)
 
-    def purge(self, chat_session_id: str) -> None:
+    async def purge(self, chat_session_id: str) -> None:
         with self._lock:
             self._records.pop(chat_session_id, None)
 
@@ -92,13 +92,13 @@ class InMemoryArchiveSessionService:
         self.sessions.pop(session_id, None)
 
     async def archive_session(self, record: SessionRecoveryRecord) -> None:
-        self.recovery_store.save(record)
+        await self.recovery_store.save(record)
 
     async def load_archived_session(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
-        return self.recovery_store.load(chat_session_id)
+        return await self.recovery_store.load(chat_session_id)
 
     async def purge_archived_session(self, chat_session_id: str) -> None:
-        self.recovery_store.purge(chat_session_id)
+        await self.recovery_store.purge(chat_session_id)
 
     async def shutdown(self) -> None:
         self.shutdown_called = True

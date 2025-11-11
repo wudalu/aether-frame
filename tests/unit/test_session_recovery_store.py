@@ -38,7 +38,8 @@ def test_session_recovery_record_to_dict_includes_metadata():
     assert payload["agent_config"]["agent_type"] == "support"
 
 
-def test_in_memory_store_save_load_purge():
+@pytest.mark.asyncio
+async def test_in_memory_store_save_load_purge():
     store = InMemorySessionRecoveryStore()
     record = SessionRecoveryRecord(
         chat_session_id="chat-1",
@@ -48,10 +49,10 @@ def test_in_memory_store_save_load_purge():
         chat_history=[],
     )
 
-    store.save(record)
-    assert store.load("chat-1") == record
-    store.purge("chat-1")
-    assert store.load("chat-1") is None
+    await store.save(record)
+    assert await store.load("chat-1") == record
+    await store.purge("chat-1")
+    assert await store.load("chat-1") is None
 
 
 @pytest.mark.asyncio
