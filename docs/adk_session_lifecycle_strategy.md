@@ -39,6 +39,33 @@ Goal: introduce a predictable, automated cleanup mechanism while preserving user
    - Continue the “agent/runner reuse” strategy: clients must reuse the same `chat_session_id` and validate runner/agent status before reuse.
    - After idle cleanup we do **not** auto-rebuild the session. The next request that references the `chat_session_id` will trigger recovery if needed.
    - Leave a recovery API hook (now implemented) to reinject history, rebuild runners, and prepare for future capabilities like cached knowledge.
+   - Runtime flow in code today:
+     1. `AdkSessionManager.cleanup_chat_session()` extracts chat history and saves a `SessionRecoveryRecord` (runner/agent ids + serialized transcript) via the configured `SessionRecoveryStore` (defaults to Redis/in-memory).
+     2. When the next request arrives, `AdkFrameworkAdapter._handle_conversation()` calls `coordinate_chat_session`. If the session was previously cleared it triggers `recover_chat_session()` which loads the record back and instructs the session manager to create a fresh ADK session/runner.
+     3. After coordination succeeds, the adapter converts the stored transcript into `UniversalMessage`s (helper in `session_recovery.py`) and prepends them to the incoming `TaskRequest.messages` before the domain agent runs. This guarantees the very next LLM turn sees the recovered context even if the ADK SessionService is still catching up.
+     4. In parallel the session manager attempts `_maybe_apply_recovery_payload()` which uses the official ADK SessionService APIs to append events/state deltas when the runner exposes them. If event injection succeeds, the persisted snapshot is purged; if not, it is re-queued for a later attempt.
+   - SessionService integration: the manager now depends on the asynchronous `SessionRecoveryStore` protocol (`await save/load/purge`). Concrete services (Redis, in-memory) expose this via `get_recovery_store()`, typically returning a lightweight adapter that forwards to their native async APIs (`archive_session`, `load_archived_session`, `purge_archived_session`). This keeps the manager decoupled from transport details while still supporting Redis-backed durability.
+     ```python
+     # RedisSessionService 内的示例
+     class RedisSessionService(BaseSessionService):
+         ...
+         def get_recovery_store(self) -> SessionRecoveryStore:
+             return _RedisRecoveryStoreFacade(self)
+
+     @dataclass
+     class _RedisRecoveryStoreFacade(SessionRecoveryStore):
+         service: RedisSessionService
+
+         async def save(self, record: SessionRecoveryRecord) -> None:
+             await self.service.archive_session(record)
+
+         async def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
+             return await self.service.load_archived_session(chat_session_id)
+
+         async def purge(self, chat_session_id: str) -> None:
+             await self.service.purge_archived_session(chat_session_id)
+     ```
+   - Once ADK exposes a stable server-side “append event” contract we can move the primary recovery path there and keep the `TaskRequest.messages` injection as a fallback.
 
 3. **Observability (MVP scope)**
    - Extend existing DEBUG logs with idle-cleanup specific events (reason, idle duration, rebuild latency).
@@ -64,7 +91,7 @@ To deliver controlled reuse plus recovery in this iteration we execute the follo
 
 1. **Recovery record model and store abstraction**
    - Define `SessionRecoveryRecord` with `chat_session_id`, `user_id`, `agent_id`, the latest `agent_config`, `chat_history`, and `archived_at`.
-   - Introduce a `SessionRecoveryStore` interface (`save/load/purge`) with an in-memory implementation for development/testing.
+   - Introduce an async `SessionRecoveryStore` interface (`save/load/purge`) with an in-memory implementation for development/testing.
    - Unit tests: validate persistence, default behaviours, and duplicate writes.
 
 2. **Snapshot capture during cleanup paths**
@@ -95,7 +122,7 @@ To deliver controlled reuse plus recovery in this iteration we execute the follo
    | `archive_session(record: SessionRecoveryRecord) -> None` | `record`: snapshot produced by the SessionManager containing `chat_session_id`, `user_id`, `agent_id`, `agent_config`, `chat_history`, etc. | Persist the recovery snapshot (e.g., in Redis). |
    | `load_archived_session(chat_session_id: str) -> Optional[SessionRecoveryRecord]` | `chat_session_id`: business session identifier | Retrieve the saved snapshot; return `None` if not found. |
    | `purge_archived_session(chat_session_id: str) -> None` | `chat_session_id`: business session identifier | Delete the snapshot after successful recovery to avoid duplicate injections. |
-   | `get_recovery_store() -> SessionRecoveryStore` | None | Return the underlying `SessionRecoveryStore` instance (must support `save(record)`, `load(chat_session_id)`, and `purge(chat_session_id)`). The SessionManager reuses this store so both components operate on the same data. |
+| `get_recovery_store() -> SessionRecoveryStore` | None | Return the underlying async `SessionRecoveryStore` instance (must implement `await save(record)`, `await load(chat_session_id)`, and `await purge(chat_session_id)`). The SessionManager reuses this store so both components operate on the same data，再通过 facade 转发到 `archive_session/load_archived_session/purge_archived_session`。 |
 
    Additional requirements:
    - All methods are `async` so the SessionManager can await them.

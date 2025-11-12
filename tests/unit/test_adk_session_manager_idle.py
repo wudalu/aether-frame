@@ -138,7 +138,7 @@ async def test_session_cleanup_marks_and_blocks_reuse():
     )
 
     assert chat_session_id in manager._cleared_sessions
-    archived_entry = recovery_store.load(chat_session_id)
+    archived_entry = await recovery_store.load(chat_session_id)
     assert archived_entry is not None
     assert archived_entry.chat_session_id == chat_session_id
     assert manager._cleared_sessions[chat_session_id]["archived_at"] == archived_entry.archived_at
@@ -149,7 +149,7 @@ async def test_session_cleanup_marks_and_blocks_reuse():
     recovery_record = await manager.recover_chat_session(chat_session_id, runner_manager)
     assert chat_session_id not in manager._cleared_sessions
     assert recovery_record.agent_id == agent_id
-    assert recovery_store.load(chat_session_id) is recovery_record
+    assert await recovery_store.load(chat_session_id) is recovery_record
     assert manager._pending_recoveries[chat_session_id] is recovery_record
     chat_info = manager.chat_sessions[chat_session_id]
     assert chat_info.active_agent_id == agent_id
@@ -231,7 +231,7 @@ async def test_idle_cleanup_archives_session():
 
     await manager._perform_idle_cleanup()
 
-    archived = recovery_store.load(chat_session_id)
+    archived = await recovery_store.load(chat_session_id)
     assert archived is not None
     assert archived.agent_id == agent_id
     assert chat_session_id in manager._cleared_sessions
@@ -264,7 +264,7 @@ async def test_create_session_after_recovery_injects_history(monkeypatch):
         agent_config=AgentConfig(agent_type="test", system_prompt="prompt"),
         chat_history=[{"role": "user", "content": "hello"}],
     )
-    recovery_store.save(record)
+    await recovery_store.save(record)
     manager._cleared_sessions[chat_session_id] = {"cleared_at": datetime.now()}
 
     recovered = await manager.recover_chat_session(chat_session_id, runner_manager)
@@ -300,7 +300,7 @@ async def test_create_session_after_recovery_injects_history(monkeypatch):
     injected_runner_id, injected_session_id, injected_history = injections[0]
     assert injected_runner_id == runner_id
     assert injected_history == record.chat_history
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert chat_session_id not in manager._pending_recoveries
 
 
@@ -332,7 +332,7 @@ async def test_switch_agent_consumes_pending_recovery(monkeypatch):
         agent_config=AgentConfig(agent_type="test", system_prompt="prompt"),
         chat_history=[{"role": "user", "content": "hello"}],
     )
-    recovery_store.save(record)
+    await recovery_store.save(record)
     manager._pending_recoveries[chat_session_id] = record
 
     runner_manager.agent_runner_mapping[new_agent] = runner_new
@@ -373,7 +373,7 @@ async def test_switch_agent_consumes_pending_recovery(monkeypatch):
     injected_runner_id, injected_session_id, injected_history = injections[0]
     assert injected_runner_id == runner_new
     assert injected_history == record.chat_history
-    assert recovery_store.load(chat_session_id) is None
+    assert await recovery_store.load(chat_session_id) is None
     assert chat_session_id not in manager._pending_recoveries
 
 

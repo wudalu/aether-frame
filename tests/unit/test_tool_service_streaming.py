@@ -84,6 +84,43 @@ class NonStreamingTool(Tool):
     async def cleanup(self):
         pass
 
+    async def execute_stream(self, tool_request: ToolRequest):
+        if False:
+            yield None
+        raise NotImplementedError("Streaming not supported")
+
+
+class ExceptionStreamingTool(Tool):
+    """Tool whose streaming path raises a runtime error."""
+
+    def __init__(self):
+        super().__init__(name="broken_tool", namespace="test")
+        self._initialized = True
+
+    async def initialize(self, config=None):
+        self._initialized = True
+
+    async def execute(self, tool_request: ToolRequest) -> ToolResult:
+        return ToolResult(
+            tool_name=self.full_name,
+            tool_namespace=self.namespace,
+            status=ToolStatus.SUCCESS,
+        )
+
+    async def execute_stream(self, tool_request: ToolRequest):
+        if False:
+            yield None
+        raise RuntimeError("streaming failed")
+
+    async def get_schema(self):
+        return {}
+
+    async def validate_parameters(self, parameters):
+        return True
+
+    async def cleanup(self):
+        pass
+
 
 @pytest.mark.asyncio
 async def test_execute_tool_stream_with_native_streaming():
@@ -142,4 +179,31 @@ async def test_execute_tool_stream_missing_tool():
     chunk = chunks[0]
     assert chunk.chunk_type == TaskChunkType.ERROR
     assert chunk.is_final is True
-    assert "Tool missing_tool not found" in chunk.content
+    assert chunk.content["message"] == "Tool missing_tool not found"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_stream_handles_stream_exception():
+    service = ToolService()
+    await service.register_tool(ExceptionStreamingTool())
+
+    request = ToolRequest(tool_name="broken_tool", tool_namespace="test")
+    chunks = [chunk async for chunk in service.execute_tool_stream(request)]
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.chunk_type == TaskChunkType.ERROR
+    assert chunk.metadata["status"] == ToolStatus.ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_tool_service_health_and_shutdown():
+    service = ToolService()
+    await service.register_tool(StreamingTool())
+
+    health = await service.health_check()
+    assert health["total_tools"] == 1
+    assert "test.stream_tool" in health["tools"]
+
+    await service.shutdown()
+    assert service._tools == {}

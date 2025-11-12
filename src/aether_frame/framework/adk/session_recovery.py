@@ -9,7 +9,7 @@ from threading import RLock
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
-from ...contracts import AgentConfig
+from ...contracts import AgentConfig, UniversalMessage
 
 
 @dataclass(frozen=True)
@@ -43,13 +43,13 @@ class SessionRecoveryRecord:
 class SessionRecoveryStore:
     """Abstract persistence for session recovery records."""
 
-    def save(self, record: SessionRecoveryRecord) -> None:
+    async def save(self, record: SessionRecoveryRecord) -> None:
         raise NotImplementedError
 
-    def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
+    async def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
         raise NotImplementedError
 
-    def purge(self, chat_session_id: str) -> None:
+    async def purge(self, chat_session_id: str) -> None:
         raise NotImplementedError
 
 
@@ -60,17 +60,17 @@ class InMemorySessionRecoveryStore(SessionRecoveryStore):
         self._records: Dict[str, SessionRecoveryRecord] = {}
         self._lock = RLock()
 
-    def save(self, record: SessionRecoveryRecord) -> None:  # noqa: D401
+    async def save(self, record: SessionRecoveryRecord) -> None:  # noqa: D401
         """Store or overwrite the recovery record."""
 
         with self._lock:
             self._records[record.chat_session_id] = record
 
-    def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
+    async def load(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
         with self._lock:
             return self._records.get(chat_session_id)
 
-    def purge(self, chat_session_id: str) -> None:
+    async def purge(self, chat_session_id: str) -> None:
         with self._lock:
             self._records.pop(chat_session_id, None)
 
@@ -92,13 +92,13 @@ class InMemoryArchiveSessionService:
         self.sessions.pop(session_id, None)
 
     async def archive_session(self, record: SessionRecoveryRecord) -> None:
-        self.recovery_store.save(record)
+        await self.recovery_store.save(record)
 
     async def load_archived_session(self, chat_session_id: str) -> Optional[SessionRecoveryRecord]:
-        return self.recovery_store.load(chat_session_id)
+        return await self.recovery_store.load(chat_session_id)
 
     async def purge_archived_session(self, chat_session_id: str) -> None:
-        self.recovery_store.purge(chat_session_id)
+        await self.recovery_store.purge(chat_session_id)
 
     async def shutdown(self) -> None:
         self.shutdown_called = True
@@ -107,3 +107,53 @@ class InMemoryArchiveSessionService:
         """Expose underlying recovery store for lifecycle manager reuse."""
 
         return self.recovery_store
+
+
+def recovery_record_to_messages(
+    record: SessionRecoveryRecord,
+    *,
+    mark_restored: bool = True,
+) -> List[UniversalMessage]:
+    """
+    Convert a recovery record's chat history into UniversalMessage objects.
+
+    Args:
+        record: Recovery record containing serialized chat history.
+        mark_restored: Whether to annotate metadata with restored markers.
+
+    Returns:
+        List of UniversalMessage objects reconstructed from the archive.
+    """
+
+    restored_messages: List[UniversalMessage] = []
+    if not record or not record.chat_history:
+        return restored_messages
+
+    for entry in record.chat_history:
+        if not isinstance(entry, dict):
+            continue
+
+        role = entry.get("role")
+        if not role:
+            author = entry.get("author")
+            role = "assistant" if author and author != "user" else "user"
+
+        content = entry.get("content")
+        if not role or content is None:
+            continue
+
+        metadata = entry.get("metadata")
+        metadata_dict = dict(metadata) if isinstance(metadata, dict) else {}
+        if mark_restored:
+            metadata_dict.setdefault("restored_from_archive", True)
+            metadata_dict.setdefault("archived_at", record.archived_at.isoformat())
+
+        restored_messages.append(
+            UniversalMessage(
+                role=role,
+                content=content,
+                metadata=metadata_dict or None,
+            )
+        )
+
+    return restored_messages
