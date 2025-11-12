@@ -27,6 +27,11 @@
 | 输入输出缺乏摘要与治理 | 日志中记录消息摘要（hash、长度）；对敏感字段做脱敏或过滤处理。 |
 | 日志格式 | 统一 JSON 输出，保证 `execution_id`/`chat_session_id` 在每条日志中；规划日志分级（执行策略/框架内部/监控输出）。 |
 
+### Execution log configuration
+
+- 默认情况下，每次 ADK 执行会创建独立的 `logs/execution_<agent>_<execution>.log`（由 `ExecutionContext` 输出）。如果只需要主日志（如 `logs/aether-frame-test.log`）而不想生成单独文件，可在运行环境设置 `AETHER_ENABLE_EXECUTION_LOGS=0`，系统会使用 no-op ExecutionContext，仍保留 Observer 的结构化日志。
+- `AdkObserver` 暴露统一的 metrics backend 接入点，可通过 `AETHER_METRICS_BACKEND=prometheus` + `AETHER_PROMETHEUS_PORT` 启动内置 Prometheus exporter；设为 `none` 时默认关闭。
+
 ## 指标体系设计
 
 ### 核心指标

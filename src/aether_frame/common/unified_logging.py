@@ -6,11 +6,19 @@ Unified logging approach that clearly shows execution flow in a single directory
 
 import logging
 import logging.handlers
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 import json
+
+
+EXECUTION_LOGGING_ENABLED = os.getenv("AETHER_ENABLE_EXECUTION_LOGS", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 
 class UnifiedLoggingConfig:
@@ -274,6 +282,37 @@ class ExecutionContext:
         )
 
 
+class NullExecutionContext:
+    """No-op execution context used when per-execution logging is disabled."""
+
+    def __init__(self, execution_id: str):
+        self.execution_id = execution_id
+
+    def log_flow_start(self):
+        return
+
+    def step(self, step_name: str, component: str = "FLOW"):
+        return
+
+    def log_key_data(self, message: str, data: Dict[str, Any], component: str = "DATA"):
+        return
+
+    def log_success(self, message: str, data: Optional[Dict[str, Any]] = None, component: str = "SUCCESS"):
+        return
+
+    def log_warning(self, message: str, data: Optional[Dict[str, Any]] = None, component: str = "WARNING"):
+        return
+
+    def log_error(self, message: str, error: Optional[Exception] = None, data: Optional[Dict[str, Any]] = None, component: str = "ERROR"):
+        return
+
+    def log_execution_chain(self, chain_data: Dict[str, Any], component: str = "CHAIN"):
+        return
+
+    def log_flow_end(self, success: bool = True, summary_data: Optional[Dict[str, Any]] = None):
+        return
+
+
 # Global unified logging configuration
 _global_unified_config: Optional[UnifiedLoggingConfig] = None
 
@@ -288,6 +327,8 @@ def get_unified_logging_config() -> UnifiedLoggingConfig:
 
 def create_execution_context(execution_id: str) -> ExecutionContext:
     """Create execution context for flow tracking."""
+    if not EXECUTION_LOGGING_ENABLED:
+        return NullExecutionContext(execution_id)
     config = get_unified_logging_config()
     return config.create_execution_context(execution_id)
 

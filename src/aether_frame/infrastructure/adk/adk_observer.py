@@ -11,6 +11,7 @@ from ...observability.adk_logging import (
     log_context_execution_complete,
     log_context_execution_error,
 )
+from ...observability.metrics_backend import get_metrics_backend, MetricsBackend
 
 if TYPE_CHECKING:
     from ...common.unified_logging import ExecutionContext
@@ -30,6 +31,7 @@ class AdkObserver:
         self._metrics: Dict[str, List[Dict[str, Any]]] = {}
         self._traces: List[Dict[str, Any]] = []
         self._performance_data: List[Dict[str, Any]] = []
+        self.metrics_backend: MetricsBackend = get_metrics_backend()
 
     async def record_execution_start(
         self,
@@ -78,6 +80,11 @@ class AdkObserver:
                 },
             )
             log_context_execution_start(execution_context, key_data)
+            self.metrics_backend.record_execution_start(
+                task_id=task_id,
+                agent_id=agent_id,
+                metadata=metadata,
+            )
 
         except Exception as e:
             # Don't let monitoring failures break execution
@@ -171,6 +178,13 @@ class AdkObserver:
                 key_data,
                 success=result.status == TaskStatus.SUCCESS,
             )
+            self.metrics_backend.record_execution_completion(
+                task_id=task_id,
+                agent_id=key_data.get("agent_id"),
+                status=result.status.value,
+                execution_time=derived_execution_time,
+                metadata=metadata,
+            )
 
         except Exception as e:
             # Don't let monitoring failures break execution
@@ -232,6 +246,11 @@ class AdkObserver:
                 execution_context,
                 error,
                 key_data,
+            )
+            self.metrics_backend.record_execution_error(
+                task_id=task_id,
+                agent_id=agent_id,
+                metadata=metadata,
             )
 
         except Exception as log_error:

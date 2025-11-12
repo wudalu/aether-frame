@@ -13,6 +13,7 @@ import warnings
 import argparse
 import socket
 import subprocess
+import textwrap
 from contextlib import suppress
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -52,12 +53,50 @@ from aether_frame.contracts.streaming import (
 )
 from aether_frame.contracts import TaskStreamChunk, ExecutionContext
 
+def _print_execution_help() -> None:
+    """Print instructions for preparing and running the script."""
+    message = """
+Complete E2E Test Script - Execution Guide
+===========================================
+Prerequisites:
+  1. Create and activate the project virtual environment:
+       python3 -m venv .venv
+       source .venv/bin/activate
+  2. Install dependencies:
+       pip install -e .[dev]
+  3. Ensure required API keys are available in .env.test (DeepSeek, OpenAI, Azure, etc.)
+
+Usage:
+  python tests/manual/test_complete_e2e.py --models deepseek-chat
+  python tests/manual/test_complete_e2e.py --all-models
+  python tests/manual/test_complete_e2e.py --tests simple_conversation live_streaming_mode
+
+Helpful flags:
+  help                 Show this guide and exit.
+  --help / -h          Show argparse usage.
+  --usage              Print this guide and exit.
+  --list-models        List supported models without running tests.
+
+Run inside the activated .venv to execute the full suite.
+"""
+    print(textwrap.dedent(message).strip())
+
+
+RAW_ARGS = sys.argv[1:]
+HELP_COMMAND_USED = bool(RAW_ARGS and RAW_ARGS[0].lower() == "help")
+if HELP_COMMAND_USED:
+    _print_execution_help()
+    sys.exit(0)
+
+HELP_SAFE_FLAGS = {"--help", "-h", "--list-models", "--usage"}
+
 # Enforce execution inside the project virtual environment with a modern Python runtime.
-if os.environ.get("VIRTUAL_ENV") is None:
+if os.environ.get("VIRTUAL_ENV") is None and not any(flag in RAW_ARGS for flag in HELP_SAFE_FLAGS):
     print("❌ This script must be executed from the project virtual environment (.venv).")
+    print("💡 Run 'python tests/manual/test_complete_e2e.py help' for setup instructions.")
     sys.exit(1)
 
-if sys.version_info < (3, 10):
+if sys.version_info < (3, 10) and not any(flag in RAW_ARGS for flag in HELP_SAFE_FLAGS):
     print(
         f"❌ Python 3.10 or newer is required for streaming tests. Current version: {sys.version.split()[0]}"
     )
@@ -1716,6 +1755,11 @@ Examples:
         nargs="+",
         help="Run only the specified test cases (e.g. simple_conversation live_streaming_mode)"
     )
+    parser.add_argument(
+        "--usage",
+        action="store_true",
+        help="Show execution requirements and sample commands, then exit"
+    )
     
     return parser.parse_args()
 
@@ -1723,6 +1767,10 @@ Examples:
 async def main():
     """Main test execution function with multi-model support."""
     args = parse_arguments()
+
+    if args.usage:
+        _print_execution_help()
+        return
     
     supported_models = ["deepseek-chat", "gpt-4o", "gpt-4.1", "azure/gpt-4", "azure/gpt-4o", "azure-gpt-4"]
     

@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
 """Observability helpers for Aether Frame."""
 
-__all__ = ["adk_logging"]
+__all__ = ["adk_logging", "metrics_backend"]
