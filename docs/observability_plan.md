@@ -1,109 +1,151 @@
-# Aether Frame Observability 增强方案
+# Aether Frame Observability Plan
 
-## 目标与范围
+This document consolidates the previous *observability_enhancement_plan.md* and *docs/observability_plan.md* into a single English reference that describes our current signals, how we generate metrics/logs, and how to extend the pipeline.
 
-构建一套覆盖日志、指标、追踪与告警的可观测体系，用于监控基于 Google ADK 的代理执行流程。目标包括：
+## 1. Objectives
 
-1. **全面可见性**：实时掌握请求状态、耗时、token 成本、工具调用与会话状态。
-2. **快速诊断**：发生异常时能够迅速定位原因，追踪调用链路。
-3. **成本与质量透明**：统计模型/流程成本、工具成功率与用户反馈，为迭代提供依据。
-4. **对标业界最佳实践**：结合企业级 AI 代理监控方案，规划自建与第三方工具的组合。
+- **End-to-end visibility**: capture every ADK execution (batch and live) with consistent context (agent/session/user, request metadata, token usage, duration).
+- **Failure diagnosability**: classify errors with `error_stage`, `error_category`, `failure_reason`, and `is_retriable`, and persist last known input/token snapshots.
+- **Metrics-readiness**: expose a single integration point that can publish execution counters/histograms to Prometheus or other backends without touching business code.
+- **Operational safety**: allow teams to toggle per-execution log volume and select the metrics backend through environment variables.
 
-## ADK 原生能力回顾
+## 2. Native ADK Signals
 
-- **usage_metadata**：在 ADK 事件流中自带 `prompt_token_count`、`candidates_token_count`、`total_token_count`。可按 turn/session 累积，用于成本估算。
-- **LiteLLM & 回调**：LiteLLM 支持成本与延迟统计；ADK 也能通过 hook 拿到 usage 并发到外部系统（Prometheus、Cloud Monitoring）。
-- **ADK Plugin**：可自定义插件，在执行时收集指标并推送到内部/外部监控系统。
-- **官方示例**：API usage demo、AgentOps 集成、Maxim observability 等资料可直接参考，对接成本低。
-- **LiveRequestQueue / 事件转换器**：live 流中可以截获所有事件，结合已有的 `AdkEventConverter` 实现工具调用、plan 步骤等的日志/指标记录。
+| Signal source | Scenarios | Instrumentation plan |
+| --- | --- | --- |
+| `google.adk.*` loggers | Runner / LLM events (token counts, tool runs) | Bind JSON handlers and surface via unified logging. |
+| Hooks (`before_agent`, `after_agent`, etc.) | Capture request/response/tool payloads | `AdkAgentHooks` wraps these callbacks and funnels data into `ExecutionContext`. |
+| `usage_metadata` | `run_async`/`run_live` token stats | Normalize into `token_usage` dictionaries and stash in `TaskResult.metadata`. |
+| `AdkObserver.start_trace/add_span` | Lightweight trace tree | Persist as JSON; future exporters can ship to SaaS/OTel. |
+| Third-party SDKs | AgentOps/LangWatch/LangSmith | Optional, but the unified metadata structure matches their expectations. |
 
-## 现有日志缺口与改进方向
+## 3. Logging & Instrumentation Strategy
 
-| 缺口 | 改进点 |
-| ---- | ------ |
-| 成功/失败缺少细分 | 统一 `component`、`flow_step`、`error_category`字段；失败时明确错误类型与关键信息（session/agent/tool）。 |
-| 耗时统计不完整 | 在 Runner、SessionManager、工具调用等节点增加耗时日志；在 live 流程计算真实执行时间。 |
-| live 结束日志缺失 | 避免 GeneratorExit 被误判为异常；在 `after_execution` 中补写 `execution_time`、`token_usage`、followup 信息。 |
-| 输入输出缺乏摘要与治理 | 日志中记录消息摘要（hash、长度）；对敏感字段做脱敏或过滤处理。 |
-| 日志格式 | 统一 JSON 输出，保证 `execution_id`/`chat_session_id` 在每条日志中；规划日志分级（执行策略/框架内部/监控输出）。 |
+### 3.1 Execution log toggle
 
-### Execution log configuration
+- Every ADK execution creates `logs/execution_<agent>_<execution>.log` containing the full context produced by `ExecutionContext`.
+- Set `AETHER_ENABLE_EXECUTION_LOGS=0` (or `false`, `no`) to disable per-execution files while keeping structured `AdkObserver` entries in the main log (e.g., `logs/aether-frame-test.log`).
 
-- 默认情况下，每次 ADK 执行会创建独立的 `logs/execution_<agent>_<execution>.log`（由 `ExecutionContext` 输出）。如果只需要主日志（如 `logs/aether-frame-test.log`）而不想生成单独文件，可在运行环境设置 `AETHER_ENABLE_EXECUTION_LOGS=0`，系统会使用 no-op ExecutionContext，仍保留 Observer 的结构化日志。
-- `AdkObserver` 暴露统一的 metrics backend 接入点，可通过 `AETHER_METRICS_BACKEND=prometheus` + `AETHER_PROMETHEUS_PORT` 启动内置 Prometheus exporter；设为 `none` 时默认关闭。
+### 3.2 Mandatory fields
 
-## 指标体系设计
+`AdkAgentHooks` and `AdkObserver` guarantee the following keys before emitting any log/metric:
 
-### 核心指标
+1. `execution_stats`: `started_at`, `finished_at`, `duration_seconds`, `duration_ms`, `status`.
+2. `token_usage`: `prompt_tokens`, `completion_tokens`, `total_tokens`.
+3. `input_preview`: last 200 characters for each user/system message.
+4. `agent_context`: `session_id`, `adk_session_id`, `user_id`, `runner_id`, `execution_id`, `phase`, `request_mode`.
+5. `error_classification`: `error_stage`, `error_category`, `failure_reason`, `is_retriable`, `error_type`, `error_message`.
+6. `live_stream_additions`: `stream_closed_by_consumer`, `tool_expected`, plan/tool proposal markers.
 
-1. **请求统计**：`total_requests_total{framework=adk}`、`success_total`、`failure_total`、细化 `failure_reason`。
-2. **耗时**：`request_duration_seconds`（按场景区分：创建、对话、live、工具调用等）；工具调用、MCP 请求耗时。
-3. **Token/成本**：`tokens_prompt_total`、`tokens_completion_total`、按模型/工具细分；结合模型价表计算成本（可推送 `cost_usd_total`）。
-4. **资源状态**：活跃 Session、Agent、Runner 数量；LiveRequestQueue 长度。
-5. **质量信号**：工具成功率、plan 步骤覆盖、follow-up 成功率、用户反馈（若可收集）。
+### 3.3 Example log excerpt
 
-### 实现建议
+```text
+2025-11-12 11:21:17 | INFO | AdkObserver | ADK execution complete
+key_data={
+  "task_id": "stream_live_a307fca9",
+  "agent_id": "domain_agent_stream_agent_create_16e33486",
+  "status": "success",
+  "execution_time": 678.89,
+  "token_usage": {"prompt_tokens":163,"completion_tokens":114,"total_tokens":277},
+  "execution_stats": {"started_at":"...","finished_at":"...","duration_seconds":678.89,"duration_ms":678890},
+  "input_preview": [{"role": "user", "preview": "Research three recent developments..."}],
+  "agent_context": {"session_id":"...","adk_session_id":"...","user_id":"streaming_test_user","execution_id":"stream_exec_688e3a44"},
+  "stream_closed_by_consumer": true
+}
+```
 
-- 在 `AdkObserver.after_execution/on_error` 中汇总并写入 Prometheus/GCM 指标。
-- Session/Runner 管理模块增加状态变更指标，如 `agent_switch_total`、`session_recovery_total`。
-- `AdkEventConverter` 识别 `TaskChunkType`，对工具调用成功/失败计数。
-- live 流程中使用计时器记录执行时长，设置 `result.execution_time`。
-- 引入失败分类：`LLM_ERROR`、`TOOL_ERROR`、`MCP_TIMEOUT`、`VALIDATION`、`SESSION_RECOVERY_FAILED`、`USER_ABORT` 等，在日志与指标中统一使用。
+### 3.4 Dashboard & alert ideas
 
-## 追踪与告警
+- **Execution health**: Aggregate success rate and `execution_stats.duration_*` by `phase/test_case/model`, chart P50/P95/P99, and overlay `failure_reason` / `error_category` heat maps.
+- **Token / cost**: Stack `token_usage.prompt/completion` or convert tokens to USD via each model’s price sheet to compare agents/users.
+- **Live completeness**: Track plan/tool proposal markers, `tool_expected`, and `stream_closed_by_consumer` to spot user interruptions or missing plan/tool coverage.
+- **Tool usage**: Use `tool_request/tool_result` entries from the ToolService ExecutionContext to compute success rate, latency distribution, and top failing tools.
+- **Session funnel**: Link executions with `agent_context.session_id` to build “create → conversation → live” funnels and highlight abnormal sessions.
+- **Alerting**: Fire Prometheus/Cloud Monitoring alerts on `adk_execution_total{status="error"}`, high `execution_stats.duration_seconds`, or spikes in `token_usage.total_tokens` to catch stability/cost regressions quickly.
 
-### 分布式追踪
+### 3.5 Metric-to-dashboard reference
 
-- 配置 OpenTelemetry，建立 Execution→Agent→Tool→LLM 的 span 链路。
-- Span 属性：`agent_id`、`session_id`、`chat_session_id`、`tool_name`、`token_usage`、`latency_ms`、`status`。
-- 可导出到 Cloud Trace、Tempo、Jaeger 等；与 Langfuse、AgentOps、Maxim 等 SaaS 示例结合，快速获取 UI 与分析能力。
+| Dashboard | Primary metrics | Labels / dimensions | Notes |
+| --- | --- | --- | --- |
+| Execution health | `execution_stats.duration_seconds`, `execution_stats.duration_ms`, `adk_execution_total` | `phase`, `test_case`, `model`, `agent_id`, `status` | Use histogram/quantile for latency; counters for success/error trends. |
+| Token / cost | `token_usage.prompt_tokens`, `token_usage.completion_tokens`, `token_usage.total_tokens` | `agent_id`, `model`, `user_id`, `phase` | Convert to USD with external price table if needed. |
+| Failure heat map | `adk_execution_total{status="error"}`, `failure_reason`, `error_category`, `is_retriable` | `agent_id`, `phase`, `model`, `failure_reason`, `error_category` | Combine with log links for investigation workflows. |
+| Live completeness | `tool_expected`, plan/tool proposal markers, `stream_closed_by_consumer` | `test_case`, `model`, `agent_id` | Track ratios: plan emitted?, tool proposal seen?, tool result produced?, stream closed by user? |
+| Tool usage | ToolService ExecutionContext (`tool_request`, `tool_result`, duration) | `tool_name`, `tool_namespace`, `agent_id`, `status` | Derive success/failure counts, average tool latency, error distribution. |
+| Session funnel | Derived counts per phase (create → conversation → live) using `agent_context.session_id` | `session_id`, `user_id`, `agent_id` | Build funnel views or anomaly tables (e.g., sessions failing in conversation stage). |
+| Alerting | `adk_execution_total{status="error"}`, `execution_stats.duration_seconds`, `token_usage.total_tokens` | Same as above + environment (`phase`, `cluster`) | Define static/percentile thresholds for latency, error rate, or token spikes. |
 
-### 告警策略
+## 4. Metrics Pipeline
 
-- Prometheus/Cloud Monitoring 设定阈值：异常率、耗时、token/成本、MCP 可用性等。
-- 与 PagerDuty/Slack 集成，实现实时告警。
-- 告警信息包含 `execution_id` 便于回放与日志定位。
+### 4.1 Generation flow
 
-## 行业最佳实践参考
+1. **AdkAgentHooks** records `start_time` and normalized metadata when `before_execution` fires.
+2. **AdkObserver.record_execution_*`** merges metadata from hooks/results and calls:
+   - structured logger (`aether_frame.infrastructure.adk.observer`);
+   - `ExecutionContext` (per-execution log file, optional);
+   - `MetricsBackend` (counter/histogram events).
+3. **MetricsBackend** exports the event:
+   - default `NullMetricsBackend` does nothing;
+   - `PrometheusMetricsBackend` exposes counters/histograms via `prometheus_client` HTTP server (default port `9400`).
 
-> 来源：Microsoft Agent Factory、Softcery Observability Guide、MarkTechPost/Vellum 等。
+### 4.2 Metric schema
 
-1. **三层框架**：Tracing (全链路)、Monitoring (延迟、token、成本、错误)、Evaluation (LLM-as-a-judge、自定义评测)。  
-2. **最佳做法**：
-   - 统一结构化日志与 ID，方便汇聚分析；
-   - 分别对工具调用与外部依赖设独立 SLO；
-   - 结合 “模拟 + 线上” 管控回归与 production；
-   - 聚合用户反馈 / 人审结果，形成质量闭环；
-   - 做好隐私合规：敏感字段屏蔽、访问追踪。
-3. **第三方工具**：
-   - **Maxim AI**、**AgentOps**、**Langfuse**、**Helicone**、**LangSmith**、**Vellum** 等提供 turnkey 的 tracing、token/cost、调试 UI，可先打通一个（如 AgentOps + Langfuse），节省自建成本。
+Current Prometheus implementation emits:
 
-## 迭代步骤建议
+```text
+adk_execution_total{agent_id="domain_agent_x",phase="live_execution",test_case="live_streaming",status="start"} 1
+adk_execution_total{agent_id="domain_agent_x",phase="live_execution",test_case="live_streaming",status="success"} 1
+adk_execution_duration_seconds_bucket{agent_id="domain_agent_x",phase="live_execution",test_case="live_streaming",le="60"} 0
+...
+```
 
-### 短期（1-2 周）
+- Labels: `agent_id`, `phase`, `test_case`, plus `status` for the counter.
+- Histograms use buckets `(1, 5, 10, 30, 60, 120, 300, 600, 1200)`.
+- Additional metadata (token usage, failure_reason) remains in log files; these can later be transformed into custom metrics if necessary.
 
-1. 统一 observer 日志字段，确保 batch/live 都能输出 `ADK execution complete`、`token_usage` 等信息。
-2. 接入 Prometheus 或 Cloud Monitoring，输出请求/耗时/token 等关键指标。
-3. 将结构化日志接入日志平台（Loki/ELK），制作基础仪表盘。
+### 4.3 Configuring backends
 
-### 中期（3-6 周）
+Environment variables (documented in `.env.example`):
 
-1. 引入 OpenTelemetry 追踪，串联 Execution → Agent → Tool → 外部接口。
-2. 接入 AgentOps / Langfuse 等 SaaS，验证 tracing、成本分析与调试能力。
-3. 完成失败原因分类与统一统计，落地告警规则。
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AETHER_ENABLE_EXECUTION_LOGS` | `1` | Toggle per-execution log files. |
+| `AETHER_METRICS_BACKEND` | `none` | `none` or `prometheus`. |
+| `AETHER_PROMETHEUS_PORT` | `9400` | HTTP port for exporter when backend is `prometheus`. |
 
-### 长期
+To add a new backend:
 
-1. 构建 ADK 监控插件，沉淀指标输出能力。
-2. 与数据仓库/BI 对接，开展长期成本与质量分析。
-3. 引入模拟与评测平台（Maxim、Vellum 等），形成“评测 → 部署 → 监控 → 反馈”的闭环机制。
+1. Implement a subclass of `MetricsBackend` (see `src/aether_frame/observability/metrics_backend.py`) that knows how to send events to your system (e.g., Cloud Monitoring, StatsD, OTLP).
+2. Register it in `get_metrics_backend()` and use a new environment value (e.g., `AETHER_METRICS_BACKEND=gcm`).
+3. The hooking points in `AdkObserver` remain unchanged; only the backend implementation needs to understand how to upsert metrics.
 
-## 规划与资源需求
+## 5. Implementation checklist
 
-- **工具**：Prometheus/Cloud Monitoring、OpenTelemetry Stack（Collector + 后端）、日志平台、AgentOps/Langfuse 等。
-- **落地团队**：ADK/框架工程师（支持埋点）、平台/数据基础团队（指标接入）、SRE/运营（告警与应急流程）、业务方（评测与日志验证）。
-- **风险**：外部接口不稳定、指标/日志体系不统一、敏感信息泄露。需制定标准策略与敏感信息防护机制。
+### Phase A – Observer & Logging (High ROI)
+1. Capture `start_time` in hooks and write `execution_stats` on completion. **Done.**
+2. Ensure live flows (`adk_live_stream`) populate metadata with duration, input preview, token usage. **Done.**
+3. Unify observer metadata + ExecutionContext output, with optional execution log toggle. **Done.**
+4. Add unit + E2E tests (`tests/unit/test_adk_adapter_live.py`, `tests/manual/test_complete_e2e.py`) to verify fields. **Ongoing; rerun when logic changes.**
 
-## 总结
+### Phase B – Failure logging
+1. Define `ErrorCategory` and wire into adapter/agent/tool metadata. **Done.**
+2. Ensure `failure_reason` and `is_retriable` appear in all error paths. **Done.**
+3. Centralize `hooks.on_error` to log structure context. **Done.**
+4. Regression tests covering tool/model/runtime failures. **In progress** (expand as new scenarios arise).
 
-按本方案推进，可实现从“有日志”到“可观测 + 可告警 + 可评估”的升级，覆盖 ADK 原生能力与业界最佳实践，为后续代理系统的稳定性、成本控制和质量提升提供完整数据基础。
+### Optional extensions
+- Export `_metrics/_traces` to ELK or SaaS (AgentOps, LangWatch, etc.).
+- Add Prometheus alerts (threshold on `adk_execution_total{status="error"}` or histogram quantiles).
+- Generate weekly execution summaries from ExecutionContext logs.
+
+## 6. Verification
+
+1. Run `python -m pytest` and `tests/manual/test_complete_e2e.py --tests live_streaming_mode` (inside `.venv`) to ensure fields appear in `logs/execution_*.log` and `logs/aether-frame*.log`.
+2. For Prometheus: set `AETHER_METRICS_BACKEND=prometheus`, visit `http://localhost:<port>/metrics`, confirm counters/histograms are emitted when executing a task.
+3. Spot-check `logs/execution_*.log` for `execution_stats` and `token_usage`. Live streams should also include `stream_closed_by_consumer`.
+
+## 7. References
+
+- Uptrace. *AI Agent Observability Explained: Key Concepts and Standards*. 2025-04-16.
+- Google ADK Docs. *Callbacks: Observe, Customize, and Control Agent Behavior*.
+- Google ADK Docs. *Agent Observability with AgentOps*.
