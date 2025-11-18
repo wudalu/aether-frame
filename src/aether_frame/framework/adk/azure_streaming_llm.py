@@ -407,12 +407,48 @@ class AzureLiveConnection(BaseLlmConnection):
         normalized: List[types.Content] = []
         for content in self._history:
             cloned = _clone_content(content)
-            parts = getattr(cloned, "parts", None)
-            if parts:
-                normalized_parts = []
-                for part in parts:
-                    normalized_parts.append(part.model_copy(deep=True))
-                cloned.parts = normalized_parts
+            parts = getattr(cloned, "parts", None) or []
+
+            tool_response_part = next(
+                (part for part in parts if getattr(part, "function_response", None)),
+                None,
+            )
+            if tool_response_part:
+                tool_response = tool_response_part.function_response
+                call_id = tool_response.id if tool_response else ""
+                args = self._tool_calls.get(call_id) or {}
+                payload = tool_response.response if tool_response else {}
+                if not args and isinstance(payload, dict):
+                    args = payload.get("arguments") or {}
+                tool_name = (
+                    tool_response.name
+                    if tool_response
+                    else payload.get("tool_name") if isinstance(payload, dict) else "tool_call"
+                )
+                assistant_content = types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=tool_name,
+                                args=args,
+                                id=call_id or None,
+                            )
+                        )
+                    ],
+                )
+                normalized.append(assistant_content)
+                cloned.role = "tool"
+                normalized.append(cloned)
+                if call_id:
+                    self._tool_calls.pop(call_id, None)
+                continue
+
+            normalized_parts = []
+            for part in parts:
+                normalized_parts.append(part.model_copy(deep=True))
+            cloned.parts = normalized_parts
+
             self._capture_tool_calls(cloned)
             normalized.append(cloned)
         return normalized
