@@ -464,7 +464,6 @@ class AzureLiveConnection(BaseLlmConnection):
         finally:
             self._stream_task = None
             self._stream_finished.set()
-            await self._emit_sentinel()
 
     async def _emit_stream_inner(self, request: LlmRequest) -> None:
         try:
@@ -495,7 +494,8 @@ class AzureLiveConnection(BaseLlmConnection):
                     )
                     self._had_final_text = True
                     completion_needed = True
-            if completion_needed:
+            pending_tool_call = self._response_contains_tool_call(self._last_response)
+            if completion_needed and not pending_tool_call:
                 await self._response_queue.put(
                     LlmResponse(content=None, turn_complete=True)
                 )
@@ -540,3 +540,12 @@ class AzureLiveConnection(BaseLlmConnection):
         self._sentinel_emitted = True
         logger.debug("AzureStreaming: emitting sentinel")
         await self._response_queue.put(_STREAM_FINISHED)
+
+    @staticmethod
+    def _response_contains_tool_call(response: Optional[LlmResponse]) -> bool:
+        if not response or not response.content or not response.content.parts:
+            return False
+        for part in response.content.parts:
+            if getattr(part, "function_call", None):
+                return True
+        return False

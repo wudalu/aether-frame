@@ -69,7 +69,11 @@ async def test_live_connection_restart(monkeypatch):
         return responses
 
     collector = asyncio.create_task(collect())
-    await connection.send_history([types.Content(role="user", parts=[types.Part(text="hi")])])
+    await connection.send_history(
+        [types.Content(role="user", parts=[types.Part(text="hi")])]
+    )
+    await asyncio.sleep(0.05)
+    await connection.close()
     results = await asyncio.wait_for(collector, timeout=5)
     assert len(results) == 2
     assert results[0].content.parts[0].text == "ok"
@@ -102,3 +106,82 @@ async def test_normalize_history_converts_tool_responses():
     tool_chunk = normalized[1]
     assert tool_chunk.role == "tool"
     assert getattr(tool_chunk.parts[0], "function_response") is not None
+
+
+@pytest.mark.asyncio
+async def test_receive_stays_open_until_connection_closed():
+    function_call = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="lookup", args={}, id="call-1"
+                    )
+                )
+            ],
+        ),
+        partial=False,
+    )
+    final_text = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text="final answer")],
+        ),
+        partial=False,
+    )
+
+    class StubStreamingLLM:
+        def __init__(self, sequences):
+            self._sequences = list(sequences)
+
+        async def generate_content_async(self, request, stream=True):
+            seq = self._sequences.pop(0)
+            for item in seq:
+                yield item
+
+    stub_llm = StubStreamingLLM([[function_call], [final_text]])
+    base_request = LlmRequest(
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])]
+    )
+    connection = AzureLiveConnection(stub_llm, base_request)
+
+    collected: list[LlmResponse] = []
+
+    async def consume():
+        async for resp in connection.receive():
+            collected.append(resp)
+
+    consumer = asyncio.create_task(consume())
+    await connection.send_history(base_request.contents)
+    await asyncio.sleep(0.05)
+    assert collected
+    assert collected[0].content.parts[0].function_call.name == "lookup"
+    assert not consumer.done()
+
+    tool_response = types.FunctionResponse(
+        name="lookup", id="call-1", response={"result": "ok"}
+    )
+    await connection.send_content(
+        types.Content(
+            role="tool", parts=[types.Part(function_response=tool_response)]
+        )
+    )
+
+    async def wait_for(count: int) -> bool:
+        for _ in range(20):
+            if len(collected) >= count:
+                return True
+            await asyncio.sleep(0.05)
+        return False
+    assert await wait_for(2)
+    assert any(
+        resp.content
+        and resp.content.parts
+        and getattr(resp.content.parts[0], "text", None) == "final answer"
+        for resp in collected
+    )
+
+    await connection.close()
+    await asyncio.wait_for(consumer, timeout=1)
+    assert collected[-1].turn_complete is True
