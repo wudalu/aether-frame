@@ -216,12 +216,68 @@ async def test_connect_invokes_open_session(monkeypatch):
 
     async def fake_open():
         client._session = object()
+        client._connected = True
         called.append(True)
 
     monkeypatch.setattr(client, "_open_persistent_session", fake_open)
     await client.connect()
     assert client.is_connected is True
     assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_ensure_connected_noop_when_already_connected():
+    client = MCPClient(make_config())
+    client._session = object()
+    client.is_connected = True
+    await client.ensure_connected()
+
+
+@pytest.mark.asyncio
+async def test_connect_retries_before_success(monkeypatch):
+    client = MCPClient(make_config())
+    attempts = {"count": 0}
+
+    async def flaky_open():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("temporary failure")
+        client._session = object()
+        client._connected = True
+
+    async def fake_sleep(delay):
+        attempts.setdefault("delays", []).append(delay)
+
+    monkeypatch.setattr(client, "_open_persistent_session", flaky_open)
+    monkeypatch.setattr(
+        "aether_frame.tools.mcp.client.asyncio.sleep", fake_sleep
+    )
+
+    await client.ensure_connected()
+    assert attempts["count"] == 3
+    assert attempts["delays"] == [
+        client.config.retry_backoff_seconds,
+        client.config.retry_backoff_seconds,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connect_eventually_raises_after_retries(monkeypatch):
+    client = MCPClient(make_config())
+
+    async def always_fail():
+        raise RuntimeError("nope")
+
+    async def fake_sleep(delay):
+        return None
+
+    monkeypatch.setattr(client, "_open_persistent_session", always_fail)
+    monkeypatch.setattr(
+        "aether_frame.tools.mcp.client.asyncio.sleep", fake_sleep
+    )
+
+    with pytest.raises(MCPConnectionError):
+        await client.ensure_connected()
 
 
 @pytest.mark.asyncio
