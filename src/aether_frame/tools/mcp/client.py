@@ -2,6 +2,8 @@
 """Enhanced MCP client with real streaming support via message handlers."""
 
 import asyncio
+import contextlib
+import logging
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 from contextlib import asynccontextmanager
@@ -39,7 +41,7 @@ class MCPClient:
     
     def __init__(self, config: MCPServerConfig):
         """Initialize MCP client with server configuration.
-        
+
         Args:
             config: MCP server configuration object
         """
@@ -47,6 +49,8 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._connected = False
         self._progress_handlers: Dict[str, asyncio.Queue] = {}
+        self._connect_task: Optional[asyncio.Task[None]] = None
+        self._logger = logging.getLogger(__name__)
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -121,26 +125,27 @@ class MCPClient:
             traceback.print_exc()
     
     async def connect(self) -> None:
-        """Establish connection to MCP server with notification handling.
-        
-        Raises:
-            MCPConnectionError: When connection to server fails
-        """
-        if self._connected and self._session:
-            return
-        
-        try:
-            await self._open_persistent_session()
-            
-            self._connected = True
-            print(f"✅ Connected to MCP server with notification handling enabled")
-            
-        except Exception as e:
-            await self.disconnect()
-            raise MCPConnectionError(f"Failed to connect to MCP server: {e}")
+        """Establish connection to MCP server with notification handling."""
+        await self.ensure_connected()
     
     async def disconnect(self) -> None:
         """Close connection to MCP server."""
+        await self._cancel_connect_task()
+        await self._cleanup_connection()
+
+    async def _cancel_connect_task(self) -> None:
+        current_task = asyncio.current_task()
+        if self._connect_task and not self._connect_task.done():
+            if self._connect_task is current_task:
+                self._connect_task = None
+                return
+            self._connect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._connect_task
+        self._connect_task = None
+
+    async def _cleanup_connection(self) -> None:
+        """Cleanup session, stream contexts, and tracking state."""
         # Clean up progress handlers
         for queue in self._progress_handlers.values():
             await queue.put(None)  # Signal end
@@ -178,11 +183,76 @@ class MCPClient:
         )
         self._session = await self._session_context.__aenter__()
         await self._session.initialize()
+        self._connected = True
+        self._logger.info(
+            "Connected to MCP server %s (%s)",
+            self.config.name,
+            self.config.endpoint,
+        )
 
     async def _ensure_persistent_connection(self) -> None:
         """Ensure persistent connection is established."""
         if not self._connected or not self._session:
             await self.connect()
+
+    def start_connect(self) -> asyncio.Future:
+        """Start connection in background if needed and return the task."""
+        if self._connected and self._session:
+            loop = asyncio.get_running_loop()
+            completed: asyncio.Future[None] = loop.create_future()
+            completed.set_result(None)
+            return completed
+        if self._connect_task and not self._connect_task.done():
+            return self._connect_task
+
+        async def runner():
+            try:
+                await self._connect_with_retries()
+            finally:
+                self._connect_task = None
+
+        self._connect_task = asyncio.create_task(runner())
+        return self._connect_task
+
+    async def ensure_connected(self) -> None:
+        """Ensure an active connection is available, waiting for retries if needed."""
+        if self._connected and self._session:
+            return
+        task = self.start_connect()
+        await task
+
+    async def _connect_with_retries(self) -> None:
+        """Attempt connection with retries before failing fatally."""
+        attempts = self.config.max_connect_retries
+        backoff = self.config.retry_backoff_seconds
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._open_persistent_session()
+                return
+            except Exception as exc:  # pragma: no cover - logged path
+                last_error = exc
+                await self._cleanup_connection()
+                self._logger.warning(
+                    "Failed to connect to MCP server %s (%s) on attempt %s/%s: %s",
+                    self.config.name,
+                    self.config.endpoint,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(backoff)
+
+        self._logger.critical(
+            "Fatal: unable to connect to MCP server %s after %s attempts",
+            self.config.name,
+            attempts,
+        )
+        raise MCPConnectionError(
+            f"Failed to connect to MCP server after {attempts} attempts: {last_error}"
+        )
 
     @asynccontextmanager
     async def _session_scope(self, extra_headers: Optional[Dict[str, str]] = None):

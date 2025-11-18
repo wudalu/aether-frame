@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tool Service - Unified tool execution interface."""
 
+import asyncio
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -25,6 +26,7 @@ class ToolService:
         self._tool_namespaces: Dict[str, List[str]] = {}
         self._initialized = False
         self._logger = logging.getLogger(__name__)
+        self._mcp_server_tasks: List[asyncio.Task] = []
 
     async def initialize(self, config: Optional[Dict[str, Any]] = None):
         """
@@ -450,49 +452,53 @@ class ToolService:
             print(f"🔌 Loading MCP tools from {len(mcp_servers)} servers...")
             
             for server_config in mcp_servers:
-                try:
-                    # Create server configuration
-                    config = MCPServerConfig(
-                        name=server_config["name"],
-                        endpoint=server_config["endpoint"],
-                        headers=server_config.get("headers", {}),
-                        timeout=server_config.get("timeout", 30)
-                    )
-                    
-                    # Create and connect MCP client
-                    client = MCPClient(config)
-                    await client.connect()
-                    
-                    # Discover tools from this server
-                    universal_tools = await client.discover_tools()
-                    print(f"📋 Found {len(universal_tools)} tools from {config.name}")
-                    
-                    # Convert UniversalTools to MCPTools and register
-                    for universal_tool in universal_tools:
-                        # Create MCPTool wrapper
-                        mcp_tool = MCPTool(
-                            mcp_client=client,
-                            tool_name=universal_tool.name.split('.')[-1],  # Remove namespace prefix
-                            tool_description=universal_tool.description,
-                            tool_schema=universal_tool.parameters_schema,
-                            namespace=config.name
-                        )
-                        
-                        # Initialize the tool
-                        await mcp_tool.initialize()
-                        
-                        # Register with the service
-                        await self.register_tool(mcp_tool)
-                        
-                    print(f"✅ Successfully loaded {len(universal_tools)} tools from {config.name}")
-                    
-                except Exception as e:
-                    print(f"❌ Failed to load tools from {server_config.get('name', 'unknown')}: {e}")
-                    continue
+                task = asyncio.create_task(self._init_single_mcp_server(server_config))
+                self._mcp_server_tasks.append(task)
                     
         except ImportError as e:
             print(f"⚠️ MCP not available: {e}")
             pass
+
+    async def _init_single_mcp_server(self, server_config: Dict[str, Any]) -> None:
+        """Initialize a single MCP server connection without blocking startup."""
+        server_name = server_config.get("name", "unknown")
+        try:
+            config = MCPServerConfig(
+                name=server_config["name"],
+                endpoint=server_config["endpoint"],
+                headers=server_config.get("headers", {}),
+                timeout=server_config.get("timeout", 30),
+                max_connect_retries=server_config.get("max_connect_retries", 3),
+                retry_backoff_seconds=server_config.get("retry_backoff_seconds", 5.0),
+            )
+        except Exception as exc:  # pragma: no cover - config error logging
+            self._logger.error("Invalid MCP server config for %s: %s", server_name, exc)
+            return
+
+        try:
+            client = MCPClient(config)
+            client.start_connect()
+            await client.ensure_connected()
+            universal_tools = await client.discover_tools()
+            print(f"📋 Found {len(universal_tools)} tools from {config.name}")
+
+            for universal_tool in universal_tools:
+                mcp_tool = MCPTool(
+                    mcp_client=client,
+                    tool_name=universal_tool.name.split('.')[-1],
+                    tool_description=universal_tool.description,
+                    tool_schema=universal_tool.parameters_schema,
+                    namespace=config.name,
+                )
+                await mcp_tool.initialize()
+                await self.register_tool(mcp_tool)
+
+            print(f"✅ Successfully loaded {len(universal_tools)} tools from {config.name}")
+
+        except Exception as exc:
+            self._logger.error(
+                "Failed to load tools from MCP server %s: %s", config.name, exc
+            )
 
     async def _load_adk_native_tools(self):
         """Load ADK native tools."""

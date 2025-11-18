@@ -34,12 +34,15 @@ class MCPServerConfig:
     endpoint: str
     headers: Dict[str, str] = field(default_factory=dict)
     timeout: int = 30
+    max_connect_retries: int = 3
+    retry_backoff_seconds: float = 5.0
     
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
         self._validate_name()
         self._validate_endpoint()
         self._validate_timeout()
+        self._validate_retries()
     
     def _validate_name(self) -> None:
         """Validate server name field.
@@ -91,7 +94,7 @@ class MCPServerConfig:
     
     def _validate_timeout(self) -> None:
         """Validate timeout value.
-        
+
         Raises:
             ValueError: When timeout is not positive or exceeds maximum limit
         """
@@ -104,6 +107,15 @@ class MCPServerConfig:
         # Set reasonable maximum (5 minutes)
         if self.timeout > 300:
             raise ValueError("Timeout cannot exceed 300 seconds")
+
+    def _validate_retries(self) -> None:
+        """Validate retry configuration."""
+        if not isinstance(self.max_connect_retries, int) or self.max_connect_retries <= 0:
+            raise ValueError("max_connect_retries must be a positive integer")
+        if not isinstance(self.retry_backoff_seconds, (int, float)):
+            raise ValueError("retry_backoff_seconds must be a number")
+        if self.retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds cannot be negative")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary format.
@@ -116,6 +128,8 @@ class MCPServerConfig:
             "endpoint": self.endpoint,
             "headers": self.headers.copy(),
             "timeout": self.timeout,
+            "max_connect_retries": self.max_connect_retries,
+            "retry_backoff_seconds": self.retry_backoff_seconds,
         }
     
     @classmethod
@@ -146,6 +160,8 @@ class MCPServerConfig:
         endpoint = data["endpoint"]
         headers = data.get("headers", {})
         timeout = data.get("timeout", 30)
+        max_connect_retries = data.get("max_connect_retries", 3)
+        retry_backoff_seconds = data.get("retry_backoff_seconds", 5.0)
         
         # Validate headers type
         if not isinstance(headers, dict):
@@ -160,5 +176,7 @@ class MCPServerConfig:
             name=name,
             endpoint=endpoint,
             headers=headers,
-            timeout=timeout
+            timeout=timeout,
+            max_connect_retries=max_connect_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
         )
