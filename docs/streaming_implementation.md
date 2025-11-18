@@ -143,6 +143,12 @@ non-streaming tool execution during this phase.
   such as `streaming_mode`, `max_llm_calls`, or provide your own
   `GenerateContentConfig`. If RunConfig is unavailable (older SDKs), the agent
   gracefully falls back to the legacy LiteLLM streaming behaviour.
+- **Azure GPT-4.x fallback** – Because Azure’s LiteLLM adapter lacks ADK Live
+  Connect support, the framework now ships a custom `AzureStreamingLLM` /
+  `AzureLiveConnection` pair (mirroring the DeepSeek strategy). When streaming
+  is enabled, `AdkModelFactory` automatically swaps Azure models to this wrapper
+  so GPT-4.1/GPT-4o deployments can participate in live/HITL flows without
+  waiting for upstream LiteLLM changes.
 - **Consume** – Iterate over the resulting stream to receive `TaskStreamChunk`
   objects (`src/aether_frame/contracts/streaming.py`). The `StreamSession`
   wrapper (`src/aether_frame/streaming/stream_session.py`) exposes helpers such

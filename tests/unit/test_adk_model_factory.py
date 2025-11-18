@@ -77,6 +77,33 @@ def test_create_model_openai_streaming(monkeypatch):
     assert "top_p" not in fake_lite.last_kwargs
 
 
+def test_create_model_azure_streaming(monkeypatch):
+    from aether_frame.framework.adk import azure_streaming_llm as real_module
+
+    class FakeAzureStreaming:
+        def __init__(self, model, **kwargs):
+            self.model = model
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(real_module, "AzureStreamingLLM", FakeAzureStreaming)
+
+    settings = SimpleNamespace(
+        azure_api_key="key",
+        azure_api_base="https://azure",
+        azure_api_version="2024-03-01",
+    )
+    result = AdkModelFactory.create_model(
+        "azure/gpt-4o",
+        settings=settings,
+        enable_streaming=True,
+        model_config={"temperature": 0.1},
+    )
+    assert isinstance(result, FakeAzureStreaming)
+    assert result.model == "azure/gpt-4o"
+    assert result.kwargs["temperature"] == 0.1
+    assert result.kwargs["api_key"] == "key"
+
+
 def test_create_model_azure_sets_env(monkeypatch):
     fake_lite = _install_litellm(monkeypatch)
     settings = SimpleNamespace(
@@ -109,7 +136,16 @@ def test_create_model_deepseek_streaming_missing_dependency(monkeypatch):
 
 
 def test_create_model_openai_missing_litellm_returns_identifier(monkeypatch):
-    monkeypatch.delitem(sys.modules, "google.adk.models.lite_llm", raising=False)
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "google.adk.models.lite_llm":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
     model = AdkModelFactory.create_model("gpt-4.1", enable_streaming=False)
     assert model == "gpt-4.1"
 

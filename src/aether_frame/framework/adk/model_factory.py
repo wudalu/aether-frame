@@ -84,25 +84,19 @@ class AdkModelFactory:
                     ) from exc
                 return model_identifier
         
-        # Handle OpenAI models
-        if any(model in model_lower for model in [
-            "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
-        ]):
-            try:
-                from google.adk.models.lite_llm import LiteLlm
-                extra_kwargs = {"stream": enable_streaming}
-                if model_kwargs:
-                    extra_kwargs.update(model_kwargs)
-                return LiteLlm(model=model_identifier, **{k: v for k, v in extra_kwargs.items() if v is not None})
-            except ImportError:
-                # LiteLLM not available, fallback to string
-                return model_identifier
-        
         # Handle Azure OpenAI models
         if model_lower.startswith("azure/") or "azure-" in model_lower:
             try:
                 from google.adk.models.lite_llm import LiteLlm
-                
+                AzureStreamingLLM = None
+                if enable_streaming:
+                    try:
+                        from .azure_streaming_llm import AzureStreamingLLM
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "Azure OpenAI streaming requested but dependencies are unavailable."
+                        ) from exc
+
                 # Set Azure environment variables if settings provided
                 if settings:
                     if hasattr(settings, 'azure_api_key') and settings.azure_api_key:
@@ -117,10 +111,36 @@ class AdkModelFactory:
                     azure_model = model_identifier.replace("azure-", "azure/")
                 else:
                     azure_model = model_identifier
+                extra_args = {}
+                if settings:
+                    if getattr(settings, 'azure_api_key', None):
+                        extra_args.setdefault("api_key", settings.azure_api_key)
+                    if getattr(settings, 'azure_api_base', None):
+                        extra_args.setdefault("api_base", settings.azure_api_base)
+                    if getattr(settings, 'azure_api_version', None):
+                        extra_args.setdefault("api_version", settings.azure_api_version)
+                if model_kwargs:
+                    extra_args.update({k: v for k, v in model_kwargs.items() if v is not None})
+
+                if enable_streaming and AzureStreamingLLM:
+                    return AzureStreamingLLM(model=azure_model, **extra_args)
+
+                extra_args.setdefault("stream", enable_streaming)
+                return LiteLlm(model=azure_model, **{k: v for k, v in extra_args.items() if v is not None})
+            except ImportError:
+                # LiteLLM not available, fallback to string
+                return model_identifier
+
+        # Handle OpenAI models
+        if any(model in model_lower for model in [
+            "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "o1-preview", "o1-mini"
+        ]):
+            try:
+                from google.adk.models.lite_llm import LiteLlm
                 extra_kwargs = {"stream": enable_streaming}
                 if model_kwargs:
                     extra_kwargs.update(model_kwargs)
-                return LiteLlm(model=azure_model, **{k: v for k, v in extra_kwargs.items() if v is not None})
+                return LiteLlm(model=model_identifier, **{k: v for k, v in extra_kwargs.items() if v is not None})
             except ImportError:
                 # LiteLLM not available, fallback to string
                 return model_identifier
