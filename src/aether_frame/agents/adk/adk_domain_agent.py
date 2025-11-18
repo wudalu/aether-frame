@@ -529,12 +529,30 @@ class AdkDomainAgent(DomainAgent):
                         live_request_queue, adk_content
                     )
 
+                    # Build RunConfig aligned with official ADK streaming guidance
+                    run_config = self._build_streaming_run_config()
+                    run_live_kwargs = {
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "live_request_queue": live_request_queue,
+                    }
+                    if run_config is not None:
+                        run_live_kwargs["run_config"] = run_config
+
                     # Stream real ADK live events
-                    live_events = runner.run_live(
-                        user_id=user_id,
-                        session_id=session_id,
-                        live_request_queue=live_request_queue
-                    )
+                    try:
+                        live_events = runner.run_live(**run_live_kwargs)
+                    except TypeError as exc:
+                        # Older ADK releases might not support run_config on run_live; retry without it
+                        if "run_config" in run_live_kwargs:
+                            self.logger.debug(
+                                "runner.run_live() rejected run_config argument; retrying without RunConfig",
+                                exc_info=True,
+                            )
+                            run_live_kwargs.pop("run_config", None)
+                            live_events = runner.run_live(**run_live_kwargs)
+                        else:
+                            raise exc
 
                     sequence_id = 0
                     async with aclosing(live_events) as adk_events:
@@ -702,6 +720,73 @@ class AdkDomainAgent(DomainAgent):
             )
         finally:
             self._active_task_request = previous_task_request
+
+    def _build_streaming_run_config(self):
+        """Build an ADK RunConfig that enables streaming mode when dependencies are available."""
+        try:
+            from google.adk.agents.run_config import RunConfig, StreamingMode  # type: ignore
+        except ImportError:
+            return None
+
+        framework_config = {}
+        if isinstance(self.config, dict):
+            framework_config = self.config.get("framework_config") or {}
+        run_config_overrides = {}
+        if isinstance(framework_config, dict):
+            candidate = framework_config.get("run_config")
+            if isinstance(candidate, dict):
+                run_config_overrides = dict(candidate)
+
+        streaming_mode = run_config_overrides.pop("streaming_mode", None)
+        streaming_members = getattr(StreamingMode, "__members__", {})
+        if streaming_mode is None:
+            streaming_mode = streaming_members.get("SSE") or getattr(StreamingMode, "SSE", None)
+        elif isinstance(streaming_mode, str) and streaming_members:
+            streaming_mode = streaming_members.get(streaming_mode.upper())
+
+        generate_content_config = run_config_overrides.pop("generate_content_config", None)
+        if generate_content_config is None:
+            model_config = {}
+            if isinstance(self.config, dict):
+                model_config = self.config.get("model_config") or {}
+            content_kwargs = {}
+            for source_key, target_key in (
+                ("temperature", "temperature"),
+                ("top_p", "top_p"),
+                ("top_k", "top_k"),
+                ("max_output_tokens", "max_output_tokens"),
+                ("max_tokens", "max_output_tokens"),
+            ):
+                value = model_config.get(source_key)
+                if value is not None and target_key not in content_kwargs:
+                    content_kwargs[target_key] = value
+            if content_kwargs:
+                try:
+                    from google.genai import types as genai_types  # type: ignore
+
+                    generate_content_config = genai_types.GenerateContentConfig(**content_kwargs)
+                except Exception:  # pragma: no cover - optional dependency
+                    self.logger.debug("Failed to build GenerateContentConfig for RunConfig", exc_info=True)
+                    generate_content_config = None
+
+        run_config_kwargs = {}
+        if streaming_mode is not None:
+            run_config_kwargs["streaming_mode"] = streaming_mode
+        if generate_content_config is not None:
+            run_config_kwargs["generate_content_config"] = generate_content_config
+
+        for key, value in run_config_overrides.items():
+            if value is not None:
+                run_config_kwargs[key] = value
+
+        if not run_config_kwargs:
+            return None
+
+        try:
+            return RunConfig(**run_config_kwargs)
+        except Exception:
+            self.logger.warning("Failed to instantiate RunConfig with %s", run_config_kwargs, exc_info=True)
+            return None
 
     async def get_state(self) -> Dict[str, Any]:
         """Get current agent state."""

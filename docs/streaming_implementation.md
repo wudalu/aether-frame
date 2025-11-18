@@ -136,6 +136,13 @@ non-streaming tool execution during this phase.
   (which simply wraps the raw `(event_stream, communicator)` into a
   `StreamSession`). The routing decision is still made by the framework;
   passing a live execution context signals the live path.
+- **RunConfig alignment** – When ADK’s optional dependencies are present, the
+  `AdkDomainAgent` now instantiates a `RunConfig` with `StreamingMode.SSE`
+  (matching the official ADK guidance for GPT-family streaming). You can supply
+  overrides via `agent_config.framework_config["run_config"]` to tweak fields
+  such as `streaming_mode`, `max_llm_calls`, or provide your own
+  `GenerateContentConfig`. If RunConfig is unavailable (older SDKs), the agent
+  gracefully falls back to the legacy LiteLLM streaming behaviour.
 - **Consume** – Iterate over the resulting stream to receive `TaskStreamChunk`
   objects (`src/aether_frame/contracts/streaming.py`). The `StreamSession`
   wrapper (`src/aether_frame/streaming/stream_session.py`) exposes helpers such
