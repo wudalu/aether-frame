@@ -381,13 +381,13 @@ class AzureLiveConnection(BaseLlmConnection):
             len(self._history),
             bool(previous_task),
         )
-        self._reset_stream_state()
         if previous_task:
             self._sentinel_emitted = True
             previous_task.cancel()
             with suppress(asyncio.CancelledError):
                 await previous_task
             self._sentinel_emitted = False
+        self._reset_stream_state()
 
         if not self._history:
             self._pending_restart = False

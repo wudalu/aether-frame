@@ -709,8 +709,23 @@ class AdkDomainAgent(DomainAgent):
                         )
 
             # Use framework-level communicator with agent-created queue
-            from ...framework.adk.live_communicator import AdkLiveCommunicator
-            communicator = AdkLiveCommunicator(live_request_queue)
+            runner_context = self.runtime_context.get("runner_context") or {}
+            session_service = runner_context.get("session_service") or self.runtime_context.get("session_service")
+            app_name = runner_context.get("app_name") or self.runtime_context.get("app_name") or "aether-frame"
+            session_user_ids = runner_context.get("session_user_ids", {})
+            resolved_user_id = session_user_ids.get(session_id) or user_id or "anonymous"
+            history_recorder = None
+            if session_service and session_id:
+                history_recorder = SessionHistoryRecorder(
+                    session_service,
+                    app_name=app_name,
+                    user_id=resolved_user_id,
+                    session_id=session_id,
+                    logger=self.logger,
+                )
+            communicator = AdkLiveCommunicator(
+                live_request_queue, history_recorder=history_recorder
+            )
             
             return (adk_live_stream(), communicator)
 
