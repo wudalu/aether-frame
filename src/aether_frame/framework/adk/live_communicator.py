@@ -45,10 +45,8 @@ class SessionHistoryRecorder:
 
         try:
             if not await self._ensure_session():
+                self._logger.debug("History recorder missing session; skip append")
                 return
-
-            from google.adk.events import Event
-            from google.genai import types
 
             event = Event(
                 invocation_id=str(uuid4()),
@@ -59,6 +57,11 @@ class SessionHistoryRecorder:
             append_call = self._session_service.append_event(self._session, event)
             if inspect.isawaitable(append_call):
                 await append_call
+            self._logger.debug(
+                "Recorded user event for session=%s text_preview=%s",
+                self._session_id,
+                text[:80],
+            )
         except Exception:
             self._logger.debug("Failed to record user message to SessionService", exc_info=True)
 
