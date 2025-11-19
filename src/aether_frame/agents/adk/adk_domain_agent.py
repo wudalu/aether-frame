@@ -39,6 +39,7 @@ from ..base.domain_agent import DomainAgent
 from .adk_agent_hooks import AdkAgentHooks
 from .adk_event_converter import AdkEventConverter
 from .tool_conversion import build_adk_agent, create_function_tools
+from ...framework.adk.live_communicator import AdkLiveCommunicator, SessionHistoryRecorder
 from ...framework.adk.llm_callbacks import (
     build_identity_strip_callback,
     build_llm_capture_callbacks,
@@ -508,6 +509,21 @@ class AdkDomainAgent(DomainAgent):
                     task_request.task_id, "ADK LiveRequestQueue not available"
                 )
 
+            runner_context = self.runtime_context.get("runner_context") or {}
+            session_service = runner_context.get("session_service") or self.runtime_context.get("session_service")
+            app_name = runner_context.get("app_name") or self.runtime_context.get("app_name") or "aether-frame"
+            session_user_ids = runner_context.get("session_user_ids", {})
+            resolved_user_id = session_user_ids.get(session_id) or user_id or "anonymous"
+            history_recorder = None
+            if session_service and session_id:
+                history_recorder = SessionHistoryRecorder(
+                    session_service,
+                    app_name=app_name,
+                    user_id=resolved_user_id,
+                    session_id=session_id,
+                    logger=self.logger,
+                )
+
             # Create live execution stream using real ADK streaming
             async def adk_live_stream():
                 from ...contracts import TaskChunkType, TaskStreamChunk
@@ -523,10 +539,10 @@ class AdkDomainAgent(DomainAgent):
                     adk_content = self._convert_messages_to_adk_content(
                         task_request.messages
                     )
-                    
+
                     # Send initial message to live request queue
                     await self._send_initial_message_to_live_queue(
-                        live_request_queue, adk_content
+                        live_request_queue, adk_content, history_recorder=history_recorder
                     )
 
                     # Build RunConfig aligned with official ADK streaming guidance
@@ -709,20 +725,6 @@ class AdkDomainAgent(DomainAgent):
                         )
 
             # Use framework-level communicator with agent-created queue
-            runner_context = self.runtime_context.get("runner_context") or {}
-            session_service = runner_context.get("session_service") or self.runtime_context.get("session_service")
-            app_name = runner_context.get("app_name") or self.runtime_context.get("app_name") or "aether-frame"
-            session_user_ids = runner_context.get("session_user_ids", {})
-            resolved_user_id = session_user_ids.get(session_id) or user_id or "anonymous"
-            history_recorder = None
-            if session_service and session_id:
-                history_recorder = SessionHistoryRecorder(
-                    session_service,
-                    app_name=app_name,
-                    user_id=resolved_user_id,
-                    session_id=session_id,
-                    logger=self.logger,
-                )
             communicator = AdkLiveCommunicator(
                 live_request_queue, history_recorder=history_recorder
             )
@@ -830,7 +832,7 @@ class AdkDomainAgent(DomainAgent):
     # === ADK Execution Methods ===
 
     async def _send_initial_message_to_live_queue(
-        self, live_request_queue, adk_content
+        self, live_request_queue, adk_content, history_recorder: Optional[SessionHistoryRecorder] = None
     ):
         """Send initial message to ADK LiveRequestQueue."""
         try:
@@ -850,6 +852,19 @@ class AdkDomainAgent(DomainAgent):
 
             # Send initial message to start conversation
             live_request_queue.send_content(content=content)
+
+            if history_recorder:
+                text_segments: list[str] = []
+                if isinstance(adk_content, str):
+                    text_segments.append(adk_content)
+                elif isinstance(content, types.Content):
+                    for part in getattr(content, "parts", []) or []:
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_segments.append(text)
+                message_text = "\n".join(text_segments).strip()
+                if message_text:
+                    await history_recorder.record_user_text(message_text)
 
         except ImportError:
             # ADK not available - this is expected in some environments
