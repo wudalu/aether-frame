@@ -436,6 +436,12 @@ class AzureLiveConnection(BaseLlmConnection):
 
     def _normalize_history(self) -> List[types.Content]:
         normalized: List[types.Content] = []
+        existing_call_ids: set[str] = set()
+        for recorded in self._history:
+            for part in getattr(recorded, "parts", None) or []:
+                function_call = getattr(part, "function_call", None)
+                if function_call and function_call.id:
+                    existing_call_ids.add(function_call.id)
         for content in self._history:
             cloned = _clone_content(content)
             parts = getattr(cloned, "parts", None) or []
@@ -468,10 +474,14 @@ class AzureLiveConnection(BaseLlmConnection):
                         )
                     ],
                 )
-                normalized.append(assistant_content)
+                should_inject_call = not call_id or call_id not in existing_call_ids
+                if should_inject_call:
+                    normalized.append(assistant_content)
+                    if call_id:
+                        existing_call_ids.add(call_id)
                 cloned.role = "tool"
                 normalized.append(cloned)
-                if call_id:
+                if call_id and not should_inject_call:
                     self._tool_calls.pop(call_id, None)
                 continue
 
