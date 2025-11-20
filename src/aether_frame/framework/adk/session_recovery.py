@@ -129,6 +129,24 @@ def recovery_record_to_messages(
     if not record or not record.chat_history:
         return restored_messages
 
+    def _contains_function_payload(payload) -> bool:
+        """Detect whether payload encodes tool/function call or response."""
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                lowered = str(key).lower()
+                if any(
+                    marker in lowered
+                    for marker in ("function_call", "tool_call", "function_response", "tool_response")
+                ) and value:
+                    return True
+                if _contains_function_payload(value):
+                    return True
+        elif isinstance(payload, list):
+            for item in payload:
+                if _contains_function_payload(item):
+                    return True
+        return False
+
     for entry in record.chat_history:
         if not isinstance(entry, dict):
             continue
@@ -140,6 +158,10 @@ def recovery_record_to_messages(
 
         content = entry.get("content")
         if not role or content is None:
+            continue
+
+        # Skip tool/function call+response artifacts to avoid replaying them
+        if _contains_function_payload(content):
             continue
 
         metadata = entry.get("metadata")
