@@ -437,6 +437,8 @@ class AzureLiveConnection(BaseLlmConnection):
     def _normalize_history(self) -> List[types.Content]:
         normalized: List[types.Content] = []
         existing_call_ids: set[str] = set()
+        emitted_call_ids: set[str] = set()
+        pending_tool_responses: Dict[str, types.Content] = {}
         for recorded in self._history:
             for part in getattr(recorded, "parts", None) or []:
                 function_call = getattr(part, "function_call", None)
@@ -479,19 +481,40 @@ class AzureLiveConnection(BaseLlmConnection):
                     normalized.append(assistant_content)
                     if call_id:
                         existing_call_ids.add(call_id)
+                        emitted_call_ids.add(call_id)
+                    cloned.role = "tool"
+                    normalized.append(cloned)
+                    continue
+                if call_id and call_id in emitted_call_ids:
+                    cloned.role = "tool"
+                    normalized.append(cloned)
+                    continue
+                if call_id:
+                    pending_tool_responses[call_id] = cloned
+                    cloned.role = "tool"
+                    continue
                 cloned.role = "tool"
                 normalized.append(cloned)
-                if call_id and not should_inject_call:
-                    self._tool_calls.pop(call_id, None)
                 continue
 
             normalized_parts = []
+            emitted_by_content: List[str] = []
             for part in parts:
-                normalized_parts.append(part.model_copy(deep=True))
+                cloned_part = part.model_copy(deep=True)
+                normalized_parts.append(cloned_part)
+                function_call = getattr(cloned_part, "function_call", None)
+                if function_call and function_call.id:
+                    emitted_call_ids.add(function_call.id)
+                    emitted_by_content.append(function_call.id)
             cloned.parts = normalized_parts
 
             self._capture_tool_calls(cloned)
             normalized.append(cloned)
+            for call_id in emitted_by_content:
+                pending = pending_tool_responses.pop(call_id, None)
+                if pending:
+                    pending.role = "tool"
+                    normalized.append(pending)
         return normalized
 
     async def _emit_stream(self, request: LlmRequest) -> None:
