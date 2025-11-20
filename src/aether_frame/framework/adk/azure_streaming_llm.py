@@ -8,7 +8,25 @@ import inspect
 import json
 import logging
 import os
-from contextlib import aclosing, asynccontextmanager, suppress
+try:
+    from contextlib import aclosing, asynccontextmanager, suppress
+except ImportError:  # pragma: no cover - Python <3.10 compatibility
+    from contextlib import asynccontextmanager, suppress
+
+    class _AsyncClosing:
+        def __init__(self, resource):
+            self._resource = resource
+
+        async def __aenter__(self):
+            return self._resource
+
+        async def __aexit__(self, exc_type, exc, tb):
+            closer = getattr(self._resource, "aclose", None)
+            if callable(closer):
+                await closer()
+
+    def aclosing(resource):
+        return _AsyncClosing(resource)
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -28,6 +46,8 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from litellm import ChatCompletionAssistantMessage, ChatCompletionMessageToolCall, Function
+
+from .history_orientation import HistoryOrientationManager, content_text_signature
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +342,7 @@ class AzureLiveConnection(BaseLlmConnection):
         self._llm = llm
         self._base_request = base_request.model_copy(deep=True)
         self._history: List[types.Content] = []
+        self._history_order = HistoryOrientationManager(logger)
         self._response_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._stream_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
@@ -338,7 +359,8 @@ class AzureLiveConnection(BaseLlmConnection):
     async def send_history(self, history: List[types.Content]) -> None:
         async with self._lock:
             logger.debug("AzureStreaming: send_history count=%s", len(history))
-            self._history = [_clone_content(item) for item in history]
+            cloned_history = [_clone_content(item) for item in history]
+            self._history = self._history_order.prepare_history(cloned_history)
             await self._restart_stream()
 
     async def send_content(self, content: types.Content) -> None:
@@ -348,7 +370,16 @@ class AzureLiveConnection(BaseLlmConnection):
                 getattr(content, "role", None),
                 self._pending_restart,
             )
-            self._history.append(_clone_content(content))
+            self._history = self._history_order.ensure_chronological(self._history, content)
+            should_append = True
+            incoming_signature = content_text_signature(content)
+            if self._history and incoming_signature:
+                last_signature = content_text_signature(self._history[-1])
+                if last_signature and last_signature == incoming_signature:
+                    should_append = False
+
+            if should_append:
+                self._history.append(_clone_content(content))
             self._capture_tool_calls(content)
             await self._restart_stream()
 
