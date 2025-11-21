@@ -30,3 +30,37 @@ def test_recovery_record_to_messages_converts_entries():
 
     assert messages[1].role == "assistant"
     assert messages[1].metadata["foo"] == "bar"
+
+
+def test_recovery_record_to_messages_skips_tool_calls():
+    record = SessionRecoveryRecord(
+        chat_session_id="chat-2",
+        user_id="user-2",
+        agent_id="agent-2",
+        agent_config=None,
+        chat_history=[
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": {
+                    "parts": [
+                        {"function_call": {"id": "call-1", "name": "demo", "args": {"foo": "bar"}}}
+                    ]
+                },
+            },
+            {
+                "role": "tool",
+                "content": {
+                    "parts": [
+                        {"function_response": {"id": "call-1", "response": {"ok": True}}}
+                    ]
+                },
+            },
+            {"role": "assistant", "content": "done"},
+        ],
+        archived_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+
+    messages = recovery_record_to_messages(record)
+
+    assert [m.content for m in messages] == ["hi", "done"]

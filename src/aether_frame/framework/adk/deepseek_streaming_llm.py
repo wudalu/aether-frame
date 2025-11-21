@@ -8,7 +8,25 @@ import inspect
 import json
 import logging
 import os
-from contextlib import aclosing, asynccontextmanager, suppress
+try:
+    from contextlib import aclosing, asynccontextmanager, suppress
+except ImportError:  # pragma: no cover - Python <3.10 compatibility
+    from contextlib import asynccontextmanager, suppress
+
+    class _AsyncClosing:
+        def __init__(self, resource):
+            self._resource = resource
+
+        async def __aenter__(self):
+            return self._resource
+
+        async def __aexit__(self, exc_type, exc, tb):
+            closer = getattr(self._resource, "aclose", None)
+            if callable(closer):
+                await closer()
+
+    def aclosing(resource):
+        return _AsyncClosing(resource)
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -28,6 +46,8 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from litellm import ChatCompletionAssistantMessage, ChatCompletionMessageToolCall, Function
+
+from .history_orientation import HistoryOrientationManager, content_text_signature
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +375,7 @@ class DeepSeekLiveConnection(BaseLlmConnection):
         self._llm = llm
         self._base_request = base_request.model_copy(deep=True)
         self._history: List[types.Content] = []
+        self._history_order = HistoryOrientationManager(logger)
         self._response_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._stream_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
@@ -371,7 +392,8 @@ class DeepSeekLiveConnection(BaseLlmConnection):
     async def send_history(self, history: List[types.Content]) -> None:
         async with self._lock:
             logger.debug("DeepSeekStreaming: send_history count=%s", len(history))
-            self._history = [_clone_content(item) for item in history]
+            cloned_history = [_clone_content(item) for item in history]
+            self._history = self._history_order.prepare_history(cloned_history)
             await self._restart_stream()
 
     async def send_content(self, content: types.Content) -> None:
@@ -381,7 +403,16 @@ class DeepSeekLiveConnection(BaseLlmConnection):
                 getattr(content, "role", None),
                 self._pending_restart,
             )
-            self._history.append(_clone_content(content))
+            self._history = self._history_order.ensure_chronological(self._history, content)
+            should_append = True
+            incoming_signature = content_text_signature(content)
+            if self._history and incoming_signature:
+                last_signature = content_text_signature(self._history[-1])
+                if last_signature and last_signature == incoming_signature:
+                    should_append = False
+
+            if should_append:
+                self._history.append(_clone_content(content))
             self._capture_tool_calls(content)
             await self._restart_stream()
 
@@ -440,6 +471,14 @@ class DeepSeekLiveConnection(BaseLlmConnection):
 
     def _normalize_history(self) -> List[types.Content]:
         normalized: List[types.Content] = []
+        existing_call_ids: set[str] = set()
+        emitted_call_ids: set[str] = set()
+        pending_tool_responses: Dict[str, types.Content] = {}
+        for recorded in self._history:
+            for part in getattr(recorded, "parts", None) or []:
+                function_call = getattr(part, "function_call", None)
+                if function_call and function_call.id:
+                    existing_call_ids.add(function_call.id)
         for content in self._history:
             cloned = _clone_content(content)
             parts = getattr(cloned, "parts", None) or []
@@ -464,15 +503,40 @@ class DeepSeekLiveConnection(BaseLlmConnection):
                     role="model",
                     parts=[types.Part(function_call=types.FunctionCall(name=tool_name, args=args, id=call_id or None))],
                 )
-                normalized.append(assistant_content)
+                should_inject_call = not call_id or call_id not in existing_call_ids
+                if should_inject_call:
+                    cloned.role = "tool"
+                    normalized.append(assistant_content)
+                    if call_id:
+                        existing_call_ids.add(call_id)
+                        emitted_call_ids.add(call_id)
+                    normalized.append(cloned)
+                    continue
+                if call_id and call_id in emitted_call_ids:
+                    cloned.role = "tool"
+                    normalized.append(cloned)
+                    continue
+                if call_id:
+                    cloned.role = "tool"
+                    pending_tool_responses[call_id] = cloned
+                    continue
                 cloned.role = "tool"
                 normalized.append(cloned)
-                if call_id:
-                    self._tool_calls.pop(call_id, None)
                 continue
 
             self._capture_tool_calls(cloned)
             normalized.append(cloned)
+            emitted_by_content: List[str] = []
+            for part in getattr(cloned, "parts", None) or []:
+                function_call = getattr(part, "function_call", None)
+                if function_call and function_call.id:
+                    emitted_call_ids.add(function_call.id)
+                    emitted_by_content.append(function_call.id)
+            for call_id in emitted_by_content:
+                pending = pending_tool_responses.pop(call_id, None)
+                if pending:
+                    pending.role = "tool"
+                    normalized.append(pending)
         return normalized
 
     async def _emit_stream(self, request: LlmRequest) -> None:

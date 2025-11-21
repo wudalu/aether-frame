@@ -5,6 +5,8 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("litellm")
+
 from aether_frame.framework.adk.azure_streaming_llm import (
     AzureLiveConnection,
     AzureStreamingLLM,
@@ -106,6 +108,11 @@ async def test_normalize_history_converts_tool_responses():
     tool_chunk = normalized[1]
     assert tool_chunk.role == "tool"
     assert getattr(tool_chunk.parts[0], "function_response") is not None
+    # Ensure args are preserved for subsequent normalizations
+    normalized_again = connection._normalize_history()
+    function_call_part_again = normalized_again[0].parts[0].function_call
+    assert function_call_part_again.args == {"query": "ai streaming"}
+    assert connection._tool_calls["call-1"] == {"query": "ai streaming"}
 
 
 @pytest.mark.asyncio
@@ -185,3 +192,159 @@ async def test_receive_stays_open_until_connection_closed():
     await connection.close()
     await asyncio.wait_for(consumer, timeout=1)
     assert collected[-1].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_normalize_history_skips_existing_function_calls():
+    llm = AzureStreamingLLM("azure/gpt-4o")
+    base_request = LlmRequest(contents=[])
+    connection = AzureLiveConnection(llm, base_request)
+
+    function_call = types.Content(
+        role="model",
+        parts=[
+            types.Part(
+                function_call=types.FunctionCall(
+                    name="search_tool", args={"query": "x"}, id="call-1"
+                )
+            )
+        ],
+    )
+    tool_response = types.Content(
+        role="tool",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="search_tool",
+                    id="call-1",
+                    response={"result": "ok"},
+                )
+            )
+        ],
+    )
+    connection._history = [function_call, tool_response]  # type: ignore[attr-defined]
+    connection._tool_calls["call-1"] = {"query": "x"}  # type: ignore[attr-defined]
+
+    normalized = connection._normalize_history()
+    assert len(normalized) == 2
+    assert normalized[0].parts[0].function_call.args == {"query": "x"}
+    assert normalized[1].role == "tool"
+    assert connection._tool_calls["call-1"] == {"query": "x"}
+
+
+@pytest.mark.asyncio
+async def test_normalize_history_reorders_tool_response_before_call():
+    llm = AzureStreamingLLM("azure/gpt-4o")
+    base_request = LlmRequest(contents=[])
+    connection = AzureLiveConnection(llm, base_request)
+
+    tool_response = types.Content(
+        role="tool",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="search_tool", id="call-1", response={"result": "ok"}
+                )
+            )
+        ],
+    )
+    function_call = types.Content(
+        role="model",
+        parts=[
+            types.Part(
+                function_call=types.FunctionCall(
+                    name="search_tool", args={"query": "x"}, id="call-1"
+                )
+            )
+        ],
+    )
+    connection._history = [tool_response, function_call]  # type: ignore[attr-defined]
+    connection._tool_calls["call-1"] = {"query": "x"}  # type: ignore[attr-defined]
+
+    normalized = connection._normalize_history()
+    assert normalized[0].parts[0].function_call.id == "call-1"
+    assert normalized[1].role == "tool"
+
+
+@pytest.mark.asyncio
+async def test_send_content_reorders_newest_first_history():
+    llm = AzureStreamingLLM("azure/gpt-4o")
+    base_request = LlmRequest(contents=[])
+    connection = AzureLiveConnection(llm, base_request)
+
+    newest_first_history = [
+        types.Content(role="user", parts=[types.Part(text="third")]),
+        types.Content(role="model", parts=[types.Part(text="second")]),
+        types.Content(role="user", parts=[types.Part(text="first")]),
+    ]
+    await connection.send_history(newest_first_history)
+
+    latest_message = types.Content(role="user", parts=[types.Part(text="third")])
+    await connection.send_content(latest_message)
+
+    ordered_texts = [
+        part.text
+        for item in connection._history  # type: ignore[attr-defined]
+        for part in (item.parts or [])
+        if getattr(part, "text", None)
+    ]
+    assert ordered_texts == ["first", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_no_turn_complete_emitted_before_tool_response():
+    function_call = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="lookup", args={}, id="call-1"
+                    )
+                )
+            ],
+        ),
+        partial=False,
+    )
+    final_text = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text="final answer")],
+        ),
+        partial=False,
+    )
+
+    class StubStreamingLLM:
+        def __init__(self):
+            self._sequences = [[function_call], [final_text]]
+
+        async def generate_content_async(self, request, stream=True):
+            seq = self._sequences.pop(0)
+
+            for item in list(seq):
+                yield item
+
+    base_request = LlmRequest(
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])]
+    )
+    connection = AzureLiveConnection(StubStreamingLLM(), base_request)
+    await connection.send_history(base_request.contents)
+    await asyncio.sleep(0.05)
+
+    drained: list[LlmResponse] = []
+    while not connection._response_queue.empty():  # type: ignore[attr-defined]
+        drained.append(connection._response_queue.get_nowait())  # type: ignore[attr-defined]
+
+    assert drained
+    assert not any(getattr(item, "turn_complete", False) for item in drained)
+
+    tool_response = types.FunctionResponse(
+        name="lookup", id="call-1", response={"result": "ok"}
+    )
+    await connection.send_content(
+        types.Content(
+            role="tool", parts=[types.Part(function_response=tool_response)]
+        )
+    )
+    await asyncio.sleep(0.05)
+    await connection.close()

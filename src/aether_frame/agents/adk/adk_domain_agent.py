@@ -301,7 +301,7 @@ class AdkDomainAgent(DomainAgent):
         """Build ToolRequest populated with contextual metadata for MCP tooling."""
         from ...contracts import ToolRequest
 
-        task_request = self._active_task_request
+        task_request = self._active_task_request or self._lookup_runtime_value("live_task_request")
 
         user_context = getattr(task_request, "user_context", None) if task_request else None
         session_context = getattr(task_request, "session_context", None) if task_request else None
@@ -472,6 +472,7 @@ class AdkDomainAgent(DomainAgent):
         """
         previous_task_request = self._active_task_request
         self._active_task_request = task_request
+        self._store_runtime_value("live_task_request", task_request)
         self._last_usage_metadata = None
         self._last_input_snapshot = self._summarize_input_messages(
             task_request.messages or []
@@ -1250,13 +1251,13 @@ class AdkDomainAgent(DomainAgent):
         if not user_messages:
             return "Hello"
         
-        # If no multimodal content, return simple text format for backward compatibility
+        # If no multimodal content, only send the most recent user text to avoid
+        # replaying the entire history on every live turn.
         if not has_multimodal:
-            text_contents = []
-            for msg in user_messages:
-                if isinstance(msg.content, str):
-                    text_contents.append(msg.content)
-            return " ".join(text_contents) if text_contents else "Hello"
+            for msg in reversed(user_messages):
+                if isinstance(msg.content, str) and msg.content.strip():
+                    return msg.content
+            return "Hello"
         
         # Handle multimodal content - return ADK Content object
         try:

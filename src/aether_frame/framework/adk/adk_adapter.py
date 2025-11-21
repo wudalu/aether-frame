@@ -1452,14 +1452,18 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 self.logger.info("ADK orchestrated_stream broker finalized")
                 context_obj = getattr(domain_agent, "runtime_context", None)
                 if isinstance(context_obj, dict):
-                    context_obj.get("metadata", {}).pop("approval_broker", None)
+                    metadata = context_obj.get("metadata", {})
+                    metadata.pop("approval_broker", None)
+                    metadata.pop("live_task_request", None)
                 elif context_obj is not None:
                     metadata = getattr(context_obj, "metadata", None)
                     if metadata is not None:
                         metadata.pop("approval_broker", None)
+                        metadata.pop("live_task_request", None)
                     else:
                         with contextlib.suppress(AttributeError):
                             setattr(context_obj, "approval_broker", None)
+                            setattr(context_obj, "live_task_request", None)
 
         return orchestrated_stream(), wrapped_communicator
 

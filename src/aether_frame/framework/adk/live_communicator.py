@@ -44,6 +44,9 @@ class SessionHistoryRecorder:
             return
 
         try:
+            from google.adk.events import Event
+            from google.genai import types
+
             if not await self._ensure_session():
                 self._logger.debug("History recorder missing session; skip append")
                 return
@@ -62,6 +65,8 @@ class SessionHistoryRecorder:
                 self._session_id,
                 text[:80],
             )
+        except ImportError:
+            self._logger.debug("ADK event/types not available; skipping history record")
         except Exception:
             self._logger.debug("Failed to record user message to SessionService", exc_info=True)
 

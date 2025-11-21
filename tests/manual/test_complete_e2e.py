@@ -1458,6 +1458,119 @@ class CompleteE2ETestSuite:
 
         return success
 
+    async def test_live_streaming_manual_chat(self, model: str = None, max_turns: int = 2) -> bool:
+        """Execute up to `max_turns` live streaming turns with manual user input and no tools."""
+        test_case = "live_streaming_manual_chat"
+        model_name = model or self.settings.default_model
+
+        if "deepseek" not in model_name.lower():
+            self._record_skip(test_case, model_name, "requires_deepseek_model")
+            return True
+
+        user_context = self._build_user_context()
+        agent_id, chat_session_id = await self._create_agent_and_session(
+            model_name=model_name,
+            agent_type="manual_live_chat",
+            system_prompt="You are a conversational assistant. Answer briefly and helpfully.",
+            initial_message=None,
+            creation_task=f"manual_live_create_{uuid4().hex[:8]}",
+            creation_description="Create agent for manual live streaming chat",
+            creation_metadata={"test_case": test_case},
+            user_context=user_context,
+        )
+
+        engine = self.assistant.execution_engine
+        turn_index = 0
+        success_turns = 0
+
+        while turn_index < max_turns:
+            turn_index += 1
+            user_input = await self._prompt_user_input(
+                f"[Manual Live Chat] Turn {turn_index} - enter message (blank to stop): ",
+                default="",
+            )
+            if not user_input.strip():
+                self.logger.info("Manual live chat aborted by user input.")
+                break
+
+            live_request = TaskRequest(
+                task_id=f"manual_live_{uuid4().hex[:8]}",
+                task_type="chat",
+                description="Manual live chat turn",
+                messages=[UniversalMessage(role="user", content=user_input.strip())],
+                agent_id=agent_id,
+                session_id=chat_session_id,
+                user_context=user_context,
+                metadata={
+                    "test_case": test_case,
+                    "model": model_name,
+                    "turn_number": turn_index,
+                },
+            )
+
+            execution_context = ExecutionContext(
+                execution_id=f"manual_live_exec_{uuid4().hex[:8]}",
+                framework_type=FrameworkType.ADK,
+                execution_mode="live",
+            )
+
+            stream_session = await engine.execute_task_live_session(
+                live_request, execution_context
+            )
+            self.logger.info("▶️ [%s] Manual live chat turn %s started", model_name, turn_index)
+            try:
+                saw_agent_output = False
+                async for chunk in stream_session:
+                    stage = (chunk.metadata or {}).get("stage")
+                    content_preview = chunk.content
+                    if isinstance(content_preview, dict):
+                        content_preview = json.dumps(content_preview, ensure_ascii=False)
+                    if isinstance(content_preview, str):
+                        content_preview = content_preview[:200]
+                    else:
+                        content_preview = str(content_preview)[:200]
+                    self.logger.info(
+                        "🗨️ [MANUAL STREAM][%s] seq=%02d type=%s kind=%s stage=%s | %s",
+                        model_name,
+                        chunk.sequence_id,
+                        chunk.chunk_type.value,
+                        chunk.chunk_kind or "-",
+                        stage or "-",
+                        content_preview,
+                    )
+                    if chunk.chunk_type == TaskChunkType.ERROR:
+                        break
+                    if chunk.chunk_type == TaskChunkType.RESPONSE:
+                        saw_agent_output = True
+                        if chunk.is_final:
+                            break
+                    if chunk.chunk_type == TaskChunkType.COMPLETE and saw_agent_output:
+                        break
+            finally:
+                await stream_session.close()
+
+            success_turns += 1
+            continue_choice = await self._prompt_user_input(
+                "Run another live stream turn? (y/n): ", default="y"
+            )
+            if not continue_choice.strip().lower().startswith("y"):
+                break
+
+        status = "success" if success_turns > 0 else "skipped"
+        self.test_results.append(
+            {
+                "test_case": test_case,
+                "model": model_name,
+                "status": status,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {
+                    "turns_attempted": turn_index,
+                    "turns_successful": success_turns,
+                },
+            }
+        )
+        return success_turns > 0
+
     def generate_final_report(self):
         """Generate comprehensive final test report."""
         end_time = datetime.now()
@@ -1600,7 +1713,7 @@ class CompleteE2ETestSuite:
                     self._record_skip("tool_usage_request", model)
                     model_results.append(("tool_usage_request", True))
                 
-                # Test 4: Live streaming mode
+                # Test 4: Live streaming mode (single turn)
                 self.logger.info(f"\n📡 [{model}] Starting Test 4: Live Streaming Mode...")
                 if self._should_run("live_streaming_mode"):
                     result_stream = await self.test_live_streaming_mode(model)
@@ -1612,6 +1725,19 @@ class CompleteE2ETestSuite:
                 else:
                     self._record_skip("live_streaming_mode", model)
                     model_results.append(("live_streaming_mode", True))
+
+                # Test 4b: Live streaming manual multi-turn chat
+                self.logger.info(f"\n🔁 [{model}] Starting Test 4b: Manual Multi-Turn Live Chat...")
+                if self._should_run("live_streaming_manual_chat"):
+                    result_multiturn = await self.test_live_streaming_manual_chat(model)
+                    model_results.append(("live_streaming_manual_chat", result_multiturn))
+                    if result_multiturn:
+                        self.logger.info(f"✅ [{model}] Test 4b COMPLETED: Manual Multi-Turn Live Chat - SUCCESS")
+                    else:
+                        self.logger.error(f"❌ [{model}] Test 4b COMPLETED: Manual Multi-Turn Live Chat - FAILED")
+                else:
+                    self._record_skip("live_streaming_manual_chat", model)
+                    model_results.append(("live_streaming_manual_chat", True))
 
                 # Test 5: Complex conversation
                 self.logger.info(f"\n📋 [{model}] Starting Test 5: Complex Conversation...")
