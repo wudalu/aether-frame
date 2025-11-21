@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,6 +22,8 @@ from src.aether_frame.contracts import (
     UserContext,
 )
 from src.aether_frame.framework.adk.adk_adapter import AdkFrameworkAdapter
+from src.aether_frame.framework.adk.adk_session_manager import SessionClearedError
+from src.aether_frame.framework.adk.session_recovery import SessionRecoveryRecord
 from src.aether_frame.agents.base.domain_agent import DomainAgent
 
 
@@ -340,3 +343,49 @@ async def test_tool_proposal_auto_timeout(task_request):
     assert auto_response.interaction_type == InteractionType.TOOL_APPROVAL
     assert auto_response.approved is False
     assert auto_response.metadata.get("auto_timeout") is True
+
+
+@pytest.mark.asyncio
+async def test_execute_task_live_recovers_session(task_request, execution_context):
+    adapter = AdkFrameworkAdapter()
+    adapter._initialized = True
+
+    cleared = SessionClearedError(task_request.session_id, datetime.now(), reason="idle_cleanup")
+    adapter.adk_session_manager.coordinate_chat_session = AsyncMock(
+        side_effect=[
+            cleared,
+            SimpleNamespace(adk_session_id="adk-session-recovered", switch_occurred=True),
+        ]
+    )
+    adapter.adk_session_manager.recover_chat_session = AsyncMock(
+        return_value=SessionRecoveryRecord(
+            chat_session_id=task_request.session_id,
+            user_id="user-1",
+            agent_id=task_request.agent_id,
+            agent_config=None,
+            chat_history=[{"role": "user", "content": "history"}],
+        )
+    )
+
+    runtime_context = RuntimeContext(
+        session_id="adk-session-recovered",
+        user_id="user-1",
+        framework_type=FrameworkType.ADK,
+        agent_id=task_request.agent_id,
+        runner_id="runner-recovered",
+    )
+    runtime_context.metadata["domain_agent"] = _StubDomainAgent()
+
+    adapter._create_runtime_context_for_existing_session = AsyncMock(return_value=runtime_context)
+    adapter.runner_manager.mark_runner_activity = MagicMock()
+    adapter._execute_live_with_domain_agent = AsyncMock(return_value=("stream", "communicator"))
+
+    stream, communicator = await adapter.execute_task_live(task_request, execution_context)
+
+    assert adapter.adk_session_manager.recover_chat_session.await_count == 1
+    assert adapter.adk_session_manager.coordinate_chat_session.await_count == 2
+    assert adapter._create_runtime_context_for_existing_session.await_count == 1
+    assert task_request.messages and task_request.messages[0].content == "history"
+    assert task_request.metadata.get("restored_history_injected") is True
+    assert stream == "stream"
+    assert communicator == "communicator"
