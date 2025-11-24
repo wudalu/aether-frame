@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Framework Registry - Management of framework adapters."""
 
+import asyncio
 from typing import Dict, List, Optional
 
 from ..contracts import FrameworkType
@@ -19,6 +20,7 @@ class FrameworkRegistry:
         self._adapters: Dict[FrameworkType, FrameworkAdapter] = {}
         self._adapter_configs: Dict[FrameworkType, dict] = {}
         self._initialization_status: Dict[FrameworkType, bool] = {}
+        self._adapter_locks: Dict[FrameworkType, asyncio.Lock] = {}
 
     def register_adapter(
         self,
@@ -37,6 +39,7 @@ class FrameworkRegistry:
         self._adapters[framework_type] = adapter
         self._adapter_configs[framework_type] = config or {}
         self._initialization_status[framework_type] = False
+        self._adapter_locks.setdefault(framework_type, asyncio.Lock())
 
     async def get_adapter(
         self, framework_type: FrameworkType
@@ -50,15 +53,20 @@ class FrameworkRegistry:
         Returns:
             FrameworkAdapter: The requested adapter or None if not available
         """
-        if framework_type not in self._adapters:
-            # Try to auto-load the adapter
-            await self._auto_load_adapter(framework_type)
-
         adapter = self._adapters.get(framework_type)
-        if adapter and not self._initialization_status.get(framework_type, False):
-            await self._initialize_adapter(framework_type, adapter)
+        if adapter and self._initialization_status.get(framework_type, False):
+            return adapter
 
-        return adapter
+        lock = self._adapter_locks.setdefault(framework_type, asyncio.Lock())
+        async with lock:
+            if framework_type not in self._adapters:
+                await self._auto_load_adapter(framework_type)
+
+            adapter = self._adapters.get(framework_type)
+            if adapter and not self._initialization_status.get(framework_type, False):
+                await self._initialize_adapter(framework_type, adapter)
+
+            return adapter
 
     async def get_available_frameworks(self) -> List[FrameworkType]:
         """Get list of available framework types.
