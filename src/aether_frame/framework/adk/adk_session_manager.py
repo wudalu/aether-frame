@@ -1055,6 +1055,19 @@ class AdkSessionManager:
         )
 
         await self._cleanup_session_and_runner(chat_session, runner_manager)
+
+        if agent_id and hasattr(runner_manager, "_agent_sessions"):
+            async with getattr(runner_manager, "_agent_sessions_lock", asyncio.Lock()):
+                sessions = getattr(runner_manager, "_agent_sessions").get(agent_id)
+                if sessions and chat_session.active_adk_session_id in sessions:
+                    sessions = [
+                        sid for sid in sessions 
+                        if sid != chat_session.active_adk_session_id
+                    ]
+                    if sessions:
+                        runner_manager._agent_sessions[agent_id] = sessions
+                    else:
+                        runner_manager._agent_sessions.pop(agent_id, None)
         
         # Remove from tracking
         del self.chat_sessions[chat_session_id]
