@@ -23,6 +23,7 @@ except ImportError:  # Python <3.10 compatibility
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from contextvars import ContextVar
 
 from ...contracts import (
     AgentRequest,
@@ -72,6 +73,8 @@ class AdkDomainAgent(DomainAgent):
         self._tool_approval_policy: Dict[str, bool] = {}
         self._last_usage_metadata: Optional[Dict[str, Any]] = None
         self._last_input_snapshot: Optional[List[Dict[str, Any]]] = None
+        self._task_request_var: ContextVar[Optional[TaskRequest]] = ContextVar("adk_task_request", default=None)
+        self._usage_metadata_var: ContextVar[Optional[Dict[str, Any]]] = ContextVar("adk_token_usage", default=None)
 
     # === Core Interface Methods ===
 
@@ -301,7 +304,11 @@ class AdkDomainAgent(DomainAgent):
         """Build ToolRequest populated with contextual metadata for MCP tooling."""
         from ...contracts import ToolRequest
 
-        task_request = self._active_task_request or self._lookup_runtime_value("live_task_request")
+        task_request = (
+            self._task_request_var.get()
+            or self._active_task_request
+            or self._lookup_runtime_value("live_task_request")
+        )
 
         user_context = getattr(task_request, "user_context", None) if task_request else None
         session_context = getattr(task_request, "session_context", None) if task_request else None
@@ -370,8 +377,7 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             TaskResult: The result of task execution
         """
-        previous_task_request = self._active_task_request
-        self._active_task_request = agent_request.task_request
+        token = self._task_request_var.set(agent_request.task_request)
 
         try:
             start_time = datetime.now()
@@ -458,7 +464,7 @@ class AdkDomainAgent(DomainAgent):
 
             return error_result
         finally:
-            self._active_task_request = previous_task_request
+            self._task_request_var.reset(token)
 
     async def execute_live(self, task_request) -> LiveExecutionResult:
         """
@@ -470,8 +476,7 @@ class AdkDomainAgent(DomainAgent):
         Returns:
             LiveExecutionResult: Tuple of (event_stream, communicator)
         """
-        previous_task_request = self._active_task_request
-        self._active_task_request = task_request
+        token = self._task_request_var.set(task_request)
         self._store_runtime_value("live_task_request", task_request)
         self._last_usage_metadata = None
         self._last_input_snapshot = self._summarize_input_messages(
@@ -688,8 +693,9 @@ class AdkDomainAgent(DomainAgent):
                     }
                     if self._last_input_snapshot:
                         result_metadata["input_preview"] = self._last_input_snapshot
-                    if self._last_usage_metadata:
-                        result_metadata["token_usage"] = self._last_usage_metadata
+                    usage_metadata = self._usage_metadata_var.get() or self._last_usage_metadata
+                    if usage_metadata:
+                        result_metadata["token_usage"] = usage_metadata
                     if generator_exit_detected:
                         result_metadata["stream_closed_by_consumer"] = True
 
@@ -702,7 +708,7 @@ class AdkDomainAgent(DomainAgent):
                         result_data={
                             "framework": "adk",
                             "agent_id": self.agent_id,
-                            "token_usage": self._last_usage_metadata,
+                            "token_usage": usage_metadata,
                         }
                         if self._last_usage_metadata
                         else {"framework": "adk", "agent_id": self.agent_id},
@@ -737,7 +743,7 @@ class AdkDomainAgent(DomainAgent):
                 task_request.task_id, f"ADK live execution setup failed: {str(e)}"
             )
         finally:
-            self._active_task_request = previous_task_request
+            self._task_request_var.reset(token)
 
     def _build_streaming_run_config(self):
         """Build an ADK RunConfig that enables streaming mode when dependencies are available."""
@@ -976,7 +982,7 @@ class AdkDomainAgent(DomainAgent):
                 if hasattr(first_message, "metadata") and first_message.metadata:
                     usage = first_message.metadata.get("usage")
                     if usage:
-                        self._last_usage_metadata = usage
+                        self._usage_metadata_var.set(usage)
 
             self._apply_common_success_metadata(
                 task_result,
