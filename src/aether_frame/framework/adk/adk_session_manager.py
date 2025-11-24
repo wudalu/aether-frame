@@ -323,11 +323,13 @@ class AdkSessionManager:
                 runner_idle_seconds = (
                     (now - last_activity).total_seconds() if last_activity else None
                 )
+                active_tasks = runner_context.get("active_tasks", 0)
                 if (
                     runner_timeout
                     and runner_idle_seconds is not None
                     and runner_idle_seconds >= runner_timeout
                     and session_count == 0
+                    and active_tasks == 0
                 ):
                     self.logger.warning(
                         "Runner idle timeout reached; tearing down runner",
@@ -354,6 +356,16 @@ class AdkSessionManager:
                             "Failed to cleanup runner after idle timeout",
                             extra={"runner_id": runner_id, "error": str(exc)},
                         )
+                elif active_tasks:
+                    self.logger.info(
+                        "Runner idle timeout skipped due to active tasks",
+                        extra={
+                            "runner_id": runner_id,
+                            "trigger": trigger,
+                            "active_tasks": active_tasks,
+                            "idle_seconds": int(runner_idle_seconds) if runner_idle_seconds else None,
+                        },
+                    )
                 elif session_count == 0 and runner_idle_seconds is not None and runner_idle_seconds >= runner_timeout:
                     # No cleanup due to missing threshold? Already handled above
                     pass

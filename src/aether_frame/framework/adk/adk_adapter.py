@@ -1097,27 +1097,28 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         Returns:
             TaskResult: Result from domain agent execution
         """
+        runner_guard = contextlib.AsyncExitStack()
         try:
-            # Import contracts
             from ...contracts import AgentRequest, FrameworkType
-            
-            # Create AgentRequest with RuntimeContext for domain agent
+
             agent_request = AgentRequest(
                 agent_type=self._get_default_agent_type(),
                 framework_type=FrameworkType.ADK,
                 task_request=task_request,
-                session_id=runtime_context.session_id,  # Ensure session_id propagates to domain agent
-                runtime_options=runtime_context.get_runtime_dict()  # Use runtime dict for backward compatibility
+                session_id=runtime_context.session_id,
+                runtime_options=runtime_context.get_runtime_dict(),
             )
-            
-            # Update domain agent runtime context using RuntimeContext
+
             domain_agent.runtime_context.update(runtime_context.get_runtime_dict())
-            
-            # Execute through domain agent
+
+            runner_id = getattr(runtime_context, "runner_id", None)
+            if runner_id:
+                await runner_guard.enter_async_context(
+                    self.runner_manager.acquire_runner(runner_id)
+                )
+
             result = await domain_agent.execute(agent_request)
-            
             return result
-            
         except Exception as e:
             error_type = type(e).__name__
             request_mode = self._derive_request_mode(task_request)
@@ -1144,6 +1145,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                     },
                 ),
             )
+        finally:
+            await runner_guard.aclose()
 
     async def _create_domain_agent_for_config(
         self, agent_config: AgentConfig, task_request: TaskRequest = None

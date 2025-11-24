@@ -2,6 +2,7 @@
 """ADK Runner Manager - Correct Session and Runner Management."""
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
@@ -242,6 +243,7 @@ class RunnerManager:
                 "app_name": self.settings.default_app_name,  # Store app_name for session operations
                 "user_id": self.settings.default_user_id,
                 "memory_service": memory_service,
+                "active_tasks": 0,
             }
             
             self.logger.info(f"Created ADK Runner {runner_id} with dedicated SessionService")
@@ -256,6 +258,24 @@ class RunnerManager:
         context = self.runners.get(runner_id)
         if context:
             context["last_activity"] = datetime.now()
+
+    @asynccontextmanager
+    async def acquire_runner(self, runner_id: str):
+        """Context manager to signal runner usage."""
+        runner_lock = self._get_runner_lock(runner_id)
+        async with runner_lock:
+            context = self.runners.get(runner_id)
+            if not context:
+                raise RuntimeError(f"Runner {runner_id} not found")
+            context["active_tasks"] = context.get("active_tasks", 0) + 1
+        try:
+            yield
+        finally:
+            async with runner_lock:
+                context = self.runners.get(runner_id)
+                if context and context.get("active_tasks"):
+                    context["active_tasks"] -= 1
+                    context["last_activity"] = datetime.now()
 
     async def _create_session_in_runner(self, runner_id: str, task_request = None, external_session_id: str = None) -> str:
         """
