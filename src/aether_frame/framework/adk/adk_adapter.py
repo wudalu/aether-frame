@@ -72,6 +72,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self._agent_runners: Dict[str, str] = {}  # agent_id -> runner_id
         self._agent_sessions: Dict[str, List[str]] = {}  # agent_id -> [session_ids]
         self._config_agents: Dict[str, List[str]] = {}  # config_hash -> [agent_ids]
+        self._mapping_lock = asyncio.Lock()
         
         # ADK Session Manager for chat session coordination
         self.adk_session_manager = AdkSessionManager()
@@ -141,32 +142,29 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 self.logger.warning(f"Failed to compute config hash for agent {agent_id}: {exc}")
                 config_hash = None
 
-        # Remove agent-to-runner mapping
-        if agent_id in self._agent_runners:
-            del self._agent_runners[agent_id]
+        async with self._mapping_lock:
+            if agent_id in self._agent_runners:
+                del self._agent_runners[agent_id]
 
-        # Remove session tracking
-        if agent_id in self._agent_sessions:
-            del self._agent_sessions[agent_id]
+            if agent_id in self._agent_sessions:
+                del self._agent_sessions[agent_id]
 
-        # Remove from config hash mapping
-        if config_hash and config_hash in self._config_agents:
-            self._config_agents[config_hash] = [
-                existing_agent for existing_agent in self._config_agents[config_hash]
-                if existing_agent != agent_id
-            ]
-            if not self._config_agents[config_hash]:
-                del self._config_agents[config_hash]
-        else:
-            # Fallback: remove from any config list containing this agent
-            for hash_key in list(self._config_agents.keys()):
-                if agent_id in self._config_agents[hash_key]:
-                    self._config_agents[hash_key] = [
-                        existing_agent for existing_agent in self._config_agents[hash_key]
-                        if existing_agent != agent_id
-                    ]
-                    if not self._config_agents[hash_key]:
-                        del self._config_agents[hash_key]
+            if config_hash and config_hash in self._config_agents:
+                self._config_agents[config_hash] = [
+                    existing_agent for existing_agent in self._config_agents[config_hash]
+                    if existing_agent != agent_id
+                ]
+                if not self._config_agents[config_hash]:
+                    del self._config_agents[config_hash]
+            else:
+                for hash_key in list(self._config_agents.keys()):
+                    if agent_id in self._config_agents[hash_key]:
+                        self._config_agents[hash_key] = [
+                            existing_agent for existing_agent in self._config_agents[hash_key]
+                            if existing_agent != agent_id
+                        ]
+                        if not self._config_agents[hash_key]:
+                            del self._config_agents[hash_key]
 
         # Delegate to AgentManager for actual domain agent cleanup
         try:
@@ -390,9 +388,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             session_id = returned_session_id
             
             # Update agent sessions mapping
-            if task_request.agent_id not in self._agent_sessions:
-                self._agent_sessions[task_request.agent_id] = []
-            self._agent_sessions[task_request.agent_id].append(session_id)
+            async with self._mapping_lock:
+                sessions = list(self._agent_sessions.get(task_request.agent_id, []))
+                sessions.append(session_id)
+                self._agent_sessions[task_request.agent_id] = sessions
             
             # Get updated runner context and ADK session
             runner_context_dict = self.runner_manager.runners.get(runner_id)
@@ -419,7 +418,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         max_sessions: int,
     ) -> Optional[Tuple[str, "AdkDomainAgent", str]]:
         """Pick a reusable agent for the given config hash if capacity allows."""
-        candidate_ids = self._config_agents.get(config_hash, [])
+        async with self._mapping_lock:
+            candidate_ids = list(self._config_agents.get(config_hash, []))
         if not candidate_ids:
             return None
 
@@ -445,10 +445,11 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             if selected is None and session_count < max_sessions:
                 selected = (agent_id, domain_agent, runner_id)
 
-        if valid_candidates:
-            self._config_agents[config_hash] = valid_candidates
-        else:
-            self._config_agents.pop(config_hash, None)
+        async with self._mapping_lock:
+            if valid_candidates:
+                self._config_agents[config_hash] = valid_candidates
+            else:
+                self._config_agents.pop(config_hash, None)
 
         return selected
 
@@ -478,7 +479,9 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             metadata = self.agent_manager._agent_metadata.get(agent_id)
             if metadata is not None:
                 metadata["last_activity"] = datetime.now()
-            self._agent_sessions.setdefault(agent_id, [])
+            async with self._mapping_lock:
+                if agent_id not in self._agent_sessions:
+                    self._agent_sessions[agent_id] = []
 
             self.logger.info(
                 f"Reusing agent {agent_id} with runner {runner_id} for config hash {config_hash}"
@@ -533,9 +536,12 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                 allow_reuse=False,
             )
 
-            self._agent_runners[agent_id] = runner_id
-            self._agent_sessions[agent_id] = []
-            self._config_agents.setdefault(config_hash, []).append(agent_id)
+            async with self._mapping_lock:
+                self._agent_runners[agent_id] = runner_id
+                self._agent_sessions[agent_id] = []
+                agents = list(self._config_agents.get(config_hash, []))
+                agents.append(agent_id)
+                self._config_agents[config_hash] = agents
 
             runner_context_dict = self.runner_manager.runners[runner_id]
             adk_session = runner_context_dict["sessions"].get(session_id)
@@ -639,7 +645,10 @@ class AdkFrameworkAdapter(FrameworkAdapter):
                         failure_reason="invalid_task_request",
                         task_request=task_request,
                         retriable=False,
-                        extra={"provided_context": provided_context},
+                        extra={
+                            "provided_context": provided_context,
+                            "request_mode": self._derive_request_mode(task_request),
+                        },
                     ),
                 )
 

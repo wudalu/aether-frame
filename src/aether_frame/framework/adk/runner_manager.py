@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """ADK Runner Manager - Correct Session and Runner Management."""
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
@@ -40,6 +41,9 @@ class RunnerManager:
         self.runners = {}  # runner_id -> RunnerContext
         self.session_to_runner = {}  # session_id -> runner_id
         self.config_to_runner = {}  # config_hash -> runner_id
+        self._config_locks: Dict[str, asyncio.Lock] = {}
+        self._config_creation_tasks: Dict[str, asyncio.Future] = {}
+        self._runner_locks: Dict[str, asyncio.Lock] = {}
         
         # Runner availability check
         self.logger.info("RunnerManager initialized")
@@ -64,6 +68,10 @@ class RunnerManager:
     def compute_config_hash(self, agent_config: AgentConfig) -> str:
         """Public helper to compute a stable hash for an agent configuration."""
         return self._hash_config(agent_config)
+
+    def _get_runner_lock(self, runner_id: str) -> asyncio.Lock:
+        """Get or create a lock for runner scoped operations."""
+        return self._runner_locks.setdefault(runner_id, asyncio.Lock())
 
     async def get_or_create_runner(
         self,
@@ -90,16 +98,47 @@ class RunnerManager:
             Tuple[runner_id, session_id]: IDs for created/existing runner and session
         """
         config_hash = self._hash_config(agent_config)
-        
-        # Check if Runner exists for this config
-        if allow_reuse and config_hash in self.config_to_runner:
-            runner_id = self.config_to_runner[config_hash]
-            self.logger.info(f"Reusing existing Runner {runner_id} for config hash {config_hash}")
+        runner_id: Optional[str] = None
+
+        if allow_reuse:
+            lock = self._config_locks.setdefault(config_hash, asyncio.Lock())
+            creation_future: Optional[asyncio.Future] = None
+            creator = False
+            async with lock:
+                cached_runner = self.config_to_runner.get(config_hash)
+                if cached_runner:
+                    runner_id = cached_runner
+                else:
+                    creation_future = self._config_creation_tasks.get(config_hash)
+                    if not creation_future:
+                        loop = asyncio.get_running_loop()
+                        creation_future = loop.create_future()
+                        self._config_creation_tasks[config_hash] = creation_future
+                        creator = True
+            if runner_id:
+                self.logger.info(f"Reusing existing Runner {runner_id} for config hash {config_hash}")
+            elif creator:
+                try:
+                    new_runner_id = await self._create_new_runner(agent_config, config_hash, adk_agent)
+                    async with lock:
+                        self.config_to_runner[config_hash] = new_runner_id
+                        future = self._config_creation_tasks.pop(config_hash, None)
+                        if future and not future.done():
+                            future.set_result(new_runner_id)
+                    runner_id = new_runner_id
+                    self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
+                except Exception as exc:
+                    async with lock:
+                        future = self._config_creation_tasks.pop(config_hash, None)
+                        if future and not future.done():
+                            future.set_exception(exc)
+                    raise
+            elif creation_future:
+                self.logger.info(f"Waiting for Runner creation for config hash {config_hash}")
+                runner_id = await creation_future
         else:
-            # Create new Runner
             runner_id = await self._create_new_runner(agent_config, config_hash, adk_agent)
-            self.config_to_runner[config_hash] = runner_id
-            self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash}")
+            self.logger.info(f"Created new Runner {runner_id} for config hash {config_hash} (reuse disabled)")
         
         session_id = None
         if create_session:
@@ -232,9 +271,13 @@ class RunnerManager:
         Returns:
             session_id: The session ID used (external_session_id if provided, or generated)
         """
-        runner_context = self.runners.get(runner_id)
-        if not runner_context:
-            raise ValueError(f"Runner {runner_id} not found")
+        runner_lock = self._get_runner_lock(runner_id)
+        async with runner_lock:
+            runner_context = self.runners.get(runner_id)
+            if not runner_context:
+                raise ValueError(f"Runner {runner_id} not found")
+            session_service = runner_context["session_service"]
+            runner_context["last_activity"] = datetime.now()
         
         # H5: Use external session_id if provided, otherwise generate
         session_id = external_session_id or f"{self.settings.session_id_prefix}_{uuid4().hex[:12]}"
@@ -256,8 +299,6 @@ class RunnerManager:
         self.logger.info(f"Creating ADK session with app_name={app_name}, user_id={user_id}, session_id={session_id}")
         
         try:
-            session_service = runner_context["session_service"]
-                        
             # Create ADK Session in the Runner's SessionService with context
             adk_session = await session_service.create_session(
                 app_name=app_name,  # Use consistent app_name that matches Runner
@@ -265,12 +306,15 @@ class RunnerManager:
                 session_id=session_id  # H5: Use provided/generated session_id
             )
             
-            # Store session reference
-            runner_context["sessions"][session_id] = adk_session
-            runner_context.setdefault("session_user_ids", {})[session_id] = user_id
-            runner_context["last_activity"] = datetime.now()
-            self.session_to_runner[session_id] = runner_id
-            
+            async with runner_lock:
+                runner_context = self.runners.get(runner_id)
+                if not runner_context:
+                    raise RuntimeError(f"Runner {runner_id} not available after session creation")
+                runner_context["sessions"][session_id] = adk_session
+                runner_context.setdefault("session_user_ids", {})[session_id] = user_id
+                runner_context["last_activity"] = datetime.now()
+                self.session_to_runner[session_id] = runner_id
+                
             self.logger.info(f"Created ADK Session {session_id} in Runner {runner_id}")
             return session_id
             
@@ -291,60 +335,56 @@ class RunnerManager:
         runner_context = self.runners.get(runner_id)
         if not runner_context:
             return False
-        
-        try:
-            # Cleanup all sessions in this runner
-            session_ids = list(runner_context["sessions"].keys())
-            for session_id in session_ids:
-                if session_id in self.session_to_runner:
-                    del self.session_to_runner[session_id]
-                session_user_map = runner_context.get("session_user_ids")
-                if session_user_map and session_id in session_user_map:
-                    del session_user_map[session_id]
-            
-            # Cleanup Runner resources
-            runner = runner_context.get("runner")
-            if runner and hasattr(runner, "shutdown"):
-                await runner.shutdown()
+        runner_lock = self._get_runner_lock(runner_id)
+        async with runner_lock:
+            try:
+                session_ids = list(runner_context["sessions"].keys())
+                for session_id in session_ids:
+                    if session_id in self.session_to_runner:
+                        del self.session_to_runner[session_id]
+                    session_user_map = runner_context.get("session_user_ids")
+                    if session_user_map and session_id in session_user_map:
+                        del session_user_map[session_id]
                 
-            session_service = runner_context.get("session_service")
-            if session_service and hasattr(session_service, "shutdown"):
-                await session_service.shutdown()
-            
-            # Remove from config mapping
-            config_hash = runner_context["config_hash"]
-            if config_hash in self.config_to_runner:
-                del self.config_to_runner[config_hash]
-            
-            # Remove any agent mapping pointing to this runner
-            agents_to_cleanup = []
-            if self.agent_runner_mapping:
-                stale_agents = [
-                    agent_id
-                    for agent_id, mapped_runner in self.agent_runner_mapping.items()
-                    if mapped_runner == runner_id
-                ]
-                for agent_id in stale_agents:
-                    del self.agent_runner_mapping[agent_id]
-                agents_to_cleanup = stale_agents
-            
-            # Remove runner context
-            del self.runners[runner_id]
+                runner = runner_context.get("runner")
+                if runner and hasattr(runner, "shutdown"):
+                    await runner.shutdown()
+                    
+                session_service = runner_context.get("session_service")
+                if session_service and hasattr(session_service, "shutdown"):
+                    await session_service.shutdown()
+                
+                config_hash = runner_context["config_hash"]
+                if config_hash in self.config_to_runner and self.config_to_runner[config_hash] == runner_id:
+                    del self.config_to_runner[config_hash]
+                
+                agents_to_cleanup = []
+                if self.agent_runner_mapping:
+                    stale_agents = [
+                        agent_id
+                        for agent_id, mapped_runner in self.agent_runner_mapping.items()
+                        if mapped_runner == runner_id
+                    ]
+                    for agent_id in stale_agents:
+                        del self.agent_runner_mapping[agent_id]
+                    agents_to_cleanup = stale_agents
+                
+                del self.runners[runner_id]
+                self._runner_locks.pop(runner_id, None)
 
-            # Trigger agent cleanup callback if provided
-            if agents_to_cleanup and self.agent_cleanup_callback:
-                for agent_id in agents_to_cleanup:
-                    try:
-                        await self.agent_cleanup_callback(agent_id)
-                    except Exception as exc:
-                        self.logger.warning(f"Agent cleanup callback failed for {agent_id}: {exc}")
-            
-            self.logger.info(f"Successfully cleaned up Runner {runner_id}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to cleanup Runner {runner_id}: {str(e)}")
-            return False
+                if agents_to_cleanup and self.agent_cleanup_callback:
+                    for agent_id in agents_to_cleanup:
+                        try:
+                            await self.agent_cleanup_callback(agent_id)
+                        except Exception as exc:
+                            self.logger.warning(f"Agent cleanup callback failed for {agent_id}: {exc}")
+                
+                self.logger.info(f"Successfully cleaned up Runner {runner_id}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Failed to cleanup Runner {runner_id}: {str(e)}")
+                return False
 
     async def get_runner_stats(self) -> Dict[str, Any]:
         """Get Runner manager statistics."""
@@ -379,48 +419,44 @@ class RunnerManager:
         if not runner_context:
             self.logger.warning(f"Runner {runner_id} not found")
             return False
+        runner_lock = self._get_runner_lock(runner_id)
+        async with runner_lock:
+            if session_id not in runner_context["sessions"]:
+                self.logger.warning(f"Session {session_id} not found in runner {runner_id}")
+                return False
             
-        if session_id not in runner_context["sessions"]:
-            self.logger.warning(f"Session {session_id} not found in runner {runner_id}")
-            return False
-        
-        try:
-            # Get the session_service and session for this runner
-            session_service = runner_context["session_service"]
-            adk_session = runner_context["sessions"][session_id]
-            
-            # If this is a real ADK session (not mock), delete through SessionService
-            if session_service and not isinstance(adk_session, dict):
-                # Use the correct ADK API: session_service.delete_session(app_name, user_id, session_id)
-                app_name = adk_session.app_name
-                user_id = adk_session.user_id
+            try:
+                session_service = runner_context["session_service"]
+                adk_session = runner_context["sessions"][session_id]
                 
-                await session_service.delete_session(
-                    app_name=app_name,
-                    user_id=user_id,
-                    session_id=session_id
-                )
+                if session_service and not isinstance(adk_session, dict):
+                    app_name = adk_session.app_name
+                    user_id = adk_session.user_id
                     
-                self.logger.info(f"Deleted ADK session {session_id} through SessionService")
-            
-            # Remove session from runner's sessions dict
-            del runner_context["sessions"][session_id]
-            session_user_map = runner_context.get("session_user_ids")
-            if session_user_map and session_id in session_user_map:
-                del session_user_map[session_id]
-            
-            # Remove from global session mapping
-            if session_id in self.session_to_runner:
-                del self.session_to_runner[session_id]
+                    await session_service.delete_session(
+                        app_name=app_name,
+                        user_id=user_id,
+                        session_id=session_id
+                    )
+                        
+                    self.logger.info(f"Deleted ADK session {session_id} through SessionService")
+                
+                del runner_context["sessions"][session_id]
+                session_user_map = runner_context.get("session_user_ids")
+                if session_user_map and session_id in session_user_map:
+                    del session_user_map[session_id]
+                
+                if session_id in self.session_to_runner:
+                    del self.session_to_runner[session_id]
 
-            runner_context["last_activity"] = datetime.now()
-            
-            self.logger.info(f"Removed session {session_id} from runner {runner_id}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to remove session {session_id} from runner {runner_id}: {e}")
-            return False
+                runner_context["last_activity"] = datetime.now()
+                
+                self.logger.info(f"Removed session {session_id} from runner {runner_id}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Failed to remove session {session_id} from runner {runner_id}: {e}")
+                return False
 
     async def get_runner_session_count(self, runner_id: str) -> int:
         """
