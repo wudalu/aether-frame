@@ -104,8 +104,9 @@ def create_function_tools(
             # Derive function signature from tool schema so ADK can expose rich metadata
             schema = getattr(tool, "parameters_schema", {}) or {}
             signature = _build_signature_from_schema(schema)
-            if signature:
+            if signature is not None:
                 async_adk_tool.__signature__ = signature
+            if schema:
                 async_adk_tool.__doc__ = _augment_doc_with_schema(
                     async_adk_tool.__doc__, schema
                 )
@@ -248,6 +249,9 @@ def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Sig
         )
         return inspect.Signature(parameters=[param])
 
+    if _has_complex_schema_types(schema):
+        return None
+
     required_fields = set(schema.get("required", []))
     parameters: List[inspect.Parameter] = []
 
@@ -257,14 +261,14 @@ def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Sig
             default = inspect._empty
         else:
             default = prop.get("default", None)
-        parameters.append(
-            inspect.Parameter(
-                name,
-                inspect.Parameter.KEYWORD_ONLY,
-                default=default,
-                annotation=annotation,
-            )
-        )
+        param_kwargs = {
+            "name": name,
+            "kind": inspect.Parameter.KEYWORD_ONLY,
+            "default": default,
+        }
+        if annotation is not None:
+            param_kwargs["annotation"] = annotation
+        parameters.append(inspect.Parameter(**param_kwargs))
 
     if not parameters:
         # No declared properties; allow arbitrary keyword arguments
@@ -285,8 +289,26 @@ def _build_signature_from_schema(schema: Dict[str, Any]) -> Optional[inspect.Sig
     return inspect.Signature(parameters=parameters)
 
 
-def _schema_type_to_python(prop_schema: Dict[str, Any]) -> Any:
+def _schema_type_to_python(prop_schema: Dict[str, Any]) -> Optional[type]:
     """Map JSON schema primitive types to Python hints for documentation."""
+    if not isinstance(prop_schema, dict):
+        return None
+
+    for option_key in ("anyOf", "oneOf", "allOf"):
+        options = prop_schema.get(option_key)
+        if not options:
+            continue
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            opt_type = option.get("type")
+            if opt_type == "null":
+                continue
+            resolved = _schema_type_to_python(option)
+            if resolved is not None:
+                return resolved
+        return None
+
     schema_type = prop_schema.get("type")
     if schema_type == "string":
         return str
@@ -297,10 +319,29 @@ def _schema_type_to_python(prop_schema: Dict[str, Any]) -> Any:
     if schema_type == "boolean":
         return bool
     if schema_type == "array":
-        return List[_schema_type_to_python(prop_schema.get("items", {}))]  # type: ignore[return-value]
+        return list
     if schema_type == "object":
-        return Dict[str, Any]
-    return Any
+        return dict
+    return None
+
+
+def _has_complex_schema_types(schema: Dict[str, Any]) -> bool:
+    """Detect whether schema includes combinations like anyOf/oneOf/allOf."""
+    if not isinstance(schema, dict):
+        return False
+
+    if any(schema.get(key) for key in ("anyOf", "oneOf", "allOf")):
+        return True
+
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        for prop in (schema.get("properties") or {}).values():
+            if _has_complex_schema_types(prop):
+                return True
+    elif schema_type == "array":
+        return _has_complex_schema_types(schema.get("items", {}))
+
+    return False
 
 
 def _augment_doc_with_schema(doc: Optional[str], schema: Dict[str, Any]) -> str:

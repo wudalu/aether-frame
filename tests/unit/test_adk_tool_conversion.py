@@ -3,6 +3,7 @@
 
 from types import ModuleType, SimpleNamespace
 import sys
+import inspect
 
 import pytest
 
@@ -171,3 +172,52 @@ async def test_build_adk_agent_constructs_agent_with_tools(monkeypatch):
     assert agent is not None
     assert agent.kwargs["model"] == "stub-model"
     assert len(agent.kwargs["tools"]) == 1
+
+
+def test_build_signature_from_schema_handles_primitives():
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "default": 5},
+        },
+        "required": ["query"],
+    }
+    signature = tool_conversion._build_signature_from_schema(schema)
+    assert signature is not None
+    params = list(signature.parameters.values())
+    assert params[0].name == "query"
+    assert params[0].annotation is str
+    assert params[1].default == 5
+
+
+def test_build_signature_skips_complex_schema(monkeypatch):
+    _install_fake_google_modules(monkeypatch)
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "content_b64": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    universal_tool = SimpleNamespace(
+        name="pandas.analyze",
+        namespace="pandas",
+        description="Analyze data",
+        parameters_schema=schema,
+        metadata={},
+    )
+
+    function_tools = tool_conversion.create_function_tools(
+        SimpleNamespace(execute_tool=lambda request: None), [universal_tool]
+    )
+
+    func = function_tools[0].func  # type: ignore[attr-defined]
+    assert not hasattr(func, "__signature__")
+    assert "content_b64" in func.__doc__

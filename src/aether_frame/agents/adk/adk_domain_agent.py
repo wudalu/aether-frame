@@ -768,36 +768,15 @@ class AdkDomainAgent(DomainAgent):
         elif isinstance(streaming_mode, str) and streaming_members:
             streaming_mode = streaming_members.get(streaming_mode.upper())
 
-        generate_content_config = run_config_overrides.pop("generate_content_config", None)
-        if generate_content_config is None:
-            model_config = {}
-            if isinstance(self.config, dict):
-                model_config = self.config.get("model_config") or {}
-            content_kwargs = {}
-            for source_key, target_key in (
-                ("temperature", "temperature"),
-                ("top_p", "top_p"),
-                ("top_k", "top_k"),
-                ("max_output_tokens", "max_output_tokens"),
-                ("max_tokens", "max_output_tokens"),
-            ):
-                value = model_config.get(source_key)
-                if value is not None and target_key not in content_kwargs:
-                    content_kwargs[target_key] = value
-            if content_kwargs:
-                try:
-                    from google.genai import types as genai_types  # type: ignore
-
-                    generate_content_config = genai_types.GenerateContentConfig(**content_kwargs)
-                except Exception:  # pragma: no cover - optional dependency
-                    self.logger.debug("Failed to build GenerateContentConfig for RunConfig", exc_info=True)
-                    generate_content_config = None
+        discarded_config = run_config_overrides.pop("generate_content_config", None)
+        if discarded_config is not None:
+            self.logger.debug(
+                "Ignoring unsupported generate_content_config in ADK RunConfig overrides"
+            )
 
         run_config_kwargs = {}
         if streaming_mode is not None:
             run_config_kwargs["streaming_mode"] = streaming_mode
-        if generate_content_config is not None:
-            run_config_kwargs["generate_content_config"] = generate_content_config
 
         for key, value in run_config_overrides.items():
             if value is not None:
