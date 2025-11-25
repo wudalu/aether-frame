@@ -140,6 +140,28 @@ async def test_execute_success_and_metadata():
 
 
 @pytest.mark.asyncio
+async def test_execute_strips_optional_none_parameters():
+    tool, client = make_tool()
+    request = ToolRequest(
+        tool_name="search",
+        parameters={
+            "query": "docs",
+            "includeHistory": None,
+            "filters": ["open", None],
+            "context": {"id": "123", "note": None},
+        },
+    )
+
+    await tool.execute(request)
+
+    assert client.called_with[1] == {
+        "query": "docs",
+        "filters": ["open"],
+        "context": {"id": "123"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_execute_handles_connection_error():
     tool, client = make_tool()
     request = ToolRequest(tool_name="search", parameters={"raise": "connection"})

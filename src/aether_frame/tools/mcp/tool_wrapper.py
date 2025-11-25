@@ -80,7 +80,7 @@ class MCPTool(Tool):
                 raise MCPConnectionError("MCP client is not connected")
             
             # Extract parameters and authentication headers from tool request
-            parameters = tool_request.parameters or {}
+            parameters = self._clean_parameters(tool_request.parameters or {})
             extra_headers = self._build_request_headers(tool_request)
             
             # Call the MCP tool using the original name (without namespace)
@@ -170,7 +170,7 @@ class MCPTool(Tool):
                 raise MCPConnectionError("MCP client is not connected")
             
             # Extract parameters and authentication headers from tool request
-            parameters = tool_request.parameters or {}
+            parameters = self._clean_parameters(tool_request.parameters or {})
             extra_headers = self._build_request_headers(tool_request)
             
             sequence_id = 0
@@ -382,6 +382,18 @@ class MCPTool(Tool):
             mcp_health["issues"] = ["MCP client not connected"]
         
         return mcp_health
+
+    def _clean_parameters(self, parameters: Any) -> Any:
+        """Strip None values so optional params aren't sent as explicit nulls."""
+        if isinstance(parameters, dict):
+            return {
+                key: self._clean_parameters(value)
+                for key, value in parameters.items()
+                if value is not None
+            }
+        if isinstance(parameters, list):
+            return [self._clean_parameters(value) for value in parameters if value is not None]
+        return parameters
 
     def _build_request_headers(self, tool_request: ToolRequest) -> Dict[str, str]:
         """Construct per-request headers for MCP authentication and metadata."""
