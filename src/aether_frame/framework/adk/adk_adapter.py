@@ -282,7 +282,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
 
         return metadata
     
-    def _get_agent_and_runner(self, agent_id: str, task_request: TaskRequest):
+    async def _get_agent_and_runner(self, agent_id: str, task_request: TaskRequest):
         """Get domain agent and runner for given agent_id. Raises ExecutionError if not found."""
         try:
             # Check if agent exists
@@ -293,11 +293,22 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             # Get runner_id from agent mapping
             runner_id = self._agent_runners.get(agent_id)
             if not runner_id:
+                self.logger.warning(
+                    "Agent %s missing runner mapping; triggering cleanup",
+                    agent_id,
+                )
+                await self._handle_agent_cleanup(agent_id)
                 raise self.ExecutionError(f"No runner found for agent {agent_id}", task_request)
             
             # Get runner context
             runner_context_dict = self.runner_manager.runners.get(runner_id)
             if not runner_context_dict:
+                self.logger.warning(
+                    "Runner %s for agent %s not found; cleaning stale mapping",
+                    runner_id,
+                    agent_id,
+                )
+                await self._handle_agent_cleanup(agent_id)
                 raise self.ExecutionError(f"Runner {runner_id} not found", task_request)
 
             metadata = self.agent_manager._agent_metadata.get(agent_id)
@@ -350,7 +361,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.logger.info(f"Pattern 1: agent_id + session_id - Continuing existing session {task_request.session_id} for agent {task_request.agent_id}")
         
         # Get agent and runner data (may raise ExecutionError)
-        domain_agent, runner_id, runner_context_dict = self._get_agent_and_runner(task_request.agent_id, task_request)
+        domain_agent, runner_id, runner_context_dict = await self._get_agent_and_runner(task_request.agent_id, task_request)
         
         # Verify session exists in runner
         adk_session = runner_context_dict["sessions"].get(task_request.session_id)
@@ -375,7 +386,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.logger.info(f"Pattern 2: agent_id only - Creating new session for existing agent {task_request.agent_id}")
 
         # Get agent and runner data (may raise ExecutionError)
-        domain_agent, runner_id, runner_context_dict = self._get_agent_and_runner(task_request.agent_id, task_request)
+        domain_agent, runner_id, runner_context_dict = await self._get_agent_and_runner(task_request.agent_id, task_request)
         agent_config = self.agent_manager._agent_configs.get(task_request.agent_id)
         
         # Create new session in existing runner
