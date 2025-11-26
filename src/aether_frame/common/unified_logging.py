@@ -14,6 +14,18 @@ from typing import Optional, Dict, Any
 import json
 
 
+def _close_logger_handlers(logger: logging.Logger) -> None:
+    """Close and detach all handlers from the provided logger."""
+    handlers = list(getattr(logger, "handlers", []))
+    for handler in handlers:
+        try:
+            handler.close()
+        except Exception:
+            # Swallow handler close errors during cleanup to avoid masking init
+            pass
+        logger.removeHandler(handler)
+
+
 EXECUTION_LOGGING_ENABLED = os.getenv("AETHER_ENABLE_EXECUTION_LOGS", "1").lower() not in {
     "0",
     "false",
@@ -68,8 +80,8 @@ class UnifiedLoggingConfig:
         """
         logger_name = f"execution.{execution_id}"
         logger = logging.getLogger(logger_name)
-        logger.handlers.clear()
-        
+        _close_logger_handlers(logger)
+
         # Set level
         numeric_level = getattr(logging, level.upper(), logging.INFO)
         logger.setLevel(numeric_level)
@@ -338,7 +350,7 @@ def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     config = get_unified_logging_config()
     
     logger = logging.getLogger(name)
-    logger.handlers.clear()
+    _close_logger_handlers(logger)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     
     # Simple console handler

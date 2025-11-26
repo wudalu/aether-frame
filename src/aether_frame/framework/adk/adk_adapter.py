@@ -82,7 +82,8 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         self.runner_manager = RunnerManager(
             session_manager=self.adk_session_manager,
             agent_runner_mapping=self._agent_runners,
-            agent_cleanup_callback=self._handle_agent_cleanup
+            agent_cleanup_callback=self._handle_agent_cleanup,
+            agent_sessions_mapping=self._agent_sessions,
         )
         
         self.logger = logging.getLogger(__name__)

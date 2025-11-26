@@ -30,13 +30,22 @@ class RunnerManager:
     4. Agent configs with same hash can share Runners
     """
 
-    def __init__(self, settings: Settings = None, session_manager=None, agent_runner_mapping=None, agent_cleanup_callback=None):
+    def __init__(
+        self,
+        settings: Settings = None,
+        session_manager=None,
+        agent_runner_mapping=None,
+        agent_cleanup_callback=None,
+        agent_sessions_mapping=None,
+    ):
         """Initialize runner manager."""
         self.logger = logging.getLogger(__name__)
         self.settings = settings or Settings()
         self.session_manager = session_manager  # SessionManager instance for creating session services
         self.agent_runner_mapping = agent_runner_mapping  # External agent_id -> runner_id mapping
         self.agent_cleanup_callback = agent_cleanup_callback  # Optional callback executed when runner is cleaned
+        self._agent_sessions = agent_sessions_mapping if agent_sessions_mapping is not None else {}
+        self._agent_sessions_lock = asyncio.Lock()
         
         # Core storage
         self.runners = {}  # runner_id -> RunnerContext
