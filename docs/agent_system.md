@@ -83,17 +83,17 @@ It is not the scheduler (`Task Board` does scheduling). It stores immutable arti
 ### 2.2 External Data We Track (What the Numbers Mean)
 
 How to read this section:
-- The numbers are not from one unified benchmark; each row supports one architecture decision.
-- We use them as direction signals, not as absolute product KPIs.
+- Different rows use different benchmarks, so percentages are not directly comparable across rows.
+- Use each row as: `metric definition -> baseline/comparison -> architecture implication`.
 
-| Evidence | Number Meaning | Decision Impact | Source |
-| --- | --- | --- | --- |
-| ReAct | `+34%` (ALFWorld) and `+10%` (WebShop) are absolute gains over prior baselines in the paper | Keep a structured decision-execution loop (`Planner -> Operator`) as core | https://arxiv.org/abs/2210.03629 |
-| SWE-bench progression | `1.96% -> 12.47%` shows architecture/scaffolding upgrades can materially improve real repo-task solving | Treat agent architecture as a primary lever, not a UI detail | https://www.swebench.com/original.html |
-| Agentless result | `32.00%` on SWE-bench Lite at low cost shows simpler control designs can outperform heavier agent stacks in some settings | Avoid complexity-by-default; add modules only when data justifies | https://arxiv.org/abs/2407.01489 |
-| OpenAI SWE-bench Verified report | `33.2% vs 16%` (verified vs original) and scaffold spread (`2.7% to 28.3%`) show evaluation setup changes headline outcomes | Build evaluation as a day-1 capability, not a late-stage add-on | https://openai.com/index/introducing-swe-bench-verified/ |
-| GPT-4.1 report | `54.6%` on SWE-bench Verified plus explicit note on prompt/tool sensitivity | Invest early in tool/runtime quality and prompt contracts | https://openai.com/index/gpt-4-1/ |
-| Sequential-NIAH (EMNLP 2025) | Even top models show limited max accuracy (`63.50%`) under long sequential retrieval settings | Keep context engineering as a core module; larger windows alone are not enough | https://aclanthology.org/2025.emnlp-main.1497/ |
+| Evidence | Metric (what is measured) | Baseline / Comparison | What the number says | Decision Impact | Source |
+| --- | --- | --- | --- | --- | --- |
+| ReAct | Task success rate on ALFWorld/WebShop | Compared with prior methods in the paper | ReAct reports absolute gains of `+34%` (ALFWorld) and `+10%` (WebShop) | Keep a structured decision-execution loop (`Planner -> Operator`) as core | https://arxiv.org/abs/2210.03629 |
+| SWE-bench progression | Issue-resolution rate on SWE-bench | Early baseline vs SWE-agent result on the same benchmark family | `1.96% -> 12.47%` shows architecture/scaffolding can materially change outcomes | Treat agent architecture as a primary lever, not a UI detail | https://www.swebench.com/original.html |
+| Agentless | Issue-resolution rate on SWE-bench Lite (plus cost) | Agentless result on Lite benchmark | `32.00%` at low cost shows simpler control designs can outperform heavier stacks in some settings | Avoid complexity-by-default; add modules only when data justifies | https://arxiv.org/abs/2407.01489 |
+| OpenAI SWE-bench Verified report | Issue-resolution rate under different benchmark setups/scaffolds | Verified vs original benchmark; scaffold A vs scaffold B | `33.2% vs 16%` and `2.7% to 28.3%` range show evaluation setup can change headline results a lot | Build evaluation as a day-1 capability, not a late-stage add-on | https://openai.com/index/introducing-swe-bench-verified/ |
+| GPT-4.1 report | Issue-resolution rate on SWE-bench Verified | GPT-4.1 reported result on Verified | `54.6%` plus explicit sensitivity to prompts/tools highlights runtime design importance | Invest early in tool/runtime quality and prompt contracts | https://openai.com/index/gpt-4-1/ |
+| Sequential-NIAH (EMNLP 2025) | Retrieval/needle-finding accuracy under long sequential context | Best reported model in that test setup | Even the best model has limited max accuracy (`63.50%`) in this long-context setting | Keep context engineering as a core module; larger windows alone are not enough | https://aclanthology.org/2025.emnlp-main.1497/ |
 
 ## 3) Roadmap (H1 Build, H2 Deepen and Scale)
 
