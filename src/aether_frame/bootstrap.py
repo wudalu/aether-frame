@@ -9,6 +9,7 @@ the startup of core system components with proper dependency management.
 import logging
 from typing import NamedTuple, Optional
 from datetime import datetime
+from pathlib import Path
 
 from .agents.manager import AgentManager
 from .config.settings import Settings
@@ -16,6 +17,7 @@ from .contracts import AgentConfig, FrameworkType
 from .execution.execution_engine import ExecutionEngine
 from .execution.task_factory import TaskRequestFactory
 from .framework.framework_registry import FrameworkRegistry
+from .skills.registry import SkillCatalog
 from .tools.service import ToolService
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ class SystemComponents(NamedTuple):
     execution_engine: ExecutionEngine
     tool_service: Optional[ToolService] = None
     task_factory: Optional[TaskRequestFactory] = None
+    skill_catalog: Optional[SkillCatalog] = None
 
 
 async def initialize_system(settings: Optional[Settings] = None) -> SystemComponents:
@@ -50,6 +53,8 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
     logger.info("Starting Aether Frame system initialization...")
 
     try:
+        skill_catalog = _initialize_skill_catalog(settings)
+
         # Phase 1: Framework Registry 
         logger.info("Phase 1: Initializing Framework Registry...")
         framework_registry = FrameworkRegistry()
@@ -85,6 +90,8 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
             # Initialize with tool service integration and settings
             if adk_adapter:
                 await adk_adapter.initialize(config=None, tool_service=tool_service, settings=settings)
+                if hasattr(adk_adapter, "set_skill_catalog"):
+                    adk_adapter.set_skill_catalog(skill_catalog)
                 logger.info(f"ADK framework adapter loaded successfully - type: {type(adk_adapter).__name__}")
             else:
                 raise RuntimeError("Failed to load ADK framework adapter")
@@ -107,7 +114,10 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
         task_factory = None
         if tool_service:
             logger.info("Phase 6: Initializing Task Factory with tool resolution...")
-            task_factory = TaskRequestFactory(tool_service)
+            task_factory = TaskRequestFactory(
+                tool_service,
+                skill_catalog=skill_catalog,
+            )
             logger.info("Task Factory initialized with ToolResolver integration")
         else:
             logger.info("Task Factory skipped - Tool Service not available")
@@ -122,6 +132,7 @@ async def initialize_system(settings: Optional[Settings] = None) -> SystemCompon
             execution_engine=execution_engine,
             tool_service=tool_service,
             task_factory=task_factory,
+            skill_catalog=skill_catalog,
         )
 
     except Exception as e:
@@ -225,6 +236,20 @@ async def health_check_system(components: SystemComponents) -> dict:
         else:
             health_status["components"]["task_factory"] = {"status": "disabled"}
 
+        # Skill catalog health
+        if components.skill_catalog:
+            health_status["components"]["skill_catalog"] = {
+                "status": "healthy",
+                "active_skills": len(
+                    components.skill_catalog.list_skills(active_only=True)
+                ),
+                "catalog_hash": components.skill_catalog.compute_catalog_hash(
+                    active_only=True
+                ),
+            }
+        else:
+            health_status["components"]["skill_catalog"] = {"status": "disabled"}
+
         # Task router health
         health_status["components"]["task_router"] = {"status": "healthy"}
 
@@ -271,3 +296,30 @@ async def shutdown_system(components: SystemComponents):
     except Exception as e:
         logger.error(f"System shutdown error: {str(e)}")
         # Don't re-raise, as this is cleanup code
+
+
+def _initialize_skill_catalog(settings: Settings) -> Optional[SkillCatalog]:
+    """Initialize local skill catalog from configured root/categories."""
+    if not getattr(settings, "enable_skills", True):
+        logger.info("Skill catalog disabled in configuration")
+        return None
+
+    root_value = getattr(settings, "skills_root", None)
+    if root_value:
+        skill_root = Path(root_value).expanduser().resolve()
+    else:
+        skill_root = Path(__file__).resolve().parent / "skills"
+
+    categories = getattr(settings, "skills_categories", None) or [
+        "builtin",
+        "mcp",
+        "computer_use",
+        "domain",
+    ]
+    catalog = SkillCatalog(skill_root=skill_root, categories=categories)
+    logger.info(
+        "Skill catalog initialized - root: %s, discovered: %d",
+        skill_root,
+        catalog.size,
+    )
+    return catalog

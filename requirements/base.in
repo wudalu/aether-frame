@@ -32,7 +32,7 @@ jsonschema>=4.19.0
 litellm>=1.0.0
 
 # Framework dependencies
-google-adk>=1.13.0                    # ADK - Agent Development Kit
+google-adk>=1.26.0                    # ADK - Agent Development Kit (native skills support)
 # google-cloud-aiplatform>=1.35.0    # ADK (if needed separately)
 # pyautogen>=0.2.0                   # AutoGen
 # langgraph>=0.1.0                   # LangGraph

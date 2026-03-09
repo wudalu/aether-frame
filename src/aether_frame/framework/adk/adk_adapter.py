@@ -28,6 +28,7 @@ from ...execution.task_router import ExecutionStrategy
 from ..base.framework_adapter import FrameworkAdapter
 from .approval_broker import AdkApprovalBroker, ApprovalAwareCommunicator
 from .live_communicator import AdkLiveCommunicator
+from ...skills.runtime.skill_runtime import SkillRuntime, normalize_skill_name_list
 from ...tools.resolver import ToolResolver, ToolNotFoundError
 from .adk_session_manager import AdkSessionManager, SessionClearedError
 from .session_recovery import recovery_record_to_messages
@@ -85,6 +86,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             agent_cleanup_callback=self._handle_agent_cleanup,
             agent_sessions_mapping=self._agent_sessions,
         )
+        self._skill_runtime: Optional[SkillRuntime] = None
         
         self.logger = logging.getLogger(__name__)
 
@@ -116,6 +118,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         if hasattr(self, 'runner_manager') and hasattr(self.runner_manager, 'settings'):
             return self.runner_manager.settings.domain_agent_id_prefix
         return "temp_domain_agent"
+
+    def set_skill_catalog(self, skill_catalog) -> None:
+        """Attach or replace skill runtime backed by a local catalog."""
+        if skill_catalog is None:
+            self._skill_runtime = None
+            return
+        self._skill_runtime = SkillRuntime(skill_catalog)
     
     async def cleanup_chat_session(self, chat_session_id: str) -> bool:
         """Cleanup chat session resources via session manager entrypoint."""
@@ -282,6 +291,59 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             metadata.update(extra)
 
         return metadata
+
+    def _extract_requested_skill_names(
+        self, task_request: TaskRequest
+    ) -> Optional[List[str]]:
+        metadata = task_request.metadata or {}
+        if "skill_names" not in metadata:
+            return None
+        try:
+            return normalize_skill_name_list(
+                metadata.get("skill_names"),
+                source="metadata.skill_names",
+            )
+        except ValueError as exc:
+            raise self.ExecutionError(str(exc), task_request) from exc
+
+    def _extract_configured_skill_names(self, agent_config: Optional[AgentConfig]) -> List[str]:
+        if not agent_config or not agent_config.framework_config:
+            return []
+        framework_config = agent_config.framework_config or {}
+        configured = normalize_skill_name_list(
+            framework_config.get("skill_names"),
+            source="agent_config.framework_config.skill_names",
+        )
+        return configured or []
+
+    def _validate_skill_names_for_request(
+        self, task_request: TaskRequest, skill_names: List[str]
+    ) -> None:
+        if not skill_names:
+            return
+        if not self._skill_runtime:
+            raise self.ExecutionError(
+                "Skill runtime is not configured; cannot use metadata.skill_names",
+                task_request,
+            )
+        try:
+            self._skill_runtime.validate_skill_names(skill_names)
+        except Exception as exc:  # noqa: BLE001
+            raise self.ExecutionError(f"Invalid skill_names: {exc}", task_request) from exc
+
+    def _prepare_skill_config_for_new_agent(self, task_request: TaskRequest) -> List[str]:
+        if not task_request.agent_config:
+            return []
+
+        requested = self._extract_requested_skill_names(task_request)
+        configured = self._extract_configured_skill_names(task_request.agent_config)
+        effective = requested if requested is not None else configured
+        self._validate_skill_names_for_request(task_request, effective)
+
+        framework_config = dict(task_request.agent_config.framework_config or {})
+        framework_config["skill_names"] = list(effective)
+        task_request.agent_config.framework_config = framework_config
+        return effective
     
     async def _get_agent_and_runner(self, agent_id: str, task_request: TaskRequest):
         """Get domain agent and runner for given agent_id. Raises ExecutionError if not found."""
@@ -351,6 +413,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
             "domain_agent": domain_agent,
             "pattern": pattern
         })
+        try:
+            configured_skill_names = self._extract_configured_skill_names(agent_config)
+        except Exception:
+            configured_skill_names = []
+        runtime_context.metadata["configured_skill_names"] = configured_skill_names
+        if self._skill_runtime:
+            runtime_context.metadata["skill_runtime"] = self._skill_runtime
         if task_request.available_knowledge:
             runtime_context.metadata["available_knowledge"] = list(task_request.available_knowledge)
         if task_request.execution_context and not task_request.execution_context.available_knowledge:
@@ -468,6 +537,7 @@ class AdkFrameworkAdapter(FrameworkAdapter):
     async def _create_runtime_context_for_new_agent(self, task_request: TaskRequest) -> "RuntimeContext":
         """Create RuntimeContext for new agent and session (agent_config only)."""
         self.logger.info(f"Pattern 3: agent_config - Creating new agent for agent_type: {task_request.agent_config.agent_type}")
+        self._prepare_skill_config_for_new_agent(task_request)
         # Preserve any business-level chat_session_id for later mapping
         chat_session_id = task_request.session_id
         if not chat_session_id and task_request.metadata:
@@ -912,7 +982,13 @@ class AdkFrameworkAdapter(FrameworkAdapter):
     async def _handle_conversation(self, task_request: TaskRequest, strategy: ExecutionStrategy) -> TaskResult:
         """Handle conversation mode with SessionManager coordination."""
         from ...contracts import RuntimeContext
-        
+
+        requested_skill_names = self._extract_requested_skill_names(task_request)
+        self._validate_skill_names_for_request(
+            task_request,
+            requested_skill_names or [],
+        )
+
         business_session_id = task_request.session_id
         if self.logger.isEnabledFor(logging.DEBUG):
             conversation_messages = []
@@ -1194,11 +1270,19 @@ class AdkFrameworkAdapter(FrameworkAdapter):
         }
         
         # Create basic runtime context
+        try:
+            configured_skill_names = self._extract_configured_skill_names(agent_config)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Ignoring invalid configured skill_names: %s", exc)
+            configured_skill_names = []
+
         runtime_context = {
             "framework_type": FrameworkType.ADK,
             "tool_service": getattr(self, '_tool_service', None),
             "agent_config": agent_config,
-            "task_request": task_request
+            "task_request": task_request,
+            "skill_runtime": self._skill_runtime,
+            "configured_skill_names": configured_skill_names,
         }
         
         # Create domain agent with configurable ID prefix

@@ -31,11 +31,13 @@ from ...contracts import (
     ErrorCategory,
     FrameworkType,
     LiveExecutionResult,
+    TaskRequest,
     TaskResult,
     TaskStatus,
     UniversalMessage,
     build_error,
 )
+from ...skills.runtime.skill_runtime import normalize_skill_name_list
 from ..base.domain_agent import DomainAgent
 from .adk_agent_hooks import AdkAgentHooks
 from .adk_event_converter import AdkEventConverter
@@ -69,6 +71,7 @@ class AdkDomainAgent(DomainAgent):
         self.hooks = AdkAgentHooks(self)
         self.event_converter = AdkEventConverter()
         self._tools_initialized = False  # Track if tools have been initialized
+        self._last_tool_signature: Optional[tuple] = None
         self._active_task_request = None  # Track current TaskRequest context
         self._tool_approval_policy: Dict[str, bool] = {}
         self._last_usage_metadata: Optional[Dict[str, Any]] = None
@@ -106,7 +109,7 @@ class AdkDomainAgent(DomainAgent):
         except Exception as e:
             raise RuntimeError(f"Failed to initialize ADK agent: {str(e)}")
     
-    async def _create_adk_agent(self, available_tools=None):
+    async def _create_adk_agent(self, available_tools=None, extra_adk_tools=None):
         """Create ADK agent instance for session execution within domain agent scope."""
         model_identifier = self._get_model_configuration()
         raw_model_config = self.config.get("model_config") if isinstance(self.config, dict) else None
@@ -148,9 +151,11 @@ class AdkDomainAgent(DomainAgent):
         capture_llm_payloads = bool(
             getattr(settings, "capture_adk_llm_payloads", False) if settings else False
         )
+        self.logger.debug("ADK capture payloads enabled=%s (settings=%s)", capture_llm_payloads, bool(settings))
         if capture_llm_payloads:
             try:
                 before_agent_cb, before_model_cb, after_model_cb = build_llm_capture_callbacks(self)
+                self.logger.info("ADK LLM capture callbacks initialized for agent %s", self.agent_id)
             except Exception:  # pragma: no cover - defensive in case ADK missing
                 self.logger.debug("Failed to build ADK LLM capture callbacks.", exc_info=True)
 
@@ -164,6 +169,7 @@ class AdkDomainAgent(DomainAgent):
             model_identifier=model_identifier,
             tool_service=tool_service,
             universal_tools=available_tools,
+            extra_tools=extra_adk_tools,
             request_factory=self._prepare_tool_request,
             settings=settings,
             enable_streaming=True,
@@ -367,6 +373,51 @@ class AdkDomainAgent(DomainAgent):
             self._tools_initialized = True
             self.logger.info(f"Created ADK agent with {len(available_tools)} tools")
 
+    def _resolve_effective_skill_names(
+        self, task_request: Optional[TaskRequest]
+    ) -> List[str]:
+        requested = None
+        if task_request and isinstance(getattr(task_request, "metadata", None), dict):
+            requested = normalize_skill_name_list(
+                task_request.metadata.get("skill_names"),
+                source="metadata.skill_names",
+            )
+        if requested is not None:
+            return requested
+
+        configured = normalize_skill_name_list(
+            self._lookup_runtime_value("configured_skill_names"),
+            source="runtime_context.configured_skill_names",
+        )
+        return configured or []
+
+    def _resolve_skill_toolsets(
+        self, task_request: Optional[TaskRequest]
+    ) -> tuple[List[str], List[Any]]:
+        skill_names = self._resolve_effective_skill_names(task_request)
+        if not skill_names:
+            return [], []
+
+        skill_runtime = self._lookup_runtime_value("skill_runtime")
+        if not skill_runtime:
+            raise RuntimeError(
+                "Skills requested but skill runtime is not configured"
+            )
+
+        validated_skill_names = skill_runtime.validate_skill_names(skill_names)
+        skill_toolsets = skill_runtime.load_adk_skill_tools(validated_skill_names)
+        return validated_skill_names, skill_toolsets
+
+    def _build_tool_signature(
+        self,
+        available_tools: Optional[List[Any]],
+        skill_names: List[str],
+    ) -> tuple:
+        tool_names = tuple(
+            getattr(tool, "name", str(tool)) for tool in (available_tools or [])
+        )
+        return tool_names, tuple(skill_names)
+
     async def execute(self, agent_request: AgentRequest) -> TaskResult:
         """
         Execute task through ADK agent using runtime context.
@@ -387,18 +438,32 @@ class AdkDomainAgent(DomainAgent):
             # Pre-execution hooks
             await self.hooks.before_execution(agent_request)
 
-            # Initialize tools only once or when tools change
-            if not self._tools_initialized:
-                if (agent_request.task_request and 
-                    agent_request.task_request.available_tools):
-                    
-                    self.logger.info(f"Initializing ADK agent with {len(agent_request.task_request.available_tools)} tools")
-                    await self._create_adk_agent(agent_request.task_request.available_tools)
-                else:
-                    # Mark as initialized even without tools - agent already exists from initialize()
-                    self.logger.info("Marking tools as initialized (no tools specified)")
-                
+            available_tools = (
+                list(agent_request.task_request.available_tools)
+                if agent_request.task_request
+                else []
+            )
+            selected_skill_names, skill_toolsets = self._resolve_skill_toolsets(
+                agent_request.task_request
+            )
+            tool_signature = self._build_tool_signature(
+                available_tools,
+                selected_skill_names,
+            )
+
+            # Rebuild ADK agent whenever tool/skill selections change.
+            if (not self._tools_initialized) or (self._last_tool_signature != tool_signature):
+                self.logger.info(
+                    "Configuring ADK tools - function_tools=%d, skills=%d",
+                    len(available_tools),
+                    len(selected_skill_names),
+                )
+                await self._create_adk_agent(
+                    available_tools=available_tools,
+                    extra_adk_tools=skill_toolsets,
+                )
                 self._tools_initialized = True
+                self._last_tool_signature = tool_signature
 
             # Execute through ADK using runtime context
             result = await self._execute_with_adk_runner(agent_request)

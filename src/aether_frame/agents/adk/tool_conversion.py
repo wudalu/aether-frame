@@ -129,6 +129,7 @@ def build_adk_agent(
     model_identifier: str,
     tool_service: Any = None,
     universal_tools: Optional[Iterable[Any]] = None,
+    extra_tools: Optional[Iterable[Any]] = None,
     request_factory: Optional[Callable[[Any, Dict[str, Any]], ToolRequest]] = None,
     settings: Any = None,
     enable_streaming: bool = False,
@@ -138,7 +139,7 @@ def build_adk_agent(
     before_model_callback: Any = None,
     after_model_callback: Any = None,
 ) -> Optional[Any]:
-    """Create an ADK Agent with the provided configuration and tools."""
+    """Create an ADK Agent with converted function tools plus optional ADK-native tools."""
     try:
         from google.adk.agents import Agent  # type: ignore
         from ...framework.adk.model_factory import AdkModelFactory
@@ -157,6 +158,8 @@ def build_adk_agent(
         tools = create_function_tools(
             tool_service, universal_tools, request_factory=request_factory
         )
+    if extra_tools:
+        tools.extend(list(extra_tools))
     planner = None
     planner_cfg: Optional[Dict[str, Any]] = None
     if framework_config:

@@ -174,6 +174,31 @@ async def test_build_adk_agent_constructs_agent_with_tools(monkeypatch):
     assert len(agent.kwargs["tools"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_build_adk_agent_includes_extra_tools(monkeypatch):
+    _install_fake_google_modules(monkeypatch, include_agents=True)
+
+    from aether_frame.framework.adk import model_factory
+
+    monkeypatch.setattr(
+        model_factory.AdkModelFactory,
+        "create_model",
+        classmethod(lambda cls, *args, **kwargs: "stub-model"),
+    )
+
+    extra_tool = SimpleNamespace(name="skill_toolset")
+    agent = tool_conversion.build_adk_agent(
+        name="agent",
+        description="desc",
+        instruction="instr",
+        model_identifier="model-x",
+        extra_tools=[extra_tool],
+    )
+
+    assert agent is not None
+    assert agent.kwargs["tools"] == [extra_tool]
+
+
 def test_build_signature_from_schema_handles_primitives():
     schema = {
         "type": "object",

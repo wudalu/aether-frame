@@ -113,6 +113,7 @@ async def test_factory_create_live_chat_task_builds_agent_and_context():
         agent_type="helper",
         system_prompt="Be helpful.",
         tool_names=["echo"],
+        skill_names=["summary_rewrite"],
         framework_config={"planner": "simple"},
         execution_metadata={"origin": "test"},
     )
@@ -121,6 +122,7 @@ async def test_factory_create_live_chat_task_builds_agent_and_context():
     assert request.agent_config.agent_type == "helper"
     assert request.agent_config.available_tools == ["echo"]
     assert request.agent_config.framework_config["planner"] == "simple"
+    assert request.agent_config.framework_config["skill_names"] == ["summary_rewrite"]
 
     assert request.execution_context is not None
     assert request.execution_context.execution_mode == "live"
@@ -128,4 +130,53 @@ async def test_factory_create_live_chat_task_builds_agent_and_context():
 
     assert request.metadata["stream_mode"] is True
     assert request.metadata["phase"] == "live_execution"
+    assert request.metadata["skill_names"] == ["summary_rewrite"]
     assert request.execution_context.framework_type == FrameworkType.ADK
+
+
+@pytest.mark.asyncio
+async def test_builder_list_available_skills_returns_catalog_items():
+    tool_service = MagicMock(spec=ToolService)
+    skill_catalog = MagicMock()
+    skill_catalog.list_catalog_items.return_value = [
+        {
+            "skill_name": "summary_rewrite",
+            "display_name": "Summary Rewrite",
+            "short_description": "Rewrite long text.",
+            "category": "builtin",
+            "status": "active",
+        }
+    ]
+    builder = TaskRequestBuilder(tool_service, skill_catalog=skill_catalog)
+
+    items = await builder.list_available_skills(active_only=True)
+
+    assert len(items) == 1
+    assert items[0]["skill_name"] == "summary_rewrite"
+    skill_catalog.list_catalog_items.assert_called_once_with(active_only=True)
+
+
+@pytest.mark.asyncio
+async def test_builder_get_skill_catalog_snapshot_returns_hash_and_skills():
+    tool_service = MagicMock(spec=ToolService)
+    skill_catalog = MagicMock()
+    skill_catalog.get_catalog_snapshot.return_value = {
+        "catalog_hash": "abc123",
+        "skills": [
+            {
+                "skill_name": "summary_rewrite",
+                "display_name": "Summary Rewrite",
+                "short_description": "Rewrite long text.",
+                "display_order": 10,
+                "category": "builtin",
+                "status": "active",
+            }
+        ],
+    }
+    builder = TaskRequestBuilder(tool_service, skill_catalog=skill_catalog)
+
+    snapshot = await builder.get_skill_catalog_snapshot(active_only=True)
+
+    assert snapshot["catalog_hash"] == "abc123"
+    assert snapshot["skills"][0]["display_order"] == 10
+    skill_catalog.get_catalog_snapshot.assert_called_once_with(active_only=True)

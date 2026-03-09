@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     enable_mcp_tools: bool = False
     enable_adk_native_tools: bool = False
     mcp_servers: List[Dict[str, Any]] = Field(default_factory=list)
+    enable_skills: bool = True
+    skills_root: Optional[str] = None
+    skills_categories: List[str] = Field(
+        default_factory=lambda: ["builtin", "mcp", "computer_use", "domain"]
+    )
 
     # Framework preferences
     preferred_frameworks: List[str] = Field(default_factory=lambda: ["adk"])

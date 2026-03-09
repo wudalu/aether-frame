@@ -2,7 +2,7 @@
 """Task request factory with integrated tool resolution."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from aether_frame.contracts import (
     AgentConfig,
@@ -18,6 +18,9 @@ from aether_frame.contracts import (
 )
 from aether_frame.tools.resolver import ToolResolver, ToolNotFoundError
 from aether_frame.tools.service import ToolService
+
+if TYPE_CHECKING:
+    from aether_frame.skills.registry import SkillCatalog
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +43,11 @@ class TaskRequestBuilder:
         )
     """
     
-    def __init__(self, tool_service: ToolService):
+    def __init__(
+        self,
+        tool_service: ToolService,
+        skill_catalog: Optional["SkillCatalog"] = None,
+    ):
         """Initialize the task request builder.
         
         Args:
@@ -48,6 +55,7 @@ class TaskRequestBuilder:
         """
         self.tool_service = tool_service
         self.tool_resolver = ToolResolver(tool_service)
+        self.skill_catalog = skill_catalog
         self._logger = logger
     
     async def create(
@@ -190,6 +198,20 @@ class TaskRequestBuilder:
             user_context=user_context
         )
 
+    async def list_available_skills(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """List discovered skills for frontend explicit selection."""
+        if not self.skill_catalog:
+            return []
+        return self.skill_catalog.list_catalog_items(active_only=active_only)
+
+    async def get_skill_catalog_snapshot(
+        self, active_only: bool = True
+    ) -> Dict[str, Any]:
+        """Return catalog hash and ordered skill list for frontend sync checks."""
+        if not self.skill_catalog:
+            return {"catalog_hash": "", "skills": []}
+        return self.skill_catalog.get_catalog_snapshot(active_only=active_only)
+
 
 class TaskRequestFactory:
     """Factory class for creating TaskRequest objects with tool resolution.
@@ -215,13 +237,17 @@ class TaskRequestFactory:
         )
     """
     
-    def __init__(self, tool_service: ToolService):
+    def __init__(
+        self,
+        tool_service: ToolService,
+        skill_catalog: Optional["SkillCatalog"] = None,
+    ):
         """Initialize the task request factory.
         
         Args:
             tool_service: The tool service instance for tool resolution
         """
-        self.builder = TaskRequestBuilder(tool_service)
+        self.builder = TaskRequestBuilder(tool_service, skill_catalog=skill_catalog)
         self._logger = logger
     
     async def create_chat_task(
@@ -328,6 +354,7 @@ class TaskRequestFactory:
         system_prompt: str,
         model_config: Optional[Dict[str, Any]] = None,
         tool_names: Optional[List[str]] = None,
+        skill_names: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         execution_id: Optional[str] = None,
         task_metadata: Optional[Dict[str, Any]] = None,
@@ -354,12 +381,15 @@ class TaskRequestFactory:
             agent_id: Optional pre-existing agent identifier for reuse.
         """
         model_cfg = dict(model_config or {})
+        agent_framework_config = dict(framework_config or {})
+        if skill_names is not None:
+            agent_framework_config["skill_names"] = list(skill_names)
         agent_config = AgentConfig(
             agent_type=agent_type,
             system_prompt=system_prompt,
             model_config=model_cfg,
             available_tools=tool_names or [],
-            framework_config=framework_config or {},
+            framework_config=agent_framework_config,
         )
 
         execution_ctx = ExecutionContext(
@@ -373,6 +403,8 @@ class TaskRequestFactory:
         metadata = dict(task_metadata or {})
         metadata.setdefault("stream_mode", True)
         metadata.setdefault("phase", "live_execution")
+        if skill_names is not None:
+            metadata["skill_names"] = list(skill_names)
 
         return await self.builder.create(
             task_id=task_id,
@@ -387,3 +419,13 @@ class TaskRequestFactory:
             execution_context=execution_ctx,
             agent_id=agent_id,
         )
+
+    async def list_available_skills(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """List discovered skills for frontend explicit selection."""
+        return await self.builder.list_available_skills(active_only=active_only)
+
+    async def get_skill_catalog_snapshot(
+        self, active_only: bool = True
+    ) -> Dict[str, Any]:
+        """Return catalog hash and ordered skill list for frontend sync checks."""
+        return await self.builder.get_skill_catalog_snapshot(active_only=active_only)

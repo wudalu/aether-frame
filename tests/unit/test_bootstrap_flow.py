@@ -66,8 +66,9 @@ class FakeExecutionEngine:
 
 
 class FakeTaskFactory:
-    def __init__(self, tool_service):
+    def __init__(self, tool_service, skill_catalog=None):
         self.tool_service = tool_service
+        self.skill_catalog = skill_catalog
 
 
 @pytest.mark.asyncio
