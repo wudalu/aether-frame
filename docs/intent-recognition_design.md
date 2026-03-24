@@ -87,6 +87,62 @@ The later context layer should consume that artifact together with:
 
 and then decide the final prompt/messages/context sent to the LLM.
 
+### 2.5 Single-agent default, separate-agent optional
+
+The design should distinguish:
+
+1. the intent-layer contract
+2. the runtime topology used to execute that contract
+
+The contract should stay the same:
+
+```text
+input request
+  -> IntentRecognitionPipeline
+  -> IntentRecognitionResult
+```
+
+The default runtime topology should still be:
+
+1. one logical agent
+2. one execution spine
+3. one in-chain pre-LLM intent stage
+
+This remains the recommended MVP because it minimizes handoff overhead and preserves continuity with the existing execution path.
+
+However, the design should not forbid a separate intent-specialized agent in the future.
+
+A later implementation may choose:
+
+1. `InProcessIntentPipeline`
+   - runs inside the main agent before the main-task LLM call
+2. `AgentBackedIntentPipeline`
+   - calls a specialized intent agent and returns the same `IntentRecognitionResult`
+
+This means the architecture should remain plugin-oriented, not topology-locked.
+
+### 2.6 Artifact is additive, not a lossy replacement
+
+If intent recognition is ever implemented as a separate agent or service, the downstream execution path should not receive only the structured artifact.
+
+That would create the exact context-loss problem the design is trying to avoid.
+
+The correct rule is:
+
+1. `IntentRecognitionResult` is an additive artifact
+2. it augments the downstream request context
+3. it does not replace the original user request or relevant conversation state
+
+So the downstream context layer should continue to consume:
+
+1. the raw current user turn
+2. relevant prior conversation turns
+3. any clarification transcript produced by the intent layer
+4. `IntentRecognitionResult`
+5. normal session / memory / tool / knowledge inputs
+
+This keeps the intent artifact useful without turning it into a lossy handoff boundary.
+
 ## 3. Review of the Research Note
 
 The research note is a good design input, but not a repository-specific solution yet.
@@ -146,6 +202,8 @@ The evidence above implies these guardrails:
 4. do not force an expensive LLM-based intent step on every request; prefer a cheap fast path and escalate only when needed
 5. make clarification and fallback explicit first-class outcomes
 6. define fail-open versus fail-closed behavior by execution risk
+7. treat separate intent agents as an optional topology, not as the core contract
+8. never let a structured intent artifact replace the raw request context
 
 ## 4. Target Runtime Chain
 
@@ -372,6 +430,101 @@ It is not:
 
 It is simply the structured intent artifact that downstream layers consume.
 
+If a future implementation runs intent recognition as a separate agent or external service, the handoff contract should still include more than this artifact.
+
+The minimum safe handoff bundle should contain:
+
+1. raw current user turn
+2. relevant prior user and assistant turns
+3. clarification transcript if the intent stage asked follow-up questions
+4. `IntentRecognitionResult`
+5. conversation or session identity
+
+That bundle preserves enough context for the downstream context layer to continue without reconstructing meaning from the artifact alone.
+
+#### 5.3.1 Optional handoff bundle for a separate intent agent
+
+If the team later decides to run intent recognition as a separate specialized agent, the handoff contract should be explicit and loss-minimizing.
+
+Recommended sketch:
+
+```python
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    text: str
+    created_at: Optional[str] = None
+
+
+class IntentHandoffBundle(BaseModel):
+    conversation_id: str
+    session_id: Optional[str] = None
+    current_user_turn: ConversationTurn
+    prior_turns: List[ConversationTurn] = []
+    clarification_turns: List[ConversationTurn] = []
+    request_metadata: Dict[str, Any] = {}
+```
+
+This bundle is the minimum unit that should move across an agent boundary.
+
+It should contain enough raw conversational context for:
+
+1. the intent-specialized agent to make a good judgment
+2. the downstream context layer to preserve continuity after the judgment is made
+
+#### 5.3.2 Optional agent-backed pipeline sketch
+
+The runtime-facing plugin contract should remain stable even if the internal implementation later changes from in-process logic to a separate intent agent.
+
+Recommended sketch:
+
+```python
+class AgentBackedIntentPipeline(IntentRecognitionPipeline):
+    async def recognize(
+        self,
+        agent_request: AgentRequest,
+        runtime_context: Dict[str, Any],
+    ) -> IntentRecognitionResult:
+        handoff = self._build_handoff_bundle(agent_request, runtime_context)
+        agent_response = await self._invoke_intent_agent(handoff)
+        return self._normalize_agent_response(agent_response)
+```
+
+The important design rule is:
+
+1. downstream code still consumes only `IntentRecognitionResult`
+2. the extra cross-agent complexity is hidden inside the pipeline implementation
+3. the main execution spine does not need to know whether intent recognition was in-process or agent-backed
+
+#### 5.3.3 Recommended default versus optional topology
+
+Recommended default:
+
+```text
+AdkDomainAgent
+  -> InProcessIntentPipeline
+  -> IntentRecognitionResult
+  -> Context Layer
+```
+
+Optional later topology:
+
+```text
+AdkDomainAgent
+  -> AgentBackedIntentPipeline
+      -> IntentHandoffBundle
+      -> intent-specialized agent
+      -> IntentRecognitionResult
+  -> Context Layer
+```
+
+The first topology is the recommended MVP.
+
+The second topology is acceptable only if:
+
+1. the handoff bundle keeps enough raw context
+2. the team can justify the extra latency and observability complexity
+3. the intent-specialized agent materially improves recognition quality or maintainability
+
 ### 5.4 Internal intent-layer execution flow
 
 Inside the intent layer itself, the MVP should run as one small pipeline with explicit stages.
@@ -532,6 +685,8 @@ Recommended approach overall:
 1. capability-constrained
 2. traffic-informed
 3. human-reviewed before promotion
+
+For open-source accelerators, public datasets, and an offline bootstrap stack recommendation, see `docs/intent-registry-bootstrap_design.md`.
 
 Do not build the first registry by clustering all user traffic and treating clusters as intents. That usually produces unstable categories, unsupported requests, and wording-based buckets that do not map cleanly to downstream execution.
 
