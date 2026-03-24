@@ -1,0 +1,3 @@
+{"sample_id":"sample_001","conversation_id":"conv_123","session_id":"sess_123","user_message":"Can you summarize this PRD for me?","created_at":"2026-03-21T10:15:00Z","metadata":{"entry_surface":"chat"}}
+{"sample_id":"sample_002","conversation_id":"conv_124","session_id":"sess_124","user_message":"What are the main risks in this requirement?","created_at":"2026-03-21T10:16:00Z","metadata":{"entry_surface":"chat"}}
+{"sample_id":"sample_003","conversation_id":"conv_125","session_id":"sess_125","user_message":"Translate this to French.","created_at":"2026-03-21T10:17:00Z","metadata":{"entry_surface":"chat"}}

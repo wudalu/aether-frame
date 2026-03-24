@@ -1,0 +1,3 @@
+{"sample_id":"sample_001","reviewed_intent":"summarize_requirement","review_notes":"Correct."}
+{"sample_id":"sample_002","reviewed_intent":"analyze_requirement_risks","review_notes":"Correct."}
+{"sample_id":"sample_003","reviewed_intent":"unknown","review_notes":"Unsupported for the current seed set."}

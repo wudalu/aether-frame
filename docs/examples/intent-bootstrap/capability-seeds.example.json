@@ -1,0 +1,44 @@
+{
+  "schema_version": "v1",
+  "capability_seeds": [
+    {
+      "intent_name": "summarize_requirement",
+      "description": "Summarize a requirement, PRD, or spec into key points.",
+      "downstream_execution": "requirement_summary",
+      "enabled": true,
+      "example_messages": [
+        "Summarize this PRD for me.",
+        "Give me the main points from this requirement doc."
+      ],
+      "initial_slots": [
+        {
+          "name": "document_source",
+          "required": true,
+          "description": "The document or pasted content to summarize."
+        }
+      ]
+    },
+    {
+      "intent_name": "analyze_requirement_risks",
+      "description": "Analyze a requirement and identify major risks or gaps.",
+      "downstream_execution": "requirement_risk_analysis",
+      "enabled": true,
+      "example_messages": [
+        "What are the main risks in this requirement?",
+        "Review this spec and list the biggest issues."
+      ],
+      "initial_slots": [
+        {
+          "name": "document_source",
+          "required": true,
+          "description": "The requirement content to analyze."
+        },
+        {
+          "name": "risk_focus_area",
+          "required": false,
+          "description": "Optional focus such as timeline, scope, dependencies, or compliance."
+        }
+      ]
+    }
+  ]
+}
