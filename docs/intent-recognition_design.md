@@ -342,7 +342,96 @@ This is the key behavioral contract:
 3. the clarification result belongs to the intent layer
 4. the final LLM context is only assembled after the request is clear enough to continue
 
-### 4.7 MVP internal pipeline decision flow
+### 4.7 Multi-turn session policy
+
+In a multi-turn session, the system should not assume that every new user turn requires a full intent re-classification from scratch.
+
+The correct policy is:
+
+1. every turn passes through a lightweight intent gate
+2. only some turns trigger full intent re-recognition
+3. the current intent artifact may be reused or updated when the conversation is clearly continuing the same task
+
+Recommended turn handling policy:
+
+1. new task or obvious topic shift
+   - run full intent recognition
+   - replace the prior intent artifact if the request is clearly starting a new task
+2. clarification answer or slot completion
+   - do not treat this as a brand-new request by default
+   - load `PendingIntentState`
+   - merge the new information into the prior intent understanding
+   - update `slots`, `missing_slots`, and `needs_clarification`
+3. same-task refinement turn
+   - first check whether the turn is still operating inside the current intent
+   - examples include output-format changes, scope narrowing, or wording refinements
+   - keep the current intent unless the turn looks like a true task switch
+
+This policy can be summarized as:
+
+```text
+every turn
+  -> lightweight intent gate
+      -> resume pending clarification
+      -> continue current intent
+      -> trigger full intent recognition
+```
+
+The design goal is:
+
+1. preserve continuity within one task
+2. avoid unnecessary full re-classification on every turn
+3. still catch real topic shifts or unsupported follow-up requests
+
+Recommended lightweight gate signals:
+
+| Signal | Likely interpretation | Recommended action |
+| --- | --- | --- |
+| there is `PendingIntentState` and the new turn looks like an answer | clarification continuation | resume prior intent and merge slots first |
+| the new turn is a short direct answer such as a link, file id, locale, or yes/no response | slot completion or clarification answer | avoid full re-recognition unless it clearly conflicts with prior intent |
+| the new turn asks for formatting, length, tone, or minor scope changes | same-task refinement | keep current intent and update execution hints later in the context layer |
+| the new turn introduces a different task verb or different execution family | topic shift or new task | trigger full intent recognition |
+| the new turn explicitly cancels, abandons, or replaces the current request | task reset | clear prior pending state and run from the new request |
+| the new turn is unsupported relative to both the pending state and the current intent | out-of-scope follow-up | fall back or clarify instead of forcing continuity |
+
+Practical interpretation rules:
+
+1. a turn should count as `same-task refinement` when it changes output style, focus, length, ordering, or other presentation details without changing the underlying execution goal
+2. a turn should count as `topic shift` when it asks for a different execution family, a different artifact type, or a different supported capability boundary
+3. when the system is uncertain whether a turn is refinement or a topic shift, it should prefer one cheap re-check over silently forcing continuity
+
+State-handling rules:
+
+1. if `PendingIntentState` exists, try resume logic before considering a fresh classification
+2. keep the latest committed intent artifact only while the task still appears active in the current session
+3. clear `PendingIntentState` when:
+   - clarification is resolved and execution continues
+   - full re-recognition selects a different intent
+   - the user explicitly cancels or replaces the task
+   - the turn falls into terminal fallback or rejection handling
+4. do not carry prior intent state indefinitely across long idle gaps; use a configurable timeout or session-boundary rule
+5. downstream execution should always receive both the latest active raw conversation slice and the latest valid intent artifact
+
+Recommended MVP decision table:
+
+| Incoming turn pattern | Read state | Full re-recognition | State mutation | Downstream action |
+| --- | --- | --- | --- | --- |
+| first turn in a session | none or expired | yes | initialize active intent after recognition | continue, clarify, or fallback |
+| answer to a pending clarification | `PendingIntentState` | no by default | merge slots into prior intent; clear pending state if resolved | continue if clear enough, otherwise one more clarification or fallback |
+| short slot-like reply such as link, file id, locale, or yes/no | `PendingIntentState` first, then `ActiveIntentState` if present | no by default | update slots on the active or pending intent | continue current task or ask remaining clarification questions |
+| formatting or presentation refinement such as "shorter", "English", or "bullet points" | `ActiveIntentState` | no | keep active intent; no pending clarification state change | continue current task and let the context layer adjust execution hints |
+| explicit cancellation such as "ignore that", "cancel", or "start over" | `PendingIntentState` and `ActiveIntentState` | yes for the replacement request only | clear pending state; clear or replace active intent | either stop the prior task or recognize the replacement request |
+| obvious topic shift such as a different task verb or supported capability boundary | `ActiveIntentState` if present | yes | replace active intent; clear pending state if it conflicts | continue under the new intent or clarify/fallback if unclear |
+| unsupported follow-up unrelated to the current task | `PendingIntentState` and `ActiveIntentState` if present | optional cheap re-check first | usually clear pending state; keep or replace active intent based on final judgment | fallback or clarify instead of forcing continuity |
+| long idle gap or new session boundary | treat prior state as expired | yes | drop stale pending state; optionally drop stale active intent | handle as a fresh request |
+
+Implementation note:
+
+1. `PendingIntentState` always has priority over `ActiveIntentState` because clarification recovery is more specific than general task continuity
+2. `ActiveIntentState` should be treated as reusable context only, not as proof that the next turn must stay inside the same intent
+3. when in doubt, prefer one cheap re-check over silently binding the user to a stale intent
+
+### 4.8 MVP internal pipeline decision flow
 
 Within the MVP `HybridIntentPipeline`, the expected internal flow is:
 
@@ -989,6 +1078,31 @@ For the MVP:
 1. in-memory storage is enough
 2. max one clarification turn is enough
 3. use existing session identity when available
+
+### 8.2 Active intent continuity state
+
+In addition to pending clarification state, the runtime may keep a lightweight session-scoped marker for the latest active intent artifact.
+
+Recommended sketch:
+
+```python
+class ActiveIntentState(BaseModel):
+    session_id: str
+    latest_intent: IntentRecognitionResult
+    updated_at: str
+```
+
+This is not a requirement for the narrowest MVP, but it is the cleanest way to support:
+
+1. same-task refinement turns
+2. lightweight continuity checks
+3. explicit state reset when the user switches tasks
+
+Recommended rules:
+
+1. update `ActiveIntentState` when a turn is accepted as continuing the same task
+2. replace it when full re-recognition commits a new intent
+3. clear it on explicit cancellation, terminal fallback, or session timeout
 
 ## 9. Observability
 
